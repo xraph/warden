@@ -1,0 +1,21 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "---Introduction---",
+    "index",
+    "getting-started",
+    "architecture",
+    "---Core Concepts---",
+    "...concepts",
+    "---Authorization---",
+    "...authorization",
+    "---Stores---",
+    "...stores",
+    "---Integration---",
+    "...integration",
+    "---Guides---",
+    "...guides",
+    "---Reference---",
+    "...api-reference"
+  ]
+}

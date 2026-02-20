@@ -1,0 +1,45 @@
+---
+title: SQLite Store
+description: Embedded SQLite store for single-instance deployments.
+---
+
+The SQLite store uses `modernc.org/sqlite` (pure Go, no CGO) for an embedded database.
+
+## Usage
+
+```go
+import "github.com/xraph/warden/store/sqlite"
+
+sqliteStore, err := sqlite.New(ctx, "warden.db")
+if err != nil {
+    log.Fatal(err)
+}
+defer sqliteStore.Close()
+
+if err := sqliteStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Characteristics
+
+- **Embedded** — No external database server needed
+- **Pure Go** — No CGO dependency (`modernc.org/sqlite`)
+- **File-based** — Data persists in a single file
+- **Single-writer** — SQLite uses file-level locking
+
+## Schema Differences from PostgreSQL
+
+| PostgreSQL | SQLite |
+|-----------|--------|
+| `TIMESTAMPTZ` | `TEXT` (RFC3339 format) |
+| `JSONB` | `TEXT` (JSON string) |
+| `UUID` | `TEXT` |
+| `SERIAL` | `INTEGER PRIMARY KEY` |
+
+## When to Use
+
+- Single-instance CLI tools and desktop apps
+- Edge deployments without database infrastructure
+- Development when you want persistent data without PostgreSQL
+- Embedded authorization in standalone binaries

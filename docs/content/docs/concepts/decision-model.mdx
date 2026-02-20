@@ -1,0 +1,86 @@
+---
+title: Decision Model
+description: How Warden merges decisions from RBAC, ABAC, and ReBAC evaluators.
+---
+
+## Decision Types
+
+Every evaluator returns one of three decisions:
+
+| Decision | Meaning |
+|----------|---------|
+| **Allow** | The evaluator grants access |
+| **Deny** | The evaluator explicitly denies access |
+| **NoOpinion** | The evaluator has no matching rules |
+
+## Merging Algorithm
+
+When multiple evaluators return decisions, Warden merges them with this priority:
+
+```
+1. If ANY evaluator returns explicit DENY  → DENIED
+2. If ANY evaluator returns ALLOW          → ALLOWED
+3. If all return NoOpinion                 → DENIED (default deny)
+```
+
+This is a "deny-overrides" strategy: explicit denies always win.
+
+## Examples
+
+### Example 1: RBAC allows, no policies
+
+| RBAC | ABAC | ReBAC | Result |
+|------|------|-------|--------|
+| Allow | NoOpinion | NoOpinion | **Allowed** |
+
+The user has the right role/permission. No ABAC policies or ReBAC tuples apply.
+
+### Example 2: RBAC allows, ABAC denies
+
+| RBAC | ABAC | ReBAC | Result |
+|------|------|-------|--------|
+| Allow | Deny | NoOpinion | **Denied** |
+
+The user has the right role, but an ABAC policy (e.g., "deny after business hours") blocks access.
+
+### Example 3: No RBAC match, ReBAC allows
+
+| RBAC | ABAC | ReBAC | Result |
+|------|------|-------|--------|
+| NoOpinion | NoOpinion | Allow | **Allowed** |
+
+No role assignment exists, but a relation tuple grants access through the relationship graph.
+
+### Example 4: Nothing matches
+
+| RBAC | ABAC | ReBAC | Result |
+|------|------|-------|--------|
+| NoOpinion | NoOpinion | NoOpinion | **Denied** |
+
+Default deny: if no evaluator grants access, the request is denied.
+
+## CheckResult
+
+The `Check()` call returns a `CheckResult` with details:
+
+```go
+type CheckResult struct {
+    Allowed  bool        // Final decision
+    Decision Decision    // Allow, Deny, or NoOpinion
+    Reason   string      // Human-readable explanation
+    Sources  []string    // Which evaluators contributed ("rbac", "abac", "rebac")
+    Duration time.Duration // Evaluation time
+}
+```
+
+## Policy Priority
+
+When multiple ABAC policies match, they are evaluated by priority (lower number = higher priority). The first matching deny policy short-circuits evaluation.
+
+```go
+// High priority deny (evaluated first)
+&policy.Policy{Priority: 10, Effect: policy.EffectDeny, ...}
+
+// Lower priority allow (evaluated second)
+&policy.Policy{Priority: 100, Effect: policy.EffectAllow, ...}
+```

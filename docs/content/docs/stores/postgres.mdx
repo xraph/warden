@@ -1,0 +1,69 @@
+---
+title: PostgreSQL Store
+description: Production-grade PostgreSQL store with automatic migrations.
+---
+
+The PostgreSQL store uses `pgxpool` for connection pooling and includes embedded SQL migrations.
+
+## Usage
+
+```go
+import "github.com/xraph/warden/store/postgres"
+
+pgStore, err := postgres.New(ctx, "postgres://user:pass@localhost:5432/warden")
+if err != nil {
+    log.Fatal(err)
+}
+defer pgStore.Close()
+
+// Run migrations (creates tables if they don't exist)
+if err := pgStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Connection String
+
+Standard PostgreSQL connection string format:
+
+```
+postgres://user:password@host:port/database?sslmode=disable
+```
+
+## Migrations
+
+The store includes 8 embedded migration files that create:
+
+| Table | Purpose |
+|-------|---------|
+| `warden_roles` | Roles with hierarchy |
+| `warden_permissions` | Permissions (resource + action) |
+| `warden_role_permissions` | Role-permission attachments |
+| `warden_assignments` | Role assignments to subjects |
+| `warden_relations` | ReBAC relation tuples |
+| `warden_policies` | ABAC policies (JSONB conditions) |
+| `warden_resource_types` | Resource type definitions |
+| `warden_check_logs` | Authorization check audit trail |
+
+All tables include:
+- `tenant_id` column for multi-tenant isolation
+- Appropriate indexes for query performance
+- Unique constraints to prevent duplicates
+
+## JSONB Fields
+
+Complex fields are stored as JSONB:
+
+- `warden_policies.subjects` — `[]string`
+- `warden_policies.actions` — `[]string`
+- `warden_policies.resources` — `[]string`
+- `warden_policies.conditions` — `[]Condition`
+- `warden_policies.metadata` — `map[string]any`
+- `warden_resource_types.relations` — `[]RelationDef`
+- `warden_resource_types.permissions` — `[]PermissionDef`
+
+## When to Use
+
+- Production deployments
+- Multi-instance services (shared database)
+- When you need ACID transactions and durability

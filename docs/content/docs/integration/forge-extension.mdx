@@ -1,0 +1,92 @@
+---
+title: Forge Extension
+description: Use Warden as a Forge extension with DI, routes, and lifecycle management.
+---
+
+Warden provides a first-class Forge extension that handles lifecycle, dependency injection, and API route registration.
+
+## Registration
+
+```go
+import (
+    "github.com/xraph/forge"
+    wardenext "github.com/xraph/warden/extension"
+)
+
+app := forge.New()
+app.Use(wardenext.New(
+    wardenext.WithConfig(wardenext.Config{
+        DisableRoutes:  false,  // Set true to skip API route registration
+        DisableMigrate: false,  // Set true to skip auto-migration
+    }),
+))
+app.Start(context.Background())
+```
+
+## What the Extension Does
+
+### Register Phase
+
+1. Resolves a `store.Store` from the Forge DI container
+2. Creates a `warden.Engine` with the store and any configured options
+3. Registers the engine in the DI container via `vessel.Provide()`
+4. If routes are enabled, registers REST API endpoints on `forge.Router`
+
+### Start Phase
+
+1. Runs database migrations (unless `DisableMigrate` is true)
+2. Starts the engine
+
+### Stop Phase
+
+1. Gracefully shuts down the engine
+2. Fires `Shutdown` hooks on all plugins
+
+## Options
+
+```go
+wardenext.New(
+    wardenext.WithConfig(config),                // Extension config
+    wardenext.WithLogger(logger),                // Custom logger
+    wardenext.WithEngineOptions(engineOpts...),   // Pass engine options
+    wardenext.WithPlugin(auditPlugin),           // Add plugins
+)
+```
+
+## Accessing the Engine
+
+After registration, resolve the engine from any Forge handler:
+
+```go
+func myHandler(ctx forge.Context) error {
+    eng := forge.Inject[*warden.Engine](ctx)
+    result, _ := eng.Check(ctx.Context(), &warden.CheckRequest{
+        Subject: warden.Subject{Kind: "user", ID: ctx.Get("userID")},
+        Action:  "read",
+        ResourceType: "document",
+    })
+    if !result.Allowed {
+        return forge.Forbidden("access denied")
+    }
+    return ctx.JSON(200, data)
+}
+```
+
+## REST API Endpoints
+
+When routes are enabled, the extension registers these endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/authz/check` | Authorization check |
+| `POST` | `/v1/authz/enforce` | Authorization enforce |
+| `POST` | `/v1/authz/batch-check` | Batch authorization check |
+| `POST/GET/PUT/DELETE` | `/v1/roles/*` | Role management |
+| `POST/GET/DELETE` | `/v1/permissions/*` | Permission management |
+| `POST/GET/DELETE` | `/v1/assignments/*` | Assignment management |
+| `POST/GET` | `/v1/relations/*` | Relation tuple management |
+| `POST/GET/PUT/DELETE` | `/v1/policies/*` | Policy management |
+| `POST/GET/PUT/DELETE` | `/v1/resource-types/*` | Resource type management |
+| `GET` | `/v1/check-logs` | Query check audit logs |
+
+All endpoints include OpenAPI metadata for automatic documentation generation.

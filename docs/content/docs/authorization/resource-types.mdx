@@ -1,0 +1,115 @@
+---
+title: Resource Types
+description: Define valid relations and permissions for resource types.
+---
+
+## Overview
+
+Resource types define the schema for your authorization model. They declare which relations and permissions are valid for each type of object.
+
+### ResourceType Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ResourceTypeID` | TypeID (`wrtp_...`) |
+| `Name` | `string` | Resource type name (e.g., "document") |
+| `Description` | `string` | Human-readable description |
+| `Relations` | `[]RelationDef` | Valid relations for this type |
+| `Permissions` | `[]PermissionDef` | Derived permissions |
+
+## Defining Relations
+
+```go
+import "github.com/xraph/warden/resourcetype"
+
+docType := &resourcetype.ResourceType{
+    ID:          id.NewResourceTypeID(),
+    Name:        "document",
+    Description: "A document resource",
+    Relations: []resourcetype.RelationDef{
+        {Name: "owner", SubjectTypes: []string{"user"}},
+        {Name: "editor", SubjectTypes: []string{"user", "team"}},
+        {Name: "viewer", SubjectTypes: []string{"user", "team", "group"}},
+        {Name: "parent", SubjectTypes: []string{"folder"}},
+    },
+    Permissions: []resourcetype.PermissionDef{
+        {Name: "read", Relations: []string{"viewer", "editor", "owner"}},
+        {Name: "write", Relations: []string{"editor", "owner"}},
+        {Name: "delete", Relations: []string{"owner"}},
+    },
+}
+err := store.CreateResourceType(ctx, docType)
+```
+
+## RelationDef
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Name` | `string` | Relation name (e.g., "viewer") |
+| `SubjectTypes` | `[]string` | Allowed subject types |
+
+## PermissionDef
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Name` | `string` | Permission/action name |
+| `Relations` | `[]string` | Relations that grant this permission |
+
+## Example: Google Drive-like Model
+
+```go
+// Folder type
+folderType := &resourcetype.ResourceType{
+    Name: "folder",
+    Relations: []resourcetype.RelationDef{
+        {Name: "owner", SubjectTypes: []string{"user"}},
+        {Name: "editor", SubjectTypes: []string{"user", "group"}},
+        {Name: "viewer", SubjectTypes: []string{"user", "group"}},
+    },
+    Permissions: []resourcetype.PermissionDef{
+        {Name: "read", Relations: []string{"viewer", "editor", "owner"}},
+        {Name: "write", Relations: []string{"editor", "owner"}},
+        {Name: "share", Relations: []string{"owner"}},
+    },
+}
+
+// Document type
+docType := &resourcetype.ResourceType{
+    Name: "document",
+    Relations: []resourcetype.RelationDef{
+        {Name: "owner", SubjectTypes: []string{"user"}},
+        {Name: "editor", SubjectTypes: []string{"user", "group"}},
+        {Name: "viewer", SubjectTypes: []string{"user", "group"}},
+        {Name: "parent", SubjectTypes: []string{"folder"}},
+    },
+    Permissions: []resourcetype.PermissionDef{
+        {Name: "read", Relations: []string{"viewer", "editor", "owner"}},
+        {Name: "write", Relations: []string{"editor", "owner"}},
+        {Name: "delete", Relations: []string{"owner"}},
+    },
+}
+```
+
+## CRUD Operations
+
+```go
+// Create
+store.CreateResourceType(ctx, rt)
+
+// Get by ID
+rt, _ := store.GetResourceType(ctx, rtID)
+
+// Get by name
+rt, _ := store.GetResourceTypeByName(ctx, "document")
+
+// List
+types, _ := store.ListResourceTypes(ctx, &resourcetype.ListFilter{
+    Limit: 50,
+})
+
+// Update
+store.UpdateResourceType(ctx, rt)
+
+// Delete
+store.DeleteResourceType(ctx, rtID)
+```

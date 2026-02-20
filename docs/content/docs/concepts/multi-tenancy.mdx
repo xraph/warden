@@ -1,0 +1,76 @@
+---
+title: Multi-Tenancy
+description: How Warden isolates authorization data per tenant.
+---
+
+## Tenant Scoping
+
+Every Warden operation is scoped to a tenant. This ensures that roles, permissions, policies, and relations from one tenant cannot leak to another.
+
+### With Forge
+
+When running inside Forge, tenant context is automatically available via `forge.ScopeFrom(ctx)`:
+
+```go
+// Forge middleware sets scope automatically
+// from Authsome JWT or Keysmith API key
+ctx = forge.WithScope(ctx, forge.Scope{
+    AppID:    "myapp",
+    TenantID: "tenant-123",
+})
+```
+
+### Standalone Mode
+
+Without Forge, set tenant context explicitly:
+
+```go
+import "github.com/xraph/warden"
+
+ctx = warden.WithTenant(ctx, "myapp", "tenant-123")
+```
+
+## How Isolation Works
+
+### Store Layer
+
+All store queries include tenant ID as a filter. The PostgreSQL store uses `tenant_id` columns on every table:
+
+```sql
+SELECT * FROM warden_roles
+WHERE tenant_id = $1 AND id = $2;
+```
+
+### Engine Layer
+
+The engine extracts tenant scope from context before every operation:
+
+```go
+result, err := eng.Check(ctx, &warden.CheckRequest{
+    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
+    Action:       "read",
+    ResourceType: "document",
+})
+// Only evaluates roles, policies, and relations for the current tenant
+```
+
+### Cross-Tenant Prevention
+
+- Store methods that omit tenant ID return `warden.ErrMissingTenant`
+- There is no API to query across tenants
+- TypeIDs are globally unique, but data is partitioned by tenant
+
+## Tenant-Scoped Operations
+
+All CRUD operations on entities are automatically scoped:
+
+```go
+// Creates a role for tenant-123 only
+store.CreateRole(ctx, role)
+
+// Lists roles for tenant-123 only
+roles, _ := store.ListRoles(ctx, filter)
+
+// Deletes all data for tenant-123
+store.DeleteByTenant(ctx, "tenant-123")
+```

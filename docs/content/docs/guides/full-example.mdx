@@ -1,0 +1,164 @@
+---
+title: Full Example
+description: A complete example combining RBAC, ABAC, and ReBAC in a single application.
+---
+
+This example demonstrates all three authorization models working together.
+
+## Setup
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/xraph/warden"
+    "github.com/xraph/warden/assignment"
+    "github.com/xraph/warden/id"
+    "github.com/xraph/warden/permission"
+    "github.com/xraph/warden/policy"
+    "github.com/xraph/warden/relation"
+    "github.com/xraph/warden/role"
+    "github.com/xraph/warden/store/memory"
+)
+
+func main() {
+    ctx := context.Background()
+    st := memory.New()
+
+    eng, err := warden.NewEngine(warden.WithStore(st))
+    if err != nil {
+        log.Fatal(err)
+    }
+```
+
+## Step 1: RBAC — Roles and Permissions
+
+```go
+    // Create permissions
+    readPerm := &permission.Permission{
+        ID: id.NewPermissionID(), Name: "Read Documents",
+        Resource: "document", Action: "read",
+        CreatedAt: time.Now(), UpdatedAt: time.Now(),
+    }
+    writePerm := &permission.Permission{
+        ID: id.NewPermissionID(), Name: "Write Documents",
+        Resource: "document", Action: "write",
+        CreatedAt: time.Now(), UpdatedAt: time.Now(),
+    }
+    _ = st.CreatePermission(ctx, readPerm)
+    _ = st.CreatePermission(ctx, writePerm)
+
+    // Create roles
+    viewerRole := &role.Role{
+        ID: id.NewRoleID(), Name: "Viewer", Slug: "viewer",
+        CreatedAt: time.Now(), UpdatedAt: time.Now(),
+    }
+    editorRole := &role.Role{
+        ID: id.NewRoleID(), Name: "Editor", Slug: "editor",
+        CreatedAt: time.Now(), UpdatedAt: time.Now(),
+    }
+    _ = st.CreateRole(ctx, viewerRole)
+    _ = st.CreateRole(ctx, editorRole)
+
+    // Attach permissions
+    _ = st.AttachPermission(ctx, viewerRole.ID, readPerm.ID)
+    _ = st.AttachPermission(ctx, editorRole.ID, readPerm.ID)
+    _ = st.AttachPermission(ctx, editorRole.ID, writePerm.ID)
+
+    // Assign viewer role to user
+    _ = st.CreateAssignment(ctx, &assignment.Assignment{
+        ID: id.NewAssignmentID(), RoleID: viewerRole.ID,
+        SubjectKind: "user", SubjectID: "alice",
+        CreatedAt: time.Now(),
+    })
+```
+
+## Step 2: ABAC — Policy Guardrails
+
+```go
+    // Deny writes after business hours
+    _ = st.CreatePolicy(ctx, &policy.Policy{
+        ID: id.NewPolicyID(), Name: "Business Hours Only",
+        Effect: policy.EffectDeny, Priority: 10, IsActive: true, Version: 1,
+        Subjects: []string{"*"}, Actions: []string{"write", "delete"},
+        Resources: []string{"*"},
+        Conditions: []policy.Condition{{
+            ID: id.NewConditionID(), Field: "time",
+            Operator: policy.OpTimeAfter, Value: "18:00",
+        }},
+        CreatedAt: time.Now(), UpdatedAt: time.Now(),
+    })
+```
+
+## Step 3: ReBAC — Relationship-Based Sharing
+
+```go
+    // Bob can view doc-456 via direct relation
+    _ = st.CreateRelation(ctx, &relation.Tuple{
+        ID: id.NewRelationID(),
+        ObjectType: "document", ObjectID: "doc-456",
+        Relation: "viewer",
+        SubjectType: "user", SubjectID: "bob",
+        CreatedAt: time.Now(),
+    })
+```
+
+## Step 4: Run Checks
+
+```go
+    checks := []struct {
+        name string
+        req  *warden.CheckRequest
+    }{
+        {
+            name: "Alice reads document (RBAC)",
+            req: &warden.CheckRequest{
+                Subject:      warden.Subject{Kind: "user", ID: "alice"},
+                Action:       "read",
+                ResourceType: "document",
+                ResourceID:   "doc-123",
+            },
+        },
+        {
+            name: "Alice writes document (RBAC - should fail, viewer only)",
+            req: &warden.CheckRequest{
+                Subject:      warden.Subject{Kind: "user", ID: "alice"},
+                Action:       "write",
+                ResourceType: "document",
+                ResourceID:   "doc-123",
+            },
+        },
+        {
+            name: "Bob views doc-456 (ReBAC)",
+            req: &warden.CheckRequest{
+                Subject:      warden.Subject{Kind: "user", ID: "bob"},
+                Action:       "read",
+                ResourceType: "document",
+                ResourceID:   "doc-456",
+            },
+        },
+    }
+
+    for _, c := range checks {
+        result, err := eng.Check(ctx, c.req)
+        if err != nil {
+            fmt.Printf("%-50s ERROR: %v\n", c.name, err)
+            continue
+        }
+        fmt.Printf("%-50s allowed=%v reason=%q\n", c.name, result.Allowed, result.Reason)
+    }
+}
+```
+
+## Expected Output
+
+```
+Alice reads document (RBAC)                        allowed=true  reason="rbac: granted"
+Alice writes document (RBAC - should fail)         allowed=false reason="default deny"
+Bob views doc-456 (ReBAC)                          allowed=true  reason="rebac: granted"
+```

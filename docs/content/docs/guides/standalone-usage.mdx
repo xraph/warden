@@ -1,0 +1,130 @@
+---
+title: Standalone Usage
+description: Use Warden without the Forge framework.
+---
+
+Warden works as a standalone Go library without any Forge dependency.
+
+## Basic Setup
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/xraph/warden"
+    "github.com/xraph/warden/id"
+    "github.com/xraph/warden/permission"
+    "github.com/xraph/warden/role"
+    "github.com/xraph/warden/assignment"
+    "github.com/xraph/warden/store/memory"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // 1. Create store
+    st := memory.New()
+
+    // 2. Create engine
+    eng, err := warden.NewEngine(
+        warden.WithStore(st),
+        warden.WithConfig(warden.Config{
+            EnableRBAC:  true,
+            EnableABAC:  true,
+            EnableReBAC: true,
+        }),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 3. Set up roles and permissions
+    now := time.Now()
+    perm := &permission.Permission{
+        ID: id.NewPermissionID(), Name: "Read",
+        Resource: "document", Action: "read",
+        CreatedAt: now, UpdatedAt: now,
+    }
+    _ = st.CreatePermission(ctx, perm)
+
+    r := &role.Role{
+        ID: id.NewRoleID(), Name: "Viewer", Slug: "viewer",
+        CreatedAt: now, UpdatedAt: now,
+    }
+    _ = st.CreateRole(ctx, r)
+    _ = st.AttachPermission(ctx, r.ID, perm.ID)
+
+    _ = st.CreateAssignment(ctx, &assignment.Assignment{
+        ID: id.NewAssignmentID(), RoleID: r.ID,
+        SubjectKind: "user", SubjectID: "user-1",
+        CreatedAt: now,
+    })
+
+    // 4. Check authorization
+    result, _ := eng.Check(ctx, &warden.CheckRequest{
+        Subject:      warden.Subject{Kind: "user", ID: "user-1"},
+        Action:       "read",
+        ResourceType: "document",
+    })
+    fmt.Printf("Allowed: %v (%s)\n", result.Allowed, result.Reason)
+}
+```
+
+## Tenant Scoping (Standalone)
+
+Without Forge, set tenant context using Warden's context helpers:
+
+```go
+ctx = warden.WithTenant(ctx, "myapp", "tenant-123")
+
+// All subsequent operations are scoped to this tenant
+result, _ := eng.Check(ctx, req)
+```
+
+## With PostgreSQL
+
+```go
+import "github.com/xraph/warden/store/postgres"
+
+pgStore, err := postgres.New(ctx, os.Getenv("DATABASE_URL"))
+if err != nil {
+    log.Fatal(err)
+}
+defer pgStore.Close()
+_ = pgStore.Migrate(ctx)
+
+eng, _ := warden.NewEngine(warden.WithStore(pgStore))
+```
+
+## With Caching
+
+```go
+import "github.com/xraph/warden/cache"
+
+lru := cache.NewMemory(cache.WithTTL(5 * time.Minute))
+
+eng, _ := warden.NewEngine(
+    warden.WithStore(st),
+    warden.WithCache(lru),
+)
+```
+
+## With Plugins
+
+```go
+import (
+    "github.com/xraph/warden/audit_hook"
+    "github.com/xraph/warden/observability"
+)
+
+eng, _ := warden.NewEngine(
+    warden.WithStore(st),
+    warden.WithPlugin(audit_hook.New(chronicleClient)),
+    warden.WithPlugin(observability.New()),
+)
+```

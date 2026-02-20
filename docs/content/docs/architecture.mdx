@@ -1,0 +1,125 @@
+---
+title: Architecture
+description: How Warden's engine, evaluator, and graph walker coordinate authorization decisions.
+---
+
+## Package Overview
+
+```
+warden/
+├── warden.go           # Core types: CheckRequest, CheckResult, Subject, Decision
+├── engine.go           # Engine: Check(), Enforce(), CanI()
+├── evaluator.go        # ABAC condition evaluator
+├── graph_walker.go     # ReBAC BFS graph traversal
+├── matcher.go          # Permission glob matching
+├── config.go           # Engine configuration
+├── errors.go           # Sentinel errors
+├── scope.go            # Tenant scoping (Forge integration)
+├── context.go          # Standalone context helpers
+├── id/                 # TypeID definitions (wrol_, wprm_, wasn_, wpol_, wrel_, ...)
+├── role/               # Role entity + store interface
+├── permission/         # Permission entity + store interface
+├── assignment/         # Role assignment entity + store interface
+├── relation/           # ReBAC tuple entity + store interface
+├── policy/             # ABAC policy entity + store interface
+├── resourcetype/       # Resource type definitions
+├── checklog/           # Authorization check audit log
+├── store/              # Composite store interface
+│   ├── memory/         # In-memory store (development/testing)
+│   ├── postgres/       # PostgreSQL store (production)
+│   └── sqlite/         # SQLite store (embedded)
+├── plugin/             # Plugin interfaces + registry
+├── cache/              # LRU cache with TTL
+├── api/                # REST API handlers (forge.Router)
+├── extension/          # Forge extension entry point
+├── middleware/          # Authorization middleware
+├── audit_hook/         # Chronicle audit plugin
+└── observability/      # Prometheus metrics plugin
+```
+
+## Request Flow
+
+When `engine.Check()` is called, Warden evaluates authorization in three phases:
+
+```
+                    ┌──────────────┐
+                    │  Check(req)  │
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+         ┌────────┐  ┌────────┐  ┌────────┐
+         │  RBAC  │  │  ABAC  │  │  ReBAC │
+         └───┬────┘  └───┬────┘  └───┬────┘
+              │            │            │
+              ▼            ▼            ▼
+         ┌──────────────────────────────────┐
+         │       Merge Decisions            │
+         │  explicit deny > allow > deny    │
+         └──────────────┬───────────────────┘
+                        │
+                        ▼
+                  ┌────────────┐
+                  │ CheckResult│
+                  │ .Allowed   │
+                  │ .Reason    │
+                  └────────────┘
+```
+
+### Phase 1: RBAC Evaluation
+
+1. Look up all role assignments for the subject (global + resource-scoped)
+2. For each assigned role, collect attached permissions
+3. Match permissions against the requested action and resource using glob matching (`document:*` matches `document:read`)
+4. If any permission matches, RBAC returns **allow**
+
+### Phase 2: ABAC Evaluation
+
+1. Load all active policies from the store
+2. Filter policies whose subjects, actions, and resources match the request
+3. Evaluate each matching policy's conditions against the request context
+4. Policies with `effect: deny` that match produce an explicit deny
+5. Policies with `effect: allow` that match produce an allow
+
+### Phase 3: ReBAC Evaluation
+
+1. Use BFS graph traversal to walk relation tuples
+2. Starting from the subject, traverse relations (e.g., `user:42 → viewer → document:123`)
+3. Follow transitive relations (e.g., `group:eng → member → user:42`)
+4. If a path exists from subject to resource with the required relation, ReBAC returns **allow**
+5. Max traversal depth is configurable (default: 10)
+
+### Decision Merging
+
+```
+1. If ANY evaluator returns explicit DENY  → result is DENIED
+2. If ANY evaluator returns ALLOW          → result is ALLOWED
+3. Otherwise                               → result is DENIED (default deny)
+```
+
+## Engine Components
+
+| Component | Interface | Default | Purpose |
+|-----------|-----------|---------|---------|
+| Store | `store.Store` | — (required) | Persistence for all entities |
+| Evaluator | `warden.Evaluator` | `conditionEvaluator` | ABAC condition evaluation |
+| GraphWalker | `warden.GraphWalker` | `bfsGraphWalker` | ReBAC graph traversal |
+| Cache | `warden.Cache` | nil (disabled) | LRU cache for check results |
+| Plugins | `plugin.Registry` | nil | Lifecycle hook dispatch |
+
+## Configuration
+
+```go
+eng, _ := warden.NewEngine(
+    warden.WithStore(store),
+    warden.WithConfig(warden.Config{
+        EnableRBAC:    true,  // default: true
+        EnableABAC:    true,  // default: true
+        EnableReBAC:   true,  // default: true
+        MaxGraphDepth: 10,    // BFS traversal limit
+        CacheTTL:      5 * time.Minute,
+    }),
+    warden.WithPlugin(auditPlugin),
+    warden.WithPlugin(metricsPlugin),
+)
+```

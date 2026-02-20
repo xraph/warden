@@ -1,0 +1,165 @@
+---
+title: Roles & Permissions
+description: Managing roles, permissions, and role assignments for RBAC.
+---
+
+## Roles
+
+A role is a named collection of permissions that can be assigned to subjects.
+
+### Role Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.RoleID` | TypeID (`wrol_...`) |
+| `Name` | `string` | Display name |
+| `Slug` | `string` | URL-safe identifier (unique) |
+| `Description` | `string` | Human-readable description |
+| `ParentID` | `*id.RoleID` | Parent role for inheritance |
+| `IsSystem` | `bool` | System roles cannot be deleted |
+| `IsDefault` | `bool` | Auto-assigned to new subjects |
+| `MaxMembers` | `int` | Maximum assignments (0 = unlimited) |
+| `Metadata` | `map[string]any` | Custom key-value data |
+
+### Create a Role
+
+```go
+r := &role.Role{
+    ID:          id.NewRoleID(),
+    Name:        "Editor",
+    Slug:        "editor",
+    Description: "Can read and write documents",
+    CreatedAt:   time.Now(),
+    UpdatedAt:   time.Now(),
+}
+err := store.CreateRole(ctx, r)
+```
+
+### Role Hierarchy
+
+Roles can inherit permissions from parent roles:
+
+```go
+admin := &role.Role{ID: id.NewRoleID(), Name: "Admin", Slug: "admin"}
+editor := &role.Role{ID: id.NewRoleID(), Name: "Editor", Slug: "editor", ParentID: &admin.ID}
+viewer := &role.Role{ID: id.NewRoleID(), Name: "Viewer", Slug: "viewer", ParentID: &editor.ID}
+```
+
+When checking permissions, Warden walks up the role hierarchy to collect all inherited permissions.
+
+## Permissions
+
+A permission represents a single (resource, action) authorization grant.
+
+### Permission Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.PermissionID` | TypeID (`wprm_...`) |
+| `Name` | `string` | Display name |
+| `Resource` | `string` | Resource type (e.g., "document") |
+| `Action` | `string` | Action verb (e.g., "read", "write") |
+| `Description` | `string` | Human-readable description |
+| `IsSystem` | `bool` | System permissions cannot be deleted |
+| `Metadata` | `map[string]any` | Custom key-value data |
+
+### Create a Permission
+
+```go
+p := &permission.Permission{
+    ID:       id.NewPermissionID(),
+    Name:     "Read Documents",
+    Resource: "document",
+    Action:   "read",
+}
+err := store.CreatePermission(ctx, p)
+```
+
+### Attach to Role
+
+```go
+err := store.AttachPermission(ctx, roleID, permID)
+```
+
+### Glob Matching
+
+Permission matching supports wildcards:
+
+| Pattern | Matches |
+|---------|---------|
+| `document:read` | Exactly `document:read` |
+| `document:*` | `document:read`, `document:write`, `document:delete` |
+| `*:read` | `document:read`, `user:read`, `project:read` |
+| `*:*` | Everything |
+
+## Assignments
+
+An assignment links a subject (user, API key, service) to a role.
+
+### Assignment Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.AssignmentID` | TypeID (`wasn_...`) |
+| `RoleID` | `id.RoleID` | The role to assign |
+| `SubjectKind` | `string` | Subject type ("user", "api_key", "service") |
+| `SubjectID` | `string` | Subject identifier |
+| `ResourceType` | `string` | Optional: scope to resource type |
+| `ResourceID` | `string` | Optional: scope to specific resource |
+| `ExpiresAt` | `*time.Time` | Optional: auto-expire assignment |
+
+### Global Assignment
+
+```go
+// User is an editor everywhere
+ass := &assignment.Assignment{
+    ID:          id.NewAssignmentID(),
+    RoleID:      editorRole.ID,
+    SubjectKind: "user",
+    SubjectID:   "user-42",
+}
+```
+
+### Resource-Scoped Assignment
+
+```go
+// User is an editor only for project-123
+ass := &assignment.Assignment{
+    ID:           id.NewAssignmentID(),
+    RoleID:       editorRole.ID,
+    SubjectKind:  "user",
+    SubjectID:    "user-42",
+    ResourceType: "project",
+    ResourceID:   "project-123",
+}
+```
+
+### Time-Limited Assignment
+
+```go
+expires := time.Now().Add(24 * time.Hour)
+ass := &assignment.Assignment{
+    ID:          id.NewAssignmentID(),
+    RoleID:      adminRole.ID,
+    SubjectKind: "user",
+    SubjectID:   "user-42",
+    ExpiresAt:   &expires,
+}
+```
+
+## Listing
+
+```go
+// List roles for a subject
+roles, _ := store.ListRolesForSubject(ctx, "", "user", "user-42")
+
+// List assignments with filters
+assignments, _ := store.ListAssignments(ctx, &assignment.ListFilter{
+    SubjectKind: "user",
+    SubjectID:   "user-42",
+    Limit:       50,
+})
+
+// List permissions for a role
+perms, _ := store.ListPermissionsForRole(ctx, roleID)
+```

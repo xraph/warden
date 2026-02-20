@@ -1,0 +1,10 @@
+{
+  "title": "Authorization",
+  "pages": [
+    "check-engine",
+    "roles-permissions",
+    "policies-conditions",
+    "relations-tuples",
+    "resource-types"
+  ]
+}

@@ -1,0 +1,205 @@
+---
+title: REST API
+description: Complete reference for Warden's REST API endpoints.
+---
+
+When running with the Forge extension (or using `api.New()` directly), Warden exposes a REST API for managing authorization entities.
+
+## Authorization Check
+
+### POST /v1/authz/check
+
+Check if a subject is authorized to perform an action.
+
+**Request:**
+```json
+{
+  "subject_kind": "user",
+  "subject_id": "user-42",
+  "action": "read",
+  "resource_type": "document",
+  "resource_id": "doc-123",
+  "context": {
+    "ip_address": "10.0.1.5"
+  }
+}
+```
+
+**Response (200):**
+```json
+{
+  "allowed": true,
+  "decision": "allow",
+  "reason": "rbac: permission document:read granted",
+  "sources": ["rbac"]
+}
+```
+
+### POST /v1/authz/enforce
+
+Same as check, but returns 403 if denied.
+
+### POST /v1/authz/batch-check
+
+Check multiple authorization requests in one call.
+
+**Request:**
+```json
+{
+  "checks": [
+    {"subject_kind": "user", "subject_id": "user-42", "action": "read", "resource_type": "document"},
+    {"subject_kind": "user", "subject_id": "user-42", "action": "delete", "resource_type": "document"}
+  ]
+}
+```
+
+**Response (200):**
+```json
+{
+  "results": [
+    {"allowed": true, "decision": "allow", "reason": "rbac: granted"},
+    {"allowed": false, "decision": "deny", "reason": "default deny"}
+  ]
+}
+```
+
+## Roles
+
+| Method | Path | Operation |
+|--------|------|-----------|
+| `POST` | `/v1/roles` | Create role |
+| `GET` | `/v1/roles/:roleId` | Get role |
+| `PUT` | `/v1/roles/:roleId` | Update role |
+| `DELETE` | `/v1/roles/:roleId` | Delete role |
+| `GET` | `/v1/roles` | List roles |
+| `POST` | `/v1/roles/:roleId/permissions` | Attach permission |
+| `DELETE` | `/v1/roles/:roleId/permissions/:permissionId` | Detach permission |
+
+### Create Role
+
+```json
+POST /v1/roles
+{
+  "name": "Editor",
+  "slug": "editor",
+  "description": "Can read and write documents",
+  "parent_id": "wrol_...",
+  "is_system": false,
+  "is_default": false,
+  "metadata": {"tier": "premium"}
+}
+```
+
+## Permissions
+
+| Method | Path | Operation |
+|--------|------|-----------|
+| `POST` | `/v1/permissions` | Create permission |
+| `GET` | `/v1/permissions/:permissionId` | Get permission |
+| `DELETE` | `/v1/permissions/:permissionId` | Delete permission |
+| `GET` | `/v1/permissions` | List permissions |
+
+### Create Permission
+
+```json
+POST /v1/permissions
+{
+  "name": "Read Documents",
+  "resource": "document",
+  "action": "read",
+  "description": "Allows reading documents"
+}
+```
+
+## Assignments
+
+| Method | Path | Operation |
+|--------|------|-----------|
+| `POST` | `/v1/assignments` | Assign role |
+| `DELETE` | `/v1/assignments/:assignmentId` | Unassign role |
+| `GET` | `/v1/assignments` | List assignments |
+| `GET` | `/v1/subjects/:subjectKind/:subjectId/roles` | List subject's roles |
+
+### Assign Role
+
+```json
+POST /v1/assignments
+{
+  "role_id": "wrol_...",
+  "subject_kind": "user",
+  "subject_id": "user-42",
+  "resource_type": "project",
+  "resource_id": "project-123",
+  "expires_at": "2025-12-31T23:59:59Z"
+}
+```
+
+## Relations
+
+| Method | Path | Operation |
+|--------|------|-----------|
+| `POST` | `/v1/relations` | Write relation tuple |
+| `POST` | `/v1/relations/delete` | Delete relation tuple |
+| `GET` | `/v1/relations` | List relation tuples |
+
+### Write Relation
+
+```json
+POST /v1/relations
+{
+  "object_type": "document",
+  "object_id": "doc-123",
+  "relation": "viewer",
+  "subject_type": "user",
+  "subject_id": "user-42"
+}
+```
+
+## Policies
+
+| Method | Path | Operation |
+|--------|------|-----------|
+| `POST` | `/v1/policies` | Create policy |
+| `GET` | `/v1/policies/:policyId` | Get policy |
+| `PUT` | `/v1/policies/:policyId` | Update policy |
+| `DELETE` | `/v1/policies/:policyId` | Delete policy |
+| `GET` | `/v1/policies` | List policies |
+
+### Create Policy
+
+```json
+POST /v1/policies
+{
+  "name": "Office Hours Only",
+  "effect": "deny",
+  "priority": 10,
+  "is_active": true,
+  "subjects": ["*"],
+  "actions": ["write"],
+  "resources": ["document:*"],
+  "conditions": [
+    {"field": "time", "operator": "time_after", "value": "18:00"}
+  ]
+}
+```
+
+## Error Responses
+
+All error responses follow this format:
+
+```json
+{
+  "error": {
+    "code": 404,
+    "message": "not found"
+  }
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 400 | Bad request (missing fields, invalid ID) |
+| 403 | Forbidden (authorization denied) |
+| 404 | Entity not found |
+| 409 | Conflict (duplicate entity) |
+| 503 | Store unavailable |

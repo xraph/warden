@@ -1,0 +1,89 @@
+---
+title: Middleware
+description: Authorization middleware for Forge HTTP handlers.
+---
+
+Warden provides middleware that enforces authorization on Forge routes.
+
+## Require
+
+The `Require` middleware enforces that the current subject has permission for a specific action on a resource type:
+
+```go
+import "github.com/xraph/warden/middleware"
+
+app.GET("/documents/:id", getDocument,
+    forge.WithMiddleware(
+        middleware.Require(eng, "read", "document"),
+    ),
+)
+```
+
+If the check fails, the middleware returns `403 Forbidden`.
+
+## RequireAny
+
+Allows access if any of the specified checks pass:
+
+```go
+app.PUT("/documents/:id", updateDocument,
+    forge.WithMiddleware(
+        middleware.RequireAny(eng,
+            middleware.Check("write", "document"),
+            middleware.Check("admin", "document"),
+        ),
+    ),
+)
+```
+
+## RequireAll
+
+Requires all specified checks to pass:
+
+```go
+app.DELETE("/documents/:id", deleteDocument,
+    forge.WithMiddleware(
+        middleware.RequireAll(eng,
+            middleware.Check("delete", "document"),
+            middleware.Check("manage", "project"),
+        ),
+    ),
+)
+```
+
+## Subject Resolution
+
+The middleware automatically resolves the subject from the request context:
+
+1. **Authsome user** — If an Authsome JWT is present, uses `user` as subject kind and the user ID
+2. **Keysmith API key** — If a Keysmith API key is validated, uses `api_key` as subject kind
+3. **Anonymous** — Falls back to `anonymous` with empty ID
+
+```go
+// The middleware builds a CheckRequest like:
+&warden.CheckRequest{
+    Subject:      resolvedSubject,
+    Action:       "read",
+    ResourceType: "document",
+    ResourceID:   extractedFromURL, // from :id param
+}
+```
+
+## Resource ID Extraction
+
+The middleware automatically extracts the resource ID from URL parameters. For a route like `/documents/:id`, it extracts the `:id` parameter.
+
+## Custom Context
+
+Pass additional attributes for ABAC evaluation:
+
+```go
+middleware.Require(eng, "read", "document",
+    middleware.WithContext(func(ctx forge.Context) map[string]any {
+        return map[string]any{
+            "ip_address": ctx.RealIP(),
+            "department": ctx.Get("department"),
+        }
+    }),
+)
+```

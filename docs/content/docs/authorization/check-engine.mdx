@@ -1,0 +1,117 @@
+---
+title: Check Engine
+description: The core authorization engine that evaluates RBAC, ABAC, and ReBAC.
+---
+
+The `Engine` is the central component of Warden. It coordinates all three authorization models and returns a unified decision.
+
+## Creating an Engine
+
+```go
+import (
+    "github.com/xraph/warden"
+    "github.com/xraph/warden/store/memory"
+)
+
+st := memory.New()
+eng, err := warden.NewEngine(
+    warden.WithStore(st),
+)
+```
+
+## Check
+
+`Check()` evaluates all enabled authorization models and returns a result:
+
+```go
+result, err := eng.Check(ctx, &warden.CheckRequest{
+    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
+    Action:       "read",
+    ResourceType: "document",
+    ResourceID:   "doc-123",
+    Context:      map[string]any{
+        "ip_address": "10.0.1.5",
+        "department": "engineering",
+    },
+})
+
+fmt.Println(result.Allowed)  // true or false
+fmt.Println(result.Reason)   // "rbac: permission document:read granted via role editor"
+fmt.Println(result.Sources)  // ["rbac"]
+```
+
+### CheckRequest Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `Subject` | `Subject` | Yes | Who is requesting access |
+| `Action` | `string` | Yes | What action (e.g., "read", "write", "delete") |
+| `ResourceType` | `string` | Yes | What type of resource |
+| `ResourceID` | `string` | No | Specific resource instance |
+| `Context` | `map[string]any` | No | Attributes for ABAC evaluation |
+
+## Enforce
+
+`Enforce()` is like `Check()` but returns an error if access is denied:
+
+```go
+err := eng.Enforce(ctx, &warden.CheckRequest{
+    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
+    Action:       "delete",
+    ResourceType: "document",
+    ResourceID:   "doc-123",
+})
+if err != nil {
+    // err is warden.ErrAccessDenied
+    return err
+}
+```
+
+## CanI (Boolean Check)
+
+`CanI()` returns a simple boolean:
+
+```go
+allowed := eng.CanI(ctx, &warden.CheckRequest{
+    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
+    Action:       "read",
+    ResourceType: "document",
+})
+```
+
+## Configuration Options
+
+```go
+eng, _ := warden.NewEngine(
+    warden.WithStore(store),
+    warden.WithConfig(warden.Config{
+        EnableRBAC:    true,          // Enable role-based checks
+        EnableABAC:    true,          // Enable policy-based checks
+        EnableReBAC:   true,          // Enable relationship-based checks
+        MaxGraphDepth: 10,            // ReBAC traversal limit
+        CacheTTL:      5 * time.Minute,
+    }),
+    warden.WithEvaluator(customEval), // Custom ABAC evaluator
+    warden.WithGraphWalker(customGW), // Custom graph walker
+    warden.WithCache(lruCache),       // Enable caching
+    warden.WithPlugin(auditPlugin),   // Add plugins
+)
+```
+
+## Subject Types
+
+The subject in a check request can be any kind of identity:
+
+```go
+// Human user (from Authsome)
+warden.Subject{Kind: "user", ID: "user-42"}
+
+// API key (from Keysmith)
+warden.Subject{Kind: "api_key", ID: "key-abc"}
+
+// Service account
+warden.Subject{Kind: "service", ID: "billing-svc"}
+
+// Anonymous
+warden.Subject{Kind: "anonymous", ID: ""}
+```

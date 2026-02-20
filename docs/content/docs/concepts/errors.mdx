@@ -1,0 +1,70 @@
+---
+title: Errors
+description: Sentinel errors returned by Warden operations.
+---
+
+Warden defines sentinel errors for all failure cases. Use `errors.Is()` to check for specific errors.
+
+## Store Errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrNotFound` | Entity not found in store |
+| `ErrAlreadyExists` | Entity with same unique key already exists |
+| `ErrStoreUnavailable` | Store backend is not reachable |
+| `ErrMigrationFailed` | Database migration failed |
+
+## Authorization Errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrAccessDenied` | Authorization check returned deny |
+| `ErrMissingSubject` | Check request has no subject |
+| `ErrMissingAction` | Check request has no action |
+| `ErrMissingResource` | Check request has no resource type |
+
+## Tenant Errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrMissingTenant` | No tenant ID in context |
+| `ErrMissingAppID` | No app ID in context |
+
+## Entity Errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrInvalidID` | TypeID is malformed or has wrong prefix |
+| `ErrInvalidEffect` | Policy effect is not "allow" or "deny" |
+| `ErrMaxDepthReached` | ReBAC graph traversal exceeded max depth |
+| `ErrCycleDetected` | ReBAC graph contains a cycle |
+
+## Usage
+
+```go
+import "github.com/xraph/warden"
+
+err := store.GetRole(ctx, roleID)
+if errors.Is(err, warden.ErrNotFound) {
+    // Role doesn't exist
+}
+
+result, err := eng.Check(ctx, req)
+if errors.Is(err, warden.ErrMissingTenant) {
+    // Forgot to set tenant context
+}
+```
+
+## HTTP Error Mapping
+
+When using the REST API, errors are mapped to HTTP status codes:
+
+| Error | HTTP Status |
+|-------|-------------|
+| `ErrNotFound` | 404 Not Found |
+| `ErrAlreadyExists` | 409 Conflict |
+| `ErrAccessDenied` | 403 Forbidden |
+| `ErrMissingSubject/Action/Resource` | 400 Bad Request |
+| `ErrMissingTenant` | 400 Bad Request |
+| `ErrInvalidID` | 400 Bad Request |
+| `ErrStoreUnavailable` | 503 Service Unavailable |

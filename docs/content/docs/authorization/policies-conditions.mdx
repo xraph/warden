@@ -1,0 +1,175 @@
+---
+title: Policies & Conditions
+description: ABAC policies with conditional access rules.
+---
+
+## Policies
+
+A policy is an ABAC rule that matches requests by subject, action, and resource, then applies conditions to decide whether to allow or deny.
+
+### Policy Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.PolicyID` | TypeID (`wpol_...`) |
+| `Name` | `string` | Display name |
+| `Description` | `string` | Human-readable description |
+| `Effect` | `Effect` | `allow` or `deny` |
+| `Priority` | `int` | Lower number = higher priority |
+| `IsActive` | `bool` | Only active policies are evaluated |
+| `Version` | `int` | Auto-incremented on update |
+| `Subjects` | `[]string` | Subject matchers (glob patterns) |
+| `Actions` | `[]string` | Action matchers (glob patterns) |
+| `Resources` | `[]string` | Resource matchers (glob patterns) |
+| `Conditions` | `[]Condition` | All conditions must be true |
+| `Metadata` | `map[string]any` | Custom key-value data |
+
+### Create a Policy
+
+```go
+import "github.com/xraph/warden/policy"
+
+p := &policy.Policy{
+    ID:          id.NewPolicyID(),
+    Name:        "Internal Network Only",
+    Description: "Allow access only from internal IP ranges",
+    Effect:      policy.EffectAllow,
+    Priority:    10,
+    IsActive:    true,
+    Version:     1,
+    Subjects:    []string{"user:*"},
+    Actions:     []string{"read", "write"},
+    Resources:   []string{"document:*"},
+    Conditions: []policy.Condition{
+        {
+            ID:       id.NewConditionID(),
+            Field:    "ip_address",
+            Operator: policy.OpIPInCIDR,
+            Value:    "10.0.0.0/8",
+        },
+    },
+}
+err := store.CreatePolicy(ctx, p)
+```
+
+## Conditions
+
+Conditions are evaluated against the `Context` map in a `CheckRequest`. All conditions in a policy must be true for the policy to apply (AND logic).
+
+### Condition Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ConditionID` | TypeID (`wcnd_...`) |
+| `Field` | `string` | Key in request context map |
+| `Operator` | `Operator` | Comparison operator |
+| `Value` | `any` | Expected value |
+
+### Operators Reference
+
+**String Operators:**
+```go
+policy.OpEq        // field == value
+policy.OpNeq       // field != value
+policy.OpContains  // field contains value
+policy.OpStartsWith // field starts with value
+policy.OpRegex     // field matches regex
+```
+
+**Collection Operators:**
+```go
+policy.OpIn     // field in [value1, value2, ...]
+policy.OpNotIn  // field not in [value1, value2, ...]
+```
+
+**Numeric Operators:**
+```go
+policy.OpGT  // field > value
+policy.OpLT  // field < value
+```
+
+**Network Operators:**
+```go
+policy.OpIPInCIDR  // IP address within CIDR range
+```
+
+**Time Operators:**
+```go
+policy.OpTimeAfter  // current time after value
+policy.OpTimeBefore // current time before value
+```
+
+## Policy Matching
+
+### Subject Matchers
+
+```go
+Subjects: []string{"user:*"}      // All users
+Subjects: []string{"user:42"}     // Specific user
+Subjects: []string{"api_key:*"}   // All API keys
+Subjects: []string{"*"}           // Everyone
+```
+
+### Action Matchers
+
+```go
+Actions: []string{"read"}         // Specific action
+Actions: []string{"read", "write"} // Multiple actions
+Actions: []string{"*"}            // All actions
+```
+
+### Resource Matchers
+
+```go
+Resources: []string{"document:*"}     // All documents
+Resources: []string{"document:doc-1"} // Specific document
+Resources: []string{"*"}              // All resources
+```
+
+## Examples
+
+### Deny After Business Hours
+
+```go
+&policy.Policy{
+    Name:      "Business Hours Only",
+    Effect:    policy.EffectDeny,
+    Subjects:  []string{"*"},
+    Actions:   []string{"write", "delete"},
+    Resources: []string{"*"},
+    Conditions: []policy.Condition{
+        {Field: "time", Operator: policy.OpTimeAfter, Value: "18:00"},
+    },
+}
+```
+
+### Allow Only From Trusted IPs
+
+```go
+&policy.Policy{
+    Name:      "VPN Required for Admin",
+    Effect:    policy.EffectDeny,
+    Subjects:  []string{"user:*"},
+    Actions:   []string{"*"},
+    Resources: []string{"admin:*"},
+    Conditions: []policy.Condition{
+        {Field: "ip_address", Operator: policy.OpIPInCIDR, Value: "0.0.0.0/0"},
+        // Combined with a separate allow policy for 10.0.0.0/8
+    },
+}
+```
+
+### Department-Based Access
+
+```go
+&policy.Policy{
+    Name:      "Engineering Only",
+    Effect:    policy.EffectAllow,
+    Subjects:  []string{"user:*"},
+    Actions:   []string{"read", "write"},
+    Resources: []string{"code:*"},
+    Conditions: []policy.Condition{
+        {Field: "department", Operator: policy.OpEq, Value: "engineering"},
+    },
+}
+```

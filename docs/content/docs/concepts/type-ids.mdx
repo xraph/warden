@@ -1,0 +1,71 @@
+---
+title: Type-Safe IDs
+description: Warden uses TypeIDs for type-safe, K-sortable entity identifiers.
+---
+
+Warden uses [TypeID](https://github.com/jetify-com/typeid) for all entity identifiers. TypeIDs are type-safe, K-sortable, and globally unique.
+
+## Format
+
+```
+prefix_suffix
+```
+
+- **prefix** — Identifies the entity type (e.g., `wrol` for roles)
+- **suffix** — A UUIDv7-based, base32-encoded identifier
+
+Example: `wrol_01h455vb4pex5vsknk084sn02q`
+
+## Entity Prefixes
+
+| Prefix | Entity | Example |
+|--------|--------|---------|
+| `wrol` | Role | `wrol_01h455vb4pex5vsknk084sn02q` |
+| `wprm` | Permission | `wprm_01h455vb4pex5vsknk084sn02q` |
+| `wasn` | Assignment | `wasn_01h455vb4pex5vsknk084sn02q` |
+| `wpol` | Policy | `wpol_01h455vb4pex5vsknk084sn02q` |
+| `wrel` | Relation | `wrel_01h455vb4pex5vsknk084sn02q` |
+| `wclg` | Check Log | `wclg_01h455vb4pex5vsknk084sn02q` |
+| `wrtp` | Resource Type | `wrtp_01h455vb4pex5vsknk084sn02q` |
+| `wcnd` | Condition | `wcnd_01h455vb4pex5vsknk084sn02q` |
+
+## Usage
+
+```go
+import "github.com/xraph/warden/id"
+
+// Create new IDs
+roleID := id.NewRoleID()     // wrol_...
+permID := id.NewPermissionID() // wprm_...
+
+// Parse from string
+parsed, err := id.ParseRoleID("wrol_01h455vb4pex5vsknk084sn02q")
+if err != nil {
+    // Invalid prefix or format
+}
+
+// String representation
+fmt.Println(roleID.String()) // "wrol_01h455vb4pex5vsknk084sn02q"
+
+// Check for nil/zero value
+if roleID.IsNil() {
+    // Not initialized
+}
+```
+
+## Serialization
+
+TypeIDs implement standard Go serialization interfaces:
+
+- `encoding.TextMarshaler` / `encoding.TextUnmarshaler`
+- `encoding/json.Marshaler` / `encoding/json.Unmarshaler`
+- `database/sql.Scanner` / `driver.Valuer`
+
+This means they work transparently with JSON APIs, database queries, and text-based protocols.
+
+## K-Sortability
+
+TypeIDs are based on UUIDv7, which encodes a timestamp. This means:
+- IDs sort chronologically by creation time
+- Database indexes on TypeID columns are efficient (no random scatter)
+- No need for separate `created_at` indexes for ordering

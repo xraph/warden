@@ -1,0 +1,161 @@
+---
+title: Getting Started
+description: Install Warden and run your first authorization check.
+---
+
+## Installation
+
+```bash
+go get github.com/xraph/warden
+```
+
+## Step 1: Create a Store
+
+Warden needs a store to persist roles, permissions, policies, relations, and assignments. Start with the in-memory store for development:
+
+```go
+import "github.com/xraph/warden/store/memory"
+
+st := memory.New()
+```
+
+## Step 2: Create the Engine
+
+```go
+import "github.com/xraph/warden"
+
+eng, err := warden.NewEngine(
+    warden.WithStore(st),
+)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Step 3: Create a Role and Permission
+
+```go
+import (
+    "github.com/xraph/warden/id"
+    "github.com/xraph/warden/role"
+    "github.com/xraph/warden/permission"
+)
+
+// Create a permission
+perm := &permission.Permission{
+    ID:       id.NewPermissionID(),
+    Name:     "Read Documents",
+    Resource: "document",
+    Action:   "read",
+}
+_ = st.CreatePermission(ctx, perm)
+
+// Create a role
+r := &role.Role{
+    ID:   id.NewRoleID(),
+    Name: "Viewer",
+    Slug: "viewer",
+}
+_ = st.CreateRole(ctx, r)
+
+// Attach permission to role
+_ = st.AttachPermission(ctx, r.ID, perm.ID)
+```
+
+## Step 4: Assign the Role
+
+```go
+import "github.com/xraph/warden/assignment"
+
+ass := &assignment.Assignment{
+    ID:          id.NewAssignmentID(),
+    RoleID:      r.ID,
+    SubjectKind: "user",
+    SubjectID:   "user-42",
+}
+_ = st.CreateAssignment(ctx, ass)
+```
+
+## Step 5: Check Authorization
+
+```go
+result, err := eng.Check(ctx, &warden.CheckRequest{
+    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
+    Action:       "read",
+    ResourceType: "document",
+    ResourceID:   "doc-123",
+})
+
+if result.Allowed {
+    fmt.Println("Access granted!")
+} else {
+    fmt.Println("Access denied:", result.Reason)
+}
+```
+
+## Step 6: Add ABAC Policies (Optional)
+
+```go
+import "github.com/xraph/warden/policy"
+
+p := &policy.Policy{
+    ID:        id.NewPolicyID(),
+    Name:      "Office Hours Only",
+    Effect:    policy.EffectDeny,
+    Subjects:  []string{"*"},
+    Actions:   []string{"*"},
+    Resources: []string{"document:*"},
+    Conditions: []policy.Condition{{
+        ID:       id.NewConditionID(),
+        Field:    "time",
+        Operator: policy.OpTimeBefore,
+        Value:    "09:00",
+    }},
+    IsActive: true,
+}
+_ = st.CreatePolicy(ctx, p)
+```
+
+## Step 7: Add ReBAC Relations (Optional)
+
+```go
+import "github.com/xraph/warden/relation"
+
+tuple := &relation.Tuple{
+    ID:          id.NewRelationID(),
+    ObjectType:  "document",
+    ObjectID:    "doc-123",
+    Relation:    "viewer",
+    SubjectType: "user",
+    SubjectID:   "user-42",
+}
+_ = st.CreateRelation(ctx, tuple)
+```
+
+## Step 8: Use with PostgreSQL
+
+For production, switch to the PostgreSQL store:
+
+```go
+import "github.com/xraph/warden/store/postgres"
+
+pgStore, err := postgres.New(ctx, "postgres://user:pass@localhost/warden")
+if err != nil {
+    log.Fatal(err)
+}
+defer pgStore.Close()
+
+// Run migrations
+_ = pgStore.Migrate(ctx)
+
+eng, _ := warden.NewEngine(
+    warden.WithStore(pgStore),
+)
+```
+
+## Next Steps
+
+- [Architecture](/docs/architecture) — Understand the engine internals
+- [Authorization Models](/docs/concepts/authorization-models) — Deep dive into RBAC, ABAC, and ReBAC
+- [Forge Extension](/docs/integration/forge-extension) — Use Warden as a Forge extension
+- [REST API](/docs/api-reference/rest-api) — Manage entities via HTTP

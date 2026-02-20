@@ -1,0 +1,46 @@
+---
+title: Memory Store
+description: In-memory store for development and testing.
+---
+
+The memory store keeps all data in memory using Go maps with `sync.RWMutex` for thread safety. Data is lost when the process exits.
+
+## Usage
+
+```go
+import "github.com/xraph/warden/store/memory"
+
+st := memory.New()
+```
+
+## Characteristics
+
+- **Thread-safe** — All operations use read/write locks
+- **Copy-on-write** — List operations return copies, not references
+- **No persistence** — Data is lost on restart
+- **No migrations** — `Migrate()` is a no-op
+- **Fast** — Ideal for unit tests and development
+
+## When to Use
+
+- Unit tests and integration tests
+- Development environments
+- Prototyping and experimentation
+- Standalone scripts and CLI tools
+
+## Interface Compliance
+
+The memory store implements all 7 subsystem store interfaces:
+
+```go
+var _ store.Store = (*memory.Store)(nil) // Compile-time check
+```
+
+This includes:
+- `role.Store` — Role CRUD + hierarchy
+- `permission.Store` — Permission CRUD + role attachment
+- `assignment.Store` — Assignment CRUD + subject lookup
+- `relation.Store` — Relation tuple CRUD + graph queries
+- `policy.Store` — Policy CRUD + active policy lookup
+- `resourcetype.Store` — Resource type CRUD
+- `checklog.Store` — Check log append + query

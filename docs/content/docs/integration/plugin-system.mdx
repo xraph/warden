@@ -1,0 +1,177 @@
+---
+title: Plugin System
+description: Lifecycle hooks for audit, metrics, and custom integrations.
+---
+
+Warden's plugin system lets you hook into lifecycle events for audit logging, metrics, and custom behavior.
+
+## Base Interface
+
+Every plugin must implement the `Plugin` interface:
+
+```go
+import "github.com/xraph/warden/plugin"
+
+type Plugin interface {
+    Name() string
+}
+```
+
+## Lifecycle Hooks
+
+Plugins opt into hooks by implementing additional interfaces:
+
+### Authorization Hooks
+
+```go
+type BeforeCheck interface {
+    BeforeCheck(ctx context.Context, req *warden.CheckRequest)
+}
+
+type AfterCheck interface {
+    AfterCheck(ctx context.Context, req *warden.CheckRequest, result *warden.CheckResult)
+}
+```
+
+### Role Hooks
+
+```go
+type RoleCreated interface {
+    OnRoleCreated(ctx context.Context, r *role.Role)
+}
+type RoleUpdated interface {
+    OnRoleUpdated(ctx context.Context, r *role.Role)
+}
+type RoleDeleted interface {
+    OnRoleDeleted(ctx context.Context, roleID id.RoleID)
+}
+```
+
+### Permission Hooks
+
+```go
+type PermissionCreated interface {
+    OnPermissionCreated(ctx context.Context, p *permission.Permission)
+}
+type PermissionDeleted interface {
+    OnPermissionDeleted(ctx context.Context, permID id.PermissionID)
+}
+type PermissionAttached interface {
+    OnPermissionAttached(ctx context.Context, roleID id.RoleID, permID id.PermissionID)
+}
+type PermissionDetached interface {
+    OnPermissionDetached(ctx context.Context, roleID id.RoleID, permID id.PermissionID)
+}
+```
+
+### Assignment Hooks
+
+```go
+type RoleAssigned interface {
+    OnRoleAssigned(ctx context.Context, a *assignment.Assignment)
+}
+type RoleUnassigned interface {
+    OnRoleUnassigned(ctx context.Context, a *assignment.Assignment)
+}
+```
+
+### Relation Hooks
+
+```go
+type RelationWritten interface {
+    OnRelationWritten(ctx context.Context, t *relation.Tuple)
+}
+type RelationDeleted interface {
+    OnRelationDeleted(ctx context.Context, objectType, objectID, rel, subjectType, subjectID string)
+}
+```
+
+### Policy Hooks
+
+```go
+type PolicyCreated interface {
+    OnPolicyCreated(ctx context.Context, p *policy.Policy)
+}
+type PolicyUpdated interface {
+    OnPolicyUpdated(ctx context.Context, p *policy.Policy)
+}
+type PolicyDeleted interface {
+    OnPolicyDeleted(ctx context.Context, policyID id.PolicyID)
+}
+```
+
+### Shutdown Hook
+
+```go
+type Shutdown interface {
+    OnShutdown(ctx context.Context) error
+}
+```
+
+## Registering Plugins
+
+```go
+eng, _ := warden.NewEngine(
+    warden.WithStore(store),
+    warden.WithPlugin(&MyAuditPlugin{}),
+    warden.WithPlugin(&MyMetricsPlugin{}),
+)
+```
+
+## Type-Assertion Discovery
+
+The plugin registry uses type assertions to discover which hooks each plugin implements. You only need to implement the hooks you care about:
+
+```go
+type MyPlugin struct{}
+
+func (p *MyPlugin) Name() string { return "my-plugin" }
+
+// Only implement AfterCheck — other hooks are ignored
+func (p *MyPlugin) AfterCheck(ctx context.Context, req *warden.CheckRequest, result *warden.CheckResult) {
+    log.Printf("check: %s %s %s → %v", req.Subject.ID, req.Action, req.ResourceType, result.Allowed)
+}
+```
+
+## Built-in Plugins
+
+### Chronicle Audit Plugin
+
+Emits authorization events to [Chronicle](https://github.com/xraph/chronicle):
+
+```go
+import "github.com/xraph/warden/audit_hook"
+
+auditPlugin := audit_hook.New(chronicleClient)
+eng, _ := warden.NewEngine(
+    warden.WithStore(store),
+    warden.WithPlugin(auditPlugin),
+)
+```
+
+Events emitted:
+- `warden.check.allowed` / `warden.check.denied`
+- `warden.role.created` / `warden.role.updated` / `warden.role.deleted`
+- `warden.permission.created` / `warden.permission.deleted`
+- `warden.assignment.created` / `warden.assignment.deleted`
+- `warden.relation.written` / `warden.relation.deleted`
+- `warden.policy.created` / `warden.policy.updated` / `warden.policy.deleted`
+
+### Prometheus Metrics Plugin
+
+Exports authorization metrics:
+
+```go
+import "github.com/xraph/warden/observability"
+
+metricsPlugin := observability.New()
+eng, _ := warden.NewEngine(
+    warden.WithStore(store),
+    warden.WithPlugin(metricsPlugin),
+)
+```
+
+Counters:
+- `warden_checks_total` — Total authorization checks by result
+- `warden_check_duration_seconds` — Check latency histogram
+- `warden_mutations_total` — Entity mutations by type and operation

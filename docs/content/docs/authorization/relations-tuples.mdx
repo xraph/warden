@@ -1,0 +1,149 @@
+---
+title: Relations & Tuples
+description: Zanzibar-style relationship-based authorization with graph traversal.
+---
+
+## Relation Tuples
+
+A relation tuple represents a relationship between a subject and an object. It is the fundamental building block of ReBAC.
+
+### Tuple Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.RelationID` | TypeID (`wrel_...`) |
+| `ObjectType` | `string` | Type of the object (e.g., "document") |
+| `ObjectID` | `string` | ID of the object |
+| `Relation` | `string` | Relationship name (e.g., "viewer", "editor", "owner") |
+| `SubjectType` | `string` | Type of the subject (e.g., "user", "team") |
+| `SubjectID` | `string` | ID of the subject |
+| `SubjectRelation` | `string` | Optional: relation on the subject (for nested relations) |
+
+### Notation
+
+Tuples are often written in this notation:
+
+```
+object_type:object_id#relation@subject_type:subject_id
+```
+
+Examples:
+```
+document:doc-123#viewer@user:user-42
+project:alpha#editor@team:engineering
+team:engineering#member@user:user-42
+folder:root#parent@document:doc-123
+```
+
+## Creating Tuples
+
+```go
+import "github.com/xraph/warden/relation"
+
+// "user:42 is a viewer of document:123"
+t := &relation.Tuple{
+    ID:          id.NewRelationID(),
+    ObjectType:  "document",
+    ObjectID:    "doc-123",
+    Relation:    "viewer",
+    SubjectType: "user",
+    SubjectID:   "user-42",
+}
+err := store.CreateRelation(ctx, t)
+```
+
+## Graph Traversal
+
+Warden uses BFS (breadth-first search) to traverse relation graphs and find transitive permissions.
+
+### Example: Team Membership
+
+```
+user:42 ──member──▶ team:eng ──editor──▶ project:alpha
+```
+
+```go
+// Create membership
+store.CreateRelation(ctx, &relation.Tuple{
+    ObjectType: "team", ObjectID: "eng",
+    Relation: "member",
+    SubjectType: "user", SubjectID: "user-42",
+})
+
+// Create team's access to project
+store.CreateRelation(ctx, &relation.Tuple{
+    ObjectType: "project", ObjectID: "alpha",
+    Relation: "editor",
+    SubjectType: "team", SubjectID: "eng",
+})
+
+// Check: can user:42 edit project:alpha?
+result, _ := eng.Check(ctx, &warden.CheckRequest{
+    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
+    Action:       "write",
+    ResourceType: "project",
+    ResourceID:   "alpha",
+})
+// result.Allowed == true (via transitive relation through team:eng)
+```
+
+### Example: Document Sharing
+
+```go
+// Share document with specific user
+store.CreateRelation(ctx, &relation.Tuple{
+    ObjectType: "document", ObjectID: "doc-456",
+    Relation: "viewer",
+    SubjectType: "user", SubjectID: "user-99",
+})
+
+// Share entire folder with a team
+store.CreateRelation(ctx, &relation.Tuple{
+    ObjectType: "folder", ObjectID: "shared",
+    Relation: "viewer",
+    SubjectType: "team", SubjectID: "marketing",
+})
+
+// Document belongs to folder
+store.CreateRelation(ctx, &relation.Tuple{
+    ObjectType: "folder", ObjectID: "shared",
+    Relation: "parent",
+    SubjectType: "document", SubjectID: "doc-456",
+})
+```
+
+## Graph Walker Configuration
+
+The BFS graph walker has configurable limits:
+
+```go
+eng, _ := warden.NewEngine(
+    warden.WithStore(store),
+    warden.WithConfig(warden.Config{
+        MaxGraphDepth: 10, // Maximum BFS depth (default: 10)
+    }),
+)
+```
+
+- **Cycle detection** — The walker tracks visited nodes to avoid infinite loops
+- **Max depth** — Limits traversal depth to prevent runaway queries
+- Returns `ErrMaxDepthReached` if the limit is hit without finding a path
+- Returns `ErrCycleDetected` if a cycle is found
+
+## Listing Tuples
+
+```go
+tuples, _ := store.ListRelations(ctx, &relation.ListFilter{
+    ObjectType:  "document",
+    ObjectID:    "doc-123",
+    Relation:    "viewer",
+    Limit:       50,
+})
+```
+
+## Deleting Tuples
+
+```go
+err := store.DeleteRelationTuple(ctx, "",
+    "document", "doc-123", "viewer", "user", "user-42")
+```

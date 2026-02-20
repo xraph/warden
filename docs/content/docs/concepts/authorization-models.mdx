@@ -1,0 +1,166 @@
+---
+title: Authorization Models
+description: Understanding RBAC, ABAC, and ReBAC and when to use each.
+---
+
+Warden supports three authorization models that can be used independently or combined in a single `Check()` call.
+
+## RBAC — Role-Based Access Control
+
+RBAC is the most common authorization model. Users are assigned roles, and roles have permissions.
+
+```
+User → Role → Permission → (Resource, Action)
+```
+
+**Entities:**
+- **Role** — A named group of permissions (e.g., "admin", "editor", "viewer")
+- **Permission** — A (resource, action) pair (e.g., "document:read", "user:delete")
+- **Assignment** — Links a subject to a role, optionally scoped to a resource
+
+**When to use:** When you have well-defined roles with predictable permission sets. Most applications start here.
+
+```go
+// Create role with permissions
+role := &role.Role{ID: id.NewRoleID(), Name: "Editor", Slug: "editor"}
+perm := &permission.Permission{ID: id.NewPermissionID(), Resource: "document", Action: "write"}
+store.CreateRole(ctx, role)
+store.CreatePermission(ctx, perm)
+store.AttachPermission(ctx, role.ID, perm.ID)
+
+// Assign role to user
+store.CreateAssignment(ctx, &assignment.Assignment{
+    ID: id.NewAssignmentID(), RoleID: role.ID,
+    SubjectKind: "user", SubjectID: "user-42",
+})
+```
+
+### Role Hierarchy
+
+Roles can have parents. A child role inherits all permissions from its parent:
+
+```
+admin (all permissions)
+  └── editor (document:write, document:read)
+        └── viewer (document:read)
+```
+
+### Resource-Scoped Assignments
+
+Assignments can be scoped to specific resources:
+
+```go
+// User is editor ONLY for project-123
+store.CreateAssignment(ctx, &assignment.Assignment{
+    RoleID:       editorRole.ID,
+    SubjectKind:  "user",
+    SubjectID:    "user-42",
+    ResourceType: "project",
+    ResourceID:   "project-123",
+})
+```
+
+## ABAC — Attribute-Based Access Control
+
+ABAC evaluates policies with conditions based on attributes of the request context.
+
+```
+Policy + Conditions → (subjects, actions, resources) → allow/deny
+```
+
+**Entities:**
+- **Policy** — A rule with effect (allow/deny), subject/action/resource matchers, and conditions
+- **Condition** — A field/operator/value comparison (e.g., `ip_address in_cidr 10.0.0.0/8`)
+
+**When to use:** When authorization depends on dynamic attributes like time of day, IP address, department, or custom metadata.
+
+```go
+p := &policy.Policy{
+    ID:        id.NewPolicyID(),
+    Name:      "Deny Outside Office Hours",
+    Effect:    policy.EffectDeny,
+    Subjects:  []string{"*"},
+    Actions:   []string{"write"},
+    Resources: []string{"document:*"},
+    Conditions: []policy.Condition{{
+        Field:    "time",
+        Operator: policy.OpTimeAfter,
+        Value:    "18:00",
+    }},
+    IsActive: true,
+    Priority: 100,
+}
+```
+
+### Supported Operators
+
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `eq` | Equals | `department eq engineering` |
+| `neq` | Not equals | `role neq intern` |
+| `in` | In list | `country in [US,CA,UK]` |
+| `not_in` | Not in list | `env not_in [prod]` |
+| `contains` | String contains | `email contains @company.com` |
+| `starts_with` | Starts with | `path starts_with /api/` |
+| `gt` / `lt` | Greater/less than | `risk_score gt 80` |
+| `ip_in_cidr` | IP in CIDR range | `ip ip_in_cidr 10.0.0.0/8` |
+| `time_after` / `time_before` | Time comparison | `time time_after 09:00` |
+| `regex` | Regex match | `path regex ^/api/v[0-9]+` |
+
+## ReBAC — Relationship-Based Access Control
+
+ReBAC (inspired by Google Zanzibar) models authorization as a graph of relationships between objects.
+
+```
+subject#relation@object → transitive graph traversal
+```
+
+**Entities:**
+- **Relation Tuple** — A (object_type, object_id, relation, subject_type, subject_id) record
+- **Resource Type** — Defines valid relations and permissions for an object type
+
+**When to use:** When authorization depends on relationships between objects (document sharing, org membership, folder hierarchy).
+
+```go
+// "user:42 is a viewer of document:123"
+store.CreateRelation(ctx, &relation.Tuple{
+    ID:          id.NewRelationID(),
+    ObjectType:  "document",
+    ObjectID:    "doc-123",
+    Relation:    "viewer",
+    SubjectType: "user",
+    SubjectID:   "user-42",
+})
+
+// "team:engineering is an editor of project:alpha"
+store.CreateRelation(ctx, &relation.Tuple{
+    ID:          id.NewRelationID(),
+    ObjectType:  "project",
+    ObjectID:    "project-alpha",
+    Relation:    "editor",
+    SubjectType: "team",
+    SubjectID:   "team-eng",
+})
+```
+
+### Transitive Relations
+
+ReBAC automatically follows transitive paths:
+
+```
+user:42 ──member──▶ team:eng ──editor──▶ project:alpha
+```
+
+A check for "can user:42 edit project:alpha?" traverses the graph and finds the path through team:eng.
+
+## Combining Models
+
+Warden evaluates all enabled models on every `Check()` call and merges results:
+
+```
+1. Explicit DENY from any model  → DENIED
+2. ALLOW from any model          → ALLOWED
+3. No match                      → DENIED (default deny)
+```
+
+This means ABAC deny policies act as guardrails on top of RBAC and ReBAC grants.

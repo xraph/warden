@@ -1,0 +1,101 @@
+---
+title: Go Packages
+description: Reference for all Warden Go packages.
+---
+
+## Package Index
+
+| Package | Import Path | Description |
+|---------|-------------|-------------|
+| `warden` | `github.com/xraph/warden` | Core types, engine, evaluator, graph walker |
+| `id` | `github.com/xraph/warden/id` | TypeID definitions for all entities |
+| `role` | `github.com/xraph/warden/role` | Role entity and store interface |
+| `permission` | `github.com/xraph/warden/permission` | Permission entity and store interface |
+| `assignment` | `github.com/xraph/warden/assignment` | Assignment entity and store interface |
+| `relation` | `github.com/xraph/warden/relation` | Relation tuple entity and store interface |
+| `policy` | `github.com/xraph/warden/policy` | Policy entity, conditions, and store interface |
+| `resourcetype` | `github.com/xraph/warden/resourcetype` | Resource type definitions and store interface |
+| `checklog` | `github.com/xraph/warden/checklog` | Check audit log entity and store interface |
+| `store` | `github.com/xraph/warden/store` | Composite store interface |
+| `store/memory` | `github.com/xraph/warden/store/memory` | In-memory store implementation |
+| `store/postgres` | `github.com/xraph/warden/store/postgres` | PostgreSQL store implementation |
+| `store/sqlite` | `github.com/xraph/warden/store/sqlite` | SQLite store implementation |
+| `plugin` | `github.com/xraph/warden/plugin` | Plugin interfaces and registry |
+| `cache` | `github.com/xraph/warden/cache` | LRU cache with TTL |
+| `api` | `github.com/xraph/warden/api` | REST API handlers |
+| `extension` | `github.com/xraph/warden/extension` | Forge extension entry point |
+| `middleware` | `github.com/xraph/warden/middleware` | Authorization middleware |
+| `audit_hook` | `github.com/xraph/warden/audit_hook` | Chronicle audit plugin |
+| `observability` | `github.com/xraph/warden/observability` | Prometheus metrics plugin |
+
+## Core Types
+
+### warden.CheckRequest
+
+```go
+type CheckRequest struct {
+    Subject      Subject        // Who is requesting
+    Action       string         // What action
+    ResourceType string         // What resource type
+    ResourceID   string         // Which specific resource
+    Context      map[string]any // Attributes for ABAC
+}
+```
+
+### warden.CheckResult
+
+```go
+type CheckResult struct {
+    Allowed  bool
+    Decision Decision  // Allow, Deny, NoOpinion
+    Reason   string
+    Sources  []string  // ["rbac", "abac", "rebac"]
+    Duration time.Duration
+}
+```
+
+### warden.Subject
+
+```go
+type Subject struct {
+    Kind string // "user", "api_key", "service", "anonymous"
+    ID   string
+}
+```
+
+### warden.Config
+
+```go
+type Config struct {
+    EnableRBAC    bool          // default: true
+    EnableABAC    bool          // default: true
+    EnableReBAC   bool          // default: true
+    MaxGraphDepth int           // default: 10
+    CacheTTL      time.Duration // default: 0 (disabled)
+}
+```
+
+## Engine Methods
+
+```go
+func NewEngine(opts ...Option) (*Engine, error)
+func (e *Engine) Check(ctx context.Context, req *CheckRequest) (*CheckResult, error)
+func (e *Engine) Enforce(ctx context.Context, req *CheckRequest) error
+func (e *Engine) CanI(ctx context.Context, req *CheckRequest) bool
+func (e *Engine) Store() store.Store
+func (e *Engine) Plugins() *plugin.Registry
+func (e *Engine) Start(ctx context.Context) error
+func (e *Engine) Stop(ctx context.Context) error
+```
+
+## Option Functions
+
+```go
+func WithStore(s store.Store) Option
+func WithConfig(c Config) Option
+func WithEvaluator(e Evaluator) Option
+func WithGraphWalker(gw GraphWalker) Option
+func WithCache(c Cache) Option
+func WithPlugin(p plugin.Plugin) Option
+func WithLogger(l *slog.Logger) Option
+```

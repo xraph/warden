@@ -1,0 +1,105 @@
+---
+title: Custom Store
+description: Implement a custom store backend for Warden.
+---
+
+You can implement a custom store by satisfying the `store.Store` interface.
+
+## Store Interface
+
+The composite store interface embeds all subsystem stores:
+
+```go
+import "github.com/xraph/warden/store"
+
+type Store interface {
+    role.Store
+    permission.Store
+    assignment.Store
+    relation.Store
+    policy.Store
+    resourcetype.Store
+    checklog.Store
+
+    Migrate(ctx context.Context) error
+    Ping(ctx context.Context) error
+    Close() error
+}
+```
+
+## Subsystem Interfaces
+
+Each subsystem defines its own store interface. Here's an overview:
+
+### role.Store
+
+```go
+type Store interface {
+    CreateRole(ctx context.Context, r *Role) error
+    GetRole(ctx context.Context, id id.RoleID) (*Role, error)
+    UpdateRole(ctx context.Context, r *Role) error
+    DeleteRole(ctx context.Context, id id.RoleID) error
+    ListRoles(ctx context.Context, filter *ListFilter) ([]*Role, error)
+    CountRoles(ctx context.Context, filter *ListFilter) (int, error)
+    AttachPermission(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error
+    DetachPermission(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error
+    ListPermissionsForRole(ctx context.Context, roleID id.RoleID) ([]id.PermissionID, error)
+    GetRoleBySlug(ctx context.Context, slug string) (*Role, error)
+    ListChildRoles(ctx context.Context, parentID id.RoleID) ([]*Role, error)
+    ListRolesForSubject(ctx context.Context, tenantID, subjectKind, subjectID string) ([]id.RoleID, error)
+    DeleteByTenant(ctx context.Context, tenantID string) error
+}
+```
+
+### Other subsystem stores follow the same pattern:
+- `permission.Store` — CRUD + role attachment queries
+- `assignment.Store` — CRUD + subject/role lookups
+- `relation.Store` — CRUD + graph traversal queries
+- `policy.Store` — CRUD + active policy lookups
+- `resourcetype.Store` — CRUD + name lookups
+- `checklog.Store` — Append + query
+
+## Implementation Tips
+
+1. **Start with the memory store** as a reference: `store/memory/store.go`
+2. **Use compile-time checks** to ensure interface compliance:
+   ```go
+   var _ store.Store = (*MyStore)(nil)
+   ```
+3. **Thread safety** — Use appropriate locking for concurrent access
+4. **Tenant isolation** — All queries should filter by tenant ID from context
+5. **Error mapping** — Return `warden.ErrNotFound` for missing entities, `warden.ErrAlreadyExists` for duplicates
+
+## Example Skeleton
+
+```go
+package mystore
+
+import (
+    "context"
+    "github.com/xraph/warden/store"
+)
+
+type MyStore struct {
+    // your database client
+}
+
+var _ store.Store = (*MyStore)(nil)
+
+func (s *MyStore) Migrate(ctx context.Context) error {
+    // Run migrations
+    return nil
+}
+
+func (s *MyStore) Ping(ctx context.Context) error {
+    // Health check
+    return nil
+}
+
+func (s *MyStore) Close() error {
+    // Close connections
+    return nil
+}
+
+// Implement all subsystem store methods...
+```
