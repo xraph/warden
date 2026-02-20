@@ -238,7 +238,15 @@ export function FlowLine({
 interface FlowParticleStreamProps {
   direction?: "horizontal" | "vertical";
   length?: number;
-  color?: "teal" | "amber" | "orange" | "green" | "red" | "blue" | "indigo" | "violet";
+  color?:
+    | "teal"
+    | "amber"
+    | "orange"
+    | "green"
+    | "red"
+    | "blue"
+    | "indigo"
+    | "violet";
   count?: number;
   className?: string;
 }
@@ -308,8 +316,7 @@ const statusConfig = {
     icon: "check",
   },
   retry: {
-    color:
-      "text-blue-600 dark:text-blue-400 bg-blue-500/10 border-blue-500/20",
+    color: "text-blue-600 dark:text-blue-400 bg-blue-500/10 border-blue-500/20",
     defaultLabel: "503 Retry",
     icon: "retry",
   },

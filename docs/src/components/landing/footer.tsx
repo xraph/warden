@@ -12,9 +12,18 @@ const footerLinks = {
   ],
   Authorization: [
     { label: "Check Engine", href: "/docs/authorization/check-engine" },
-    { label: "Roles & Permissions", href: "/docs/authorization/roles-permissions" },
-    { label: "Policies & Conditions", href: "/docs/authorization/policies-conditions" },
-    { label: "Relations & Tuples", href: "/docs/authorization/relations-tuples" },
+    {
+      label: "Roles & Permissions",
+      href: "/docs/authorization/roles-permissions",
+    },
+    {
+      label: "Policies & Conditions",
+      href: "/docs/authorization/policies-conditions",
+    },
+    {
+      label: "Relations & Tuples",
+      href: "/docs/authorization/relations-tuples",
+    },
     { label: "Plugin System", href: "/docs/integration/plugin-system" },
   ],
   Stores: [
