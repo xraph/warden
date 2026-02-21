@@ -88,17 +88,24 @@ linters:
       disable:
         - fieldalignment
 
-  exclusions:
-    presets:
-      - comments
-      - std-error-handling
-    rules:
-      - path: _test\.go
-        linters: [gosec, errcheck, gocritic]
-      - path: _examples/
-        linters: [errcheck, gosec]
-      - path: ".*_gen\\.go"
-        linters: [all]
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters: [gosec, errcheck, gocritic]
+    - path: _examples/
+      linters: [errcheck, gosec]
+    - path: ".*_gen\\.go"
+      linters: [all]
+    # Exclude revive var-naming for api package
+    - path: ^api/
+      linters:
+        - revive
+      text: "var-naming: avoid meaningless package names"
+    # Exclude revive var-naming for plugin package
+    - path: ^plugin/
+      linters:
+        - revive
+      text: "var-naming: avoid package names that conflict"
 
 formatters:
   enable:
