@@ -4,7 +4,7 @@ linters:
   default: none
   enable:
     # Core correctness
-    # - errcheck  # Temporarily disabled - was excluded for test files in v1 config
+    - errcheck
     - govet
     - staticcheck
     - unused
@@ -12,7 +12,7 @@ linters:
 
     # Code quality
     - gocritic
-    # - revive  # Disabled due to false positives in CI
+    - revive
     - misspell
     - unconvert
     - unparam
@@ -42,32 +42,35 @@ linters:
         - hugeParam
         - rangeValCopy
 
-    # revive settings commented out since linter is disabled
-    # revive:
-    #   rules:
-    #     - name: blank-imports
-    #     - name: context-as-argument
-    #     - name: context-keys-type
-    #     - name: dot-imports
-    #     - name: error-return
-    #     - name: error-strings
-    #     - name: error-naming
-    #     - name: exported
-    #       arguments: [checkPrivateReceivers]
-    #     - name: if-return
-    #     - name: increment-decrement
-    #     - name: var-naming
-    #     - name: var-declaration
-    #     - name: range
-    #     - name: receiver-naming
-    #     - name: time-naming
-    #     - name: unexported-return
-    #     - name: indent-error-flow
-    #     - name: errorf
-    #     - name: empty-block
-    #     - name: superfluous-else
-    #     - name: unused-parameter
-    #     - name: unreachable-code
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+          arguments: [checkPrivateReceivers]
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+          arguments:
+            - [] # allowList
+            - [] # blockList
+            - [{skipPackageNameChecks: true}]
+        - name: var-declaration
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
 
     gosec:
       excludes:
@@ -75,20 +78,40 @@ linters:
         - G304
         - G401  # SHA-256 is used for integrity, not password hashing
 
-    # errcheck settings commented out since linter is disabled
-    # errcheck:
-    #   check-type-assertions: true
-    #   check-blank: true
-    #   exclude-functions:
-    #     - (io.Closer).Close
-    #     - (*database/sql.Rows).Close
-    #     - (github.com/jackc/pgx/v5.Tx).Rollback
-    #     - (github.com/uptrace/bun.Tx).Rollback
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      exclude-functions:
+        - (io.Closer).Close
+        - (*database/sql.Rows).Close
+        - (github.com/jackc/pgx/v5.Tx).Rollback
+        - (github.com/uptrace/bun.Tx).Rollback
 
     govet:
       enable-all: true
       disable:
         - fieldalignment
+
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [gosec, errcheck, gocritic]
+      - path: _examples/
+        linters: [errcheck, gosec]
+      - path: ".*_gen\\.go"
+        linters: [all]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/xraph/warden
 
 output:
   sort-order:
