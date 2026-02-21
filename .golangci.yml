@@ -89,24 +89,6 @@ linters:
       disable:
         - fieldalignment
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters: [gosec, errcheck, gocritic]
-    - path: _examples/
-      linters: [errcheck, gosec]
-    - path: ".*_gen\\.go"
-      linters: [all]
-    # Revive exclusions commented out since linter is disabled
-    # - path: ^api/
-    #   linters:
-    #     - revive
-    #   text: "var-naming: avoid meaningless package names"
-    # - path: ^plugin/
-    #   linters:
-    #     - revive
-    #   text: "var-naming: avoid package names that conflict"
-
 output:
   sort-order:
     - linter
