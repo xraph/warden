@@ -1,0 +1,58 @@
+---
+title: MongoDB Store
+description: MongoDB store for document-oriented and horizontally-scalable deployments.
+---
+
+The `store/mongo` package implements Warden's `store.Store` interface using the grove ORM with the MongoDB driver. It stores roles, permissions, assignments, relations, policies, resource types, and check logs as documents, making it a natural fit for deployments that already run MongoDB.
+
+## Usage
+
+```go
+import (
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/mongodriver"
+    "github.com/xraph/warden/store/mongo"
+)
+
+db, err := grove.Open(mongodriver.Open("mongodb://localhost:27017", "warden"))
+if err != nil {
+    log.Fatal(err)
+}
+
+s := mongo.New(db)
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Internals
+
+| Aspect | Detail |
+|--------|--------|
+| Driver | grove ORM + mongodriver |
+| Migrations | Index creation on collections |
+| Transactions | MongoDB sessions (replica-set required for multi-doc txns) |
+| Collections | `warden_roles`, `warden_permissions`, `warden_role_permissions`, `warden_assignments`, `warden_relations`, `warden_policies`, `warden_resource_types`, `warden_check_logs` |
+
+## Interface Compliance
+
+The MongoDB store implements all 7 subsystem store interfaces:
+
+```go
+var _ store.Store = (*mongo.Store)(nil) // Compile-time check
+```
+
+This includes:
+- `role.Store` — Role CRUD + hierarchy
+- `permission.Store` — Permission CRUD + role attachment
+- `assignment.Store` — Assignment CRUD + subject lookup
+- `relation.Store` — Relation tuple CRUD + graph queries
+- `policy.Store` — Policy CRUD + active policy lookup
+- `resourcetype.Store` — Resource type CRUD
+- `checklog.Store` — Check log append + query
+
+## When to Use
+
+- Document-oriented workloads where MongoDB is the primary data store.
+- Horizontally-scaled environments requiring sharding.
+- Teams already running MongoDB in their infrastructure.
