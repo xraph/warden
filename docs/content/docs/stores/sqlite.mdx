@@ -3,17 +3,23 @@ title: SQLite Store
 description: Embedded SQLite store for single-instance deployments.
 ---
 
-The SQLite store uses `modernc.org/sqlite` (pure Go, no CGO) for an embedded database.
+The SQLite store uses grove ORM with the sqlitedriver backend for an embedded database.
 
 ## Usage
 
 ```go
-import "github.com/xraph/warden/store/sqlite"
+import (
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/sqlitedriver"
+    "github.com/xraph/warden/store/sqlite"
+)
 
-sqliteStore, err := sqlite.New(ctx, "warden.db")
+db, err := grove.Open(sqlitedriver.Open("warden.db"))
 if err != nil {
     log.Fatal(err)
 }
+
+sqliteStore := sqlite.New(db)
 defer sqliteStore.Close()
 
 if err := sqliteStore.Migrate(ctx); err != nil {
@@ -24,7 +30,7 @@ if err := sqliteStore.Migrate(ctx); err != nil {
 ## Characteristics
 
 - **Embedded** — No external database server needed
-- **Pure Go** — No CGO dependency (`modernc.org/sqlite`)
+- **Pure Go** — No CGO dependency
 - **File-based** — Data persists in a single file
 - **Single-writer** — SQLite uses file-level locking
 

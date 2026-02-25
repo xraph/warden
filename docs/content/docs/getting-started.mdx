@@ -137,12 +137,20 @@ _ = st.CreateRelation(ctx, tuple)
 For production, switch to the PostgreSQL store:
 
 ```go
-import "github.com/xraph/warden/store/postgres"
+import (
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/pgdriver"
+    "github.com/xraph/warden/store/postgres"
+)
 
-pgStore, err := postgres.New(ctx, "postgres://user:pass@localhost/warden")
+db, err := grove.Open(pgdriver.New(
+    pgdriver.WithDSN("postgres://user:pass@localhost/warden"),
+))
 if err != nil {
     log.Fatal(err)
 }
+
+pgStore := postgres.New(db)
 defer pgStore.Close()
 
 // Run migrations

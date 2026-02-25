@@ -89,12 +89,20 @@ result, _ := eng.Check(ctx, req)
 ## With PostgreSQL
 
 ```go
-import "github.com/xraph/warden/store/postgres"
+import (
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/pgdriver"
+    "github.com/xraph/warden/store/postgres"
+)
 
-pgStore, err := postgres.New(ctx, os.Getenv("DATABASE_URL"))
+db, err := grove.Open(pgdriver.New(
+    pgdriver.WithDSN(os.Getenv("DATABASE_URL")),
+))
 if err != nil {
     log.Fatal(err)
 }
+
+pgStore := postgres.New(db)
 defer pgStore.Close()
 _ = pgStore.Migrate(ctx)
 

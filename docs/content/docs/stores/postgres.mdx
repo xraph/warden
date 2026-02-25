@@ -1,19 +1,27 @@
 ---
 title: PostgreSQL Store
-description: Production-grade PostgreSQL store with automatic migrations.
+description: Production-grade PostgreSQL store using grove ORM with pgdriver.
 ---
 
-The PostgreSQL store uses `pgxpool` for connection pooling and includes embedded SQL migrations.
+The PostgreSQL store uses grove ORM with the pgdriver backend and includes Go-based migrations.
 
 ## Usage
 
 ```go
-import "github.com/xraph/warden/store/postgres"
+import (
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/pgdriver"
+    "github.com/xraph/warden/store/postgres"
+)
 
-pgStore, err := postgres.New(ctx, "postgres://user:pass@localhost:5432/warden")
+db, err := grove.Open(pgdriver.New(
+    pgdriver.WithDSN("postgres://user:pass@localhost:5432/warden"),
+))
 if err != nil {
     log.Fatal(err)
 }
+
+pgStore := postgres.New(db)
 defer pgStore.Close()
 
 // Run migrations (creates tables if they don't exist)
@@ -22,17 +30,9 @@ if err := pgStore.Migrate(ctx); err != nil {
 }
 ```
 
-## Connection String
-
-Standard PostgreSQL connection string format:
-
-```
-postgres://user:password@host:port/database?sslmode=disable
-```
-
 ## Migrations
 
-The store includes 8 embedded migration files that create:
+The store includes Go-based migrations that create:
 
 | Table | Purpose |
 |-------|---------|
