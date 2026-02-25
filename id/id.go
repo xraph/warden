@@ -1,169 +1,287 @@
-// Package id provides TypeID-based identity types for all Warden entities.
+// Package id defines TypeID-based identity types for all Warden entities.
 //
-// Every entity in Warden gets a type-prefixed, K-sortable, UUIDv7-based
-// identifier. IDs are compile-time safe — you cannot pass a RoleID where a
-// PolicyID is expected.
-//
-// Examples:
-//
-//	wrol_01h2xcejqtf2nbrexx3vqjhp41
-//	wpol_01h2xcejqtf2nbrexx3vqjhp41
-//	wrel_01h455vb4pex5vsknk084sn02q
+// Every entity in Warden uses a single ID struct with a prefix that identifies
+// the entity type. IDs are K-sortable (UUIDv7-based), globally unique,
+// and URL-safe in the format "prefix_suffix".
 package id
 
-import "go.jetify.com/typeid"
+import (
+	"database/sql/driver"
+	"fmt"
+
+	"go.jetify.com/typeid/v2"
+)
+
+// Prefix identifies the entity type encoded in a TypeID.
+type Prefix string
+
+// Prefix constants for all Warden entity types.
+const (
+	PrefixRole         Prefix = "role"
+	PrefixPermission   Prefix = "perm"
+	PrefixAssignment   Prefix = "asgn"
+	PrefixPolicy       Prefix = "wpol"
+	PrefixRelation     Prefix = "rel"
+	PrefixCheckLog     Prefix = "chklog"
+	PrefixResourceType Prefix = "rtype"
+	PrefixCondition    Prefix = "cond"
+)
+
+// ID is the primary identifier type for all Warden entities.
+// It wraps a TypeID providing a prefix-qualified, globally unique,
+// sortable, URL-safe identifier in the format "prefix_suffix".
+//
+//nolint:recvcheck // Value receivers for read-only methods, pointer receivers for UnmarshalText/Scan.
+type ID struct {
+	inner typeid.TypeID
+	valid bool
+}
+
+// Nil is the zero-value ID.
+var Nil ID
+
+// New generates a new globally unique ID with the given prefix.
+// It panics if prefix is not a valid TypeID prefix (programming error).
+func New(prefix Prefix) ID {
+	tid, err := typeid.Generate(string(prefix))
+	if err != nil {
+		panic(fmt.Sprintf("id: invalid prefix %q: %v", prefix, err))
+	}
+
+	return ID{inner: tid, valid: true}
+}
+
+// Parse parses a TypeID string (e.g., "role_01h2xcejqtf2nbrexx3vqjhp41")
+// into an ID. Returns an error if the string is not valid.
+func Parse(s string) (ID, error) {
+	if s == "" {
+		return Nil, fmt.Errorf("id: parse %q: empty string", s)
+	}
+
+	tid, err := typeid.Parse(s)
+	if err != nil {
+		return Nil, fmt.Errorf("id: parse %q: %w", s, err)
+	}
+
+	return ID{inner: tid, valid: true}, nil
+}
+
+// ParseWithPrefix parses a TypeID string and validates that its prefix
+// matches the expected value.
+func ParseWithPrefix(s string, expected Prefix) (ID, error) {
+	parsed, err := Parse(s)
+	if err != nil {
+		return Nil, err
+	}
+
+	if parsed.Prefix() != expected {
+		return Nil, fmt.Errorf("id: expected prefix %q, got %q", expected, parsed.Prefix())
+	}
+
+	return parsed, nil
+}
+
+// MustParse is like Parse but panics on error. Use for hardcoded ID values.
+func MustParse(s string) ID {
+	parsed, err := Parse(s)
+	if err != nil {
+		panic(fmt.Sprintf("id: must parse %q: %v", s, err))
+	}
+
+	return parsed
+}
+
+// MustParseWithPrefix is like ParseWithPrefix but panics on error.
+func MustParseWithPrefix(s string, expected Prefix) ID {
+	parsed, err := ParseWithPrefix(s, expected)
+	if err != nil {
+		panic(fmt.Sprintf("id: must parse with prefix %q: %v", expected, err))
+	}
+
+	return parsed
+}
 
 // ──────────────────────────────────────────────────
-// Prefix types — each entity has its own prefix
+// Type aliases for backward compatibility
 // ──────────────────────────────────────────────────
 
-// RolePrefix is the TypeID prefix for roles.
-type RolePrefix struct{}
+// RoleID is a type-safe identifier for roles (prefix: "role").
+type RoleID = ID
 
-// Prefix returns "wrol".
-func (RolePrefix) Prefix() string { return "wrol" }
+// PermissionID is a type-safe identifier for permissions (prefix: "perm").
+type PermissionID = ID
 
-// PermissionPrefix is the TypeID prefix for permissions.
-type PermissionPrefix struct{}
-
-// Prefix returns "wprm".
-func (PermissionPrefix) Prefix() string { return "wprm" }
-
-// AssignmentPrefix is the TypeID prefix for role assignments.
-type AssignmentPrefix struct{}
-
-// Prefix returns "wasn".
-func (AssignmentPrefix) Prefix() string { return "wasn" }
-
-// PolicyPrefix is the TypeID prefix for ABAC policies.
-type PolicyPrefix struct{}
-
-// Prefix returns "wpol".
-func (PolicyPrefix) Prefix() string { return "wpol" }
-
-// RelationPrefix is the TypeID prefix for relation tuples.
-type RelationPrefix struct{}
-
-// Prefix returns "wrel".
-func (RelationPrefix) Prefix() string { return "wrel" }
-
-// CheckLogPrefix is the TypeID prefix for check audit log entries.
-type CheckLogPrefix struct{}
-
-// Prefix returns "wclg".
-func (CheckLogPrefix) Prefix() string { return "wclg" }
-
-// ResourceTypePrefix is the TypeID prefix for resource type definitions.
-type ResourceTypePrefix struct{}
-
-// Prefix returns "wrtp".
-func (ResourceTypePrefix) Prefix() string { return "wrtp" }
-
-// ConditionPrefix is the TypeID prefix for policy conditions.
-type ConditionPrefix struct{}
-
-// Prefix returns "wcnd".
-func (ConditionPrefix) Prefix() string { return "wcnd" }
-
-// ──────────────────────────────────────────────────
-// Typed ID aliases — compile-time safe
-// ──────────────────────────────────────────────────
-
-// RoleID is a type-safe identifier for roles (prefix: "wrol").
-type RoleID = typeid.TypeID[RolePrefix]
-
-// PermissionID is a type-safe identifier for permissions (prefix: "wprm").
-type PermissionID = typeid.TypeID[PermissionPrefix]
-
-// AssignmentID is a type-safe identifier for role assignments (prefix: "wasn").
-type AssignmentID = typeid.TypeID[AssignmentPrefix]
+// AssignmentID is a type-safe identifier for role assignments (prefix: "asgn").
+type AssignmentID = ID
 
 // PolicyID is a type-safe identifier for ABAC policies (prefix: "wpol").
-type PolicyID = typeid.TypeID[PolicyPrefix]
+type PolicyID = ID
 
-// RelationID is a type-safe identifier for relation tuples (prefix: "wrel").
-type RelationID = typeid.TypeID[RelationPrefix]
+// RelationID is a type-safe identifier for relation tuples (prefix: "rel").
+type RelationID = ID
 
-// CheckLogID is a type-safe identifier for check log entries (prefix: "wclg").
-type CheckLogID = typeid.TypeID[CheckLogPrefix]
+// CheckLogID is a type-safe identifier for check log entries (prefix: "chklog").
+type CheckLogID = ID
 
-// ResourceTypeID is a type-safe identifier for resource type definitions (prefix: "wrtp").
-type ResourceTypeID = typeid.TypeID[ResourceTypePrefix]
+// ResourceTypeID is a type-safe identifier for resource type definitions (prefix: "rtype").
+type ResourceTypeID = ID
 
-// ConditionID is a type-safe identifier for policy conditions (prefix: "wcnd").
-type ConditionID = typeid.TypeID[ConditionPrefix]
+// ConditionID is a type-safe identifier for policy conditions (prefix: "cond").
+type ConditionID = ID
 
-// AnyID is a TypeID that accepts any valid prefix. Use for cases where
-// the prefix is dynamic or unknown at compile time.
-type AnyID = typeid.AnyID
-
-// ──────────────────────────────────────────────────
-// Constructors
-// ──────────────────────────────────────────────────
-
-// NewRoleID returns a new random RoleID.
-func NewRoleID() RoleID { return must(typeid.New[RoleID]()) }
-
-// NewPermissionID returns a new random PermissionID.
-func NewPermissionID() PermissionID { return must(typeid.New[PermissionID]()) }
-
-// NewAssignmentID returns a new random AssignmentID.
-func NewAssignmentID() AssignmentID { return must(typeid.New[AssignmentID]()) }
-
-// NewPolicyID returns a new random PolicyID.
-func NewPolicyID() PolicyID { return must(typeid.New[PolicyID]()) }
-
-// NewRelationID returns a new random RelationID.
-func NewRelationID() RelationID { return must(typeid.New[RelationID]()) }
-
-// NewCheckLogID returns a new random CheckLogID.
-func NewCheckLogID() CheckLogID { return must(typeid.New[CheckLogID]()) }
-
-// NewResourceTypeID returns a new random ResourceTypeID.
-func NewResourceTypeID() ResourceTypeID { return must(typeid.New[ResourceTypeID]()) }
-
-// NewConditionID returns a new random ConditionID.
-func NewConditionID() ConditionID { return must(typeid.New[ConditionID]()) }
+// AnyID is a type alias that accepts any valid prefix.
+type AnyID = ID
 
 // ──────────────────────────────────────────────────
-// Parsing (type-safe: ParseRoleID("wpol_01h...") fails)
+// Convenience constructors
 // ──────────────────────────────────────────────────
 
-// ParseRoleID parses a string into a RoleID. Returns an error if the prefix
-// is not "wrol" or the suffix is invalid.
-func ParseRoleID(s string) (RoleID, error) { return typeid.Parse[RoleID](s) }
+// NewRoleID generates a new unique role ID.
+func NewRoleID() ID { return New(PrefixRole) }
 
-// ParsePermissionID parses a string into a PermissionID.
-func ParsePermissionID(s string) (PermissionID, error) { return typeid.Parse[PermissionID](s) }
+// NewPermissionID generates a new unique permission ID.
+func NewPermissionID() ID { return New(PrefixPermission) }
 
-// ParseAssignmentID parses a string into an AssignmentID.
-func ParseAssignmentID(s string) (AssignmentID, error) { return typeid.Parse[AssignmentID](s) }
+// NewAssignmentID generates a new unique assignment ID.
+func NewAssignmentID() ID { return New(PrefixAssignment) }
 
-// ParsePolicyID parses a string into a PolicyID.
-func ParsePolicyID(s string) (PolicyID, error) { return typeid.Parse[PolicyID](s) }
+// NewPolicyID generates a new unique policy ID.
+func NewPolicyID() ID { return New(PrefixPolicy) }
 
-// ParseRelationID parses a string into a RelationID.
-func ParseRelationID(s string) (RelationID, error) { return typeid.Parse[RelationID](s) }
+// NewRelationID generates a new unique relation ID.
+func NewRelationID() ID { return New(PrefixRelation) }
 
-// ParseCheckLogID parses a string into a CheckLogID.
-func ParseCheckLogID(s string) (CheckLogID, error) { return typeid.Parse[CheckLogID](s) }
+// NewCheckLogID generates a new unique check log ID.
+func NewCheckLogID() ID { return New(PrefixCheckLog) }
 
-// ParseResourceTypeID parses a string into a ResourceTypeID.
-func ParseResourceTypeID(s string) (ResourceTypeID, error) { return typeid.Parse[ResourceTypeID](s) }
+// NewResourceTypeID generates a new unique resource type ID.
+func NewResourceTypeID() ID { return New(PrefixResourceType) }
 
-// ParseConditionID parses a string into a ConditionID.
-func ParseConditionID(s string) (ConditionID, error) { return typeid.Parse[ConditionID](s) }
-
-// ParseAny parses a string into an AnyID, accepting any valid prefix.
-func ParseAny(s string) (AnyID, error) { return typeid.FromString(s) }
+// NewConditionID generates a new unique condition ID.
+func NewConditionID() ID { return New(PrefixCondition) }
 
 // ──────────────────────────────────────────────────
-// Helpers
+// Convenience parsers
 // ──────────────────────────────────────────────────
 
-func must[T any](v T, err error) T {
-	if err != nil {
-		panic(err)
+// ParseRoleID parses a string and validates the "role" prefix.
+func ParseRoleID(s string) (ID, error) { return ParseWithPrefix(s, PrefixRole) }
+
+// ParsePermissionID parses a string and validates the "perm" prefix.
+func ParsePermissionID(s string) (ID, error) { return ParseWithPrefix(s, PrefixPermission) }
+
+// ParseAssignmentID parses a string and validates the "asgn" prefix.
+func ParseAssignmentID(s string) (ID, error) { return ParseWithPrefix(s, PrefixAssignment) }
+
+// ParsePolicyID parses a string and validates the "wpol" prefix.
+func ParsePolicyID(s string) (ID, error) { return ParseWithPrefix(s, PrefixPolicy) }
+
+// ParseRelationID parses a string and validates the "rel" prefix.
+func ParseRelationID(s string) (ID, error) { return ParseWithPrefix(s, PrefixRelation) }
+
+// ParseCheckLogID parses a string and validates the "chklog" prefix.
+func ParseCheckLogID(s string) (ID, error) { return ParseWithPrefix(s, PrefixCheckLog) }
+
+// ParseResourceTypeID parses a string and validates the "rtype" prefix.
+func ParseResourceTypeID(s string) (ID, error) { return ParseWithPrefix(s, PrefixResourceType) }
+
+// ParseConditionID parses a string and validates the "cond" prefix.
+func ParseConditionID(s string) (ID, error) { return ParseWithPrefix(s, PrefixCondition) }
+
+// ParseAny parses a string into an ID without type checking the prefix.
+func ParseAny(s string) (ID, error) { return Parse(s) }
+
+// ──────────────────────────────────────────────────
+// ID methods
+// ──────────────────────────────────────────────────
+
+// String returns the full TypeID string representation (prefix_suffix).
+// Returns an empty string for the Nil ID.
+func (i ID) String() string {
+	if !i.valid {
+		return ""
 	}
-	return v
+
+	return i.inner.String()
+}
+
+// Prefix returns the prefix component of this ID.
+func (i ID) Prefix() Prefix {
+	if !i.valid {
+		return ""
+	}
+
+	return Prefix(i.inner.Prefix())
+}
+
+// IsNil reports whether this ID is the zero value.
+func (i ID) IsNil() bool {
+	return !i.valid
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (i ID) MarshalText() ([]byte, error) {
+	if !i.valid {
+		return []byte{}, nil
+	}
+
+	return []byte(i.inner.String()), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (i *ID) UnmarshalText(data []byte) error {
+	if len(data) == 0 {
+		*i = Nil
+
+		return nil
+	}
+
+	parsed, err := Parse(string(data))
+	if err != nil {
+		return err
+	}
+
+	*i = parsed
+
+	return nil
+}
+
+// Value implements driver.Valuer for database storage.
+// Returns nil for the Nil ID so that optional foreign key columns store NULL.
+func (i ID) Value() (driver.Value, error) {
+	if !i.valid {
+		return nil, nil //nolint:nilnil // nil is the canonical NULL for driver.Valuer
+	}
+
+	return i.inner.String(), nil
+}
+
+// Scan implements sql.Scanner for database retrieval.
+func (i *ID) Scan(src any) error {
+	if src == nil {
+		*i = Nil
+
+		return nil
+	}
+
+	switch v := src.(type) {
+	case string:
+		if v == "" {
+			*i = Nil
+
+			return nil
+		}
+
+		return i.UnmarshalText([]byte(v))
+	case []byte:
+		if len(v) == 0 {
+			*i = Nil
+
+			return nil
+		}
+
+		return i.UnmarshalText(v)
+	default:
+		return fmt.Errorf("id: cannot scan %T into ID", src)
+	}
 }

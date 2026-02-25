@@ -1,71 +1,69 @@
 ---
-title: Type-Safe IDs
-description: Warden uses TypeIDs for type-safe, K-sortable entity identifiers.
+title: Identity (TypeID)
+description: How Warden uses prefix-qualified, globally unique identifiers for every entity.
 ---
 
-Warden uses [TypeID](https://github.com/jetify-com/typeid) for all entity identifiers. TypeIDs are type-safe, K-sortable, and globally unique.
+Every entity in Warden has a TypeID. TypeIDs are globally unique, sortable, URL-safe identifiers built on UUIDv7 with a human-readable prefix that tells you what kind of entity you're looking at.
 
-## Format
+A TypeID looks like this:
 
 ```
-prefix_suffix
+role_01h455vb4pex5vsknk084sn02q
 ```
 
-- **prefix** — Identifies the entity type (e.g., `wrol` for roles)
-- **suffix** — A UUIDv7-based, base32-encoded identifier
+The `role` prefix identifies this as a role. The suffix is a base32-encoded UUIDv7 that encodes creation time, so IDs sort chronologically.
 
-Example: `wrol_01h455vb4pex5vsknk084sn02q`
+## The `id` package
 
-## Entity Prefixes
+The `id` package wraps the [TypeID Go library](https://github.com/jetify-com/typeid-go) (v2) with a single `ID` struct. All entity types share the same struct -- the prefix distinguishes them.
 
-| Prefix | Entity | Example |
-|--------|--------|---------|
-| `wrol` | Role | `wrol_01h455vb4pex5vsknk084sn02q` |
-| `wprm` | Permission | `wprm_01h455vb4pex5vsknk084sn02q` |
-| `wasn` | Assignment | `wasn_01h455vb4pex5vsknk084sn02q` |
-| `wpol` | Policy | `wpol_01h455vb4pex5vsknk084sn02q` |
-| `wrel` | Relation | `wrel_01h455vb4pex5vsknk084sn02q` |
-| `wclg` | Check Log | `wclg_01h455vb4pex5vsknk084sn02q` |
-| `wrtp` | Resource Type | `wrtp_01h455vb4pex5vsknk084sn02q` |
-| `wcnd` | Condition | `wcnd_01h455vb4pex5vsknk084sn02q` |
-
-## Usage
+### Creating IDs
 
 ```go
 import "github.com/xraph/warden/id"
 
-// Create new IDs
-roleID := id.NewRoleID()     // wrol_...
-permID := id.NewPermissionID() // wprm_...
-
-// Parse from string
-parsed, err := id.ParseRoleID("wrol_01h455vb4pex5vsknk084sn02q")
-if err != nil {
-    // Invalid prefix or format
-}
-
-// String representation
-fmt.Println(roleID.String()) // "wrol_01h455vb4pex5vsknk084sn02q"
-
-// Check for nil/zero value
-if roleID.IsNil() {
-    // Not initialized
-}
+roleID       := id.New(id.PrefixRole)         // role_01h455vb...
+permissionID := id.New(id.PrefixPermission)   // perm_01h455vb...
+assignmentID := id.New(id.PrefixAssignment)   // asgn_01h455vb...
+policyID     := id.New(id.PrefixPolicy)       // wpol_01h455vb...
 ```
 
-## Serialization
+Convenience constructors: `id.NewRoleID()`, `id.NewPermissionID()`, `id.NewAssignmentID()`, `id.NewPolicyID()`, `id.NewRelationID()`, `id.NewCheckLogID()`, `id.NewResourceTypeID()`, `id.NewConditionID()`.
 
-TypeIDs implement standard Go serialization interfaces:
+### Parsing IDs
 
-- `encoding.TextMarshaler` / `encoding.TextUnmarshaler`
-- `encoding/json.Marshaler` / `encoding/json.Unmarshaler`
-- `database/sql.Scanner` / `driver.Valuer`
+```go
+parsed, err := id.Parse("role_01h455vb4pex5vsknk084sn02q")
+parsed, err := id.ParseWithPrefix("role_01h455vb...", id.PrefixRole)  // validates prefix
+parsed, err := id.ParseRoleID("role_01h455vb...")                     // convenience
+```
 
-This means they work transparently with JSON APIs, database queries, and text-based protocols.
+### Nil ID
 
-## K-Sortability
+```go
+var empty id.ID
+empty.IsNil()  // true
+empty.String() // ""
+id.Nil.IsNil() // true
+```
 
-TypeIDs are based on UUIDv7, which encodes a timestamp. This means:
-- IDs sort chronologically by creation time
-- Database indexes on TypeID columns are efficient (no random scatter)
-- No need for separate `created_at` indexes for ordering
+### Database storage
+
+`id.ID` implements `Scanner` and `driver.Valuer`. Stores as a string, returns `NULL` for nil IDs.
+
+### JSON serialization
+
+`id.ID` implements `TextMarshaler` and `TextUnmarshaler`. Nil IDs serialize as empty strings.
+
+## Prefix reference
+
+| Constant | Prefix | Entity |
+|----------|--------|--------|
+| `id.PrefixRole` | `role` | Role |
+| `id.PrefixPermission` | `perm` | Permission |
+| `id.PrefixAssignment` | `asgn` | Assignment |
+| `id.PrefixPolicy` | `wpol` | Policy |
+| `id.PrefixRelation` | `rel` | Relation |
+| `id.PrefixCheckLog` | `chklog` | Check log |
+| `id.PrefixResourceType` | `rtype` | Resource type |
+| `id.PrefixCondition` | `cond` | Condition |
