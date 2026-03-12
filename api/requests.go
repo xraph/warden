@@ -16,6 +16,7 @@ type CheckRequest struct {
 	ResourceType string         `json:"resource_type" description:"Resource type"`
 	ResourceID   string         `json:"resource_id" description:"Resource identifier"`
 	Context      map[string]any `json:"context,omitempty" description:"Additional context attributes"`
+	TenantID     string         `json:"tenant_id,omitempty" description:"Optional tenant ID override (defaults to context-derived tenant)"`
 }
 
 // BatchCheckRequest contains multiple checks.

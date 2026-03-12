@@ -1,0 +1,61 @@
+package widgets
+
+import (
+	"fmt"
+
+	"github.com/xraph/warden/checklog"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/table"
+)
+
+templ RecentChecksWidget(logs []*checklog.Entry) {
+	if len(logs) == 0 {
+		<p class="text-sm text-muted-foreground py-4 text-center">No recent checks.</p>
+	} else {
+		@table.Table() {
+			@table.Header() {
+				@table.Row() {
+					@table.Head() { Subject }
+					@table.Head() { Action }
+					@table.Head() { Resource }
+					@table.Head() { Decision }
+					@table.Head() { Time }
+				}
+			}
+			@table.Body() {
+				for _, entry := range logs {
+					@table.Row() {
+						@table.Cell() {
+							<code class="text-xs bg-muted px-1 py-0.5 rounded">{ fmt.Sprintf("%s:%s", entry.SubjectKind, entry.SubjectID) }</code>
+						}
+						@table.Cell() {
+							<span class="text-sm font-medium">{ entry.Action }</span>
+						}
+						@table.Cell() {
+							<code class="text-xs bg-muted px-1 py-0.5 rounded">{ fmt.Sprintf("%s:%s", entry.ResourceType, entry.ResourceID) }</code>
+						}
+						@table.Cell() {
+							@widgetDecisionBadge(entry.Decision)
+						}
+						@table.Cell() {
+							{{ created := entry.CreatedAt.Format("15:04:05") }}
+							<span class="text-xs text-muted-foreground">{ created }</span>
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+templ widgetDecisionBadge(decision string) {
+	if decision == "allow" {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			Allow
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+			Deny
+		}
+	}
+}

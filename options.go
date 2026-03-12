@@ -1,7 +1,7 @@
 package warden
 
 import (
-	"log/slog"
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/store"
@@ -23,7 +23,7 @@ func WithGraphWalker(gw GraphWalker) Option { return func(e *Engine) { e.graphWa
 func WithCache(c Cache) Option { return func(e *Engine) { e.cache = c } }
 
 // WithLogger sets the structured logger.
-func WithLogger(l *slog.Logger) Option { return func(e *Engine) { e.logger = l } }
+func WithLogger(l log.Logger) Option { return func(e *Engine) { e.logger = l } }
 
 // WithConfig sets the engine configuration.
 func WithConfig(c Config) Option { return func(e *Engine) { e.config = c } }

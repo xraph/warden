@@ -1,0 +1,360 @@
+package pages
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/xraph/warden/policy"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/form"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/textarea"
+	switchcomp "github.com/xraph/forgeui/components/switch"
+	"github.com/xraph/forgeui/icons"
+)
+
+// PolicyCreatePage renders a full-page form for creating a new ABAC policy.
+templ PolicyCreatePage() {
+	@policyFormPage(nil)
+}
+
+// PolicyEditPage renders a full-page form for editing an existing ABAC policy.
+templ PolicyEditPage(p *policy.Policy) {
+	@policyFormPage(p)
+}
+
+templ policyFormPage(p *policy.Policy) {
+	{{ isEdit := p != nil }}
+	{{ title := "Create Policy" }}
+	if isEdit {
+		{{ title = "Edit Policy" }}
+	}
+	<div
+		class="space-y-6"
+		x-data={ policyFormAlpineData(p) }
+	>
+		<div class="flex items-center justify-between">
+			<div>
+				<h1 class="text-3xl font-bold tracking-tight">{ title }</h1>
+				<p class="text-muted-foreground mt-1">
+					if isEdit {
+						Update the ABAC policy configuration.
+					} else {
+						Define a new attribute-based access control policy.
+					}
+				</p>
+			</div>
+			<div class="flex items-center gap-2">
+				@button.Button(button.Props{
+					Variant: button.VariantOutline,
+					Attributes: templ.Attributes{
+						"hx-get":      "/policies",
+						"hx-target":   "#content",
+						"hx-push-url": "true",
+					},
+				}) {
+					Cancel
+				}
+				@button.Button(button.Props{
+					Attributes: templ.Attributes{
+						"@click":    "submitForm()",
+						":disabled": "submitting",
+					},
+				}) {
+					<span x-show="!submitting">
+						if isEdit {
+							Save Changes
+						} else {
+							Create Policy
+						}
+					</span>
+					<span x-show="submitting">Saving...</span>
+				}
+			</div>
+		</div>
+
+		<!-- Error display -->
+		<div x-show="error" x-cloak class="p-3 bg-destructive/10 text-destructive rounded-md text-sm" x-text="error"></div>
+
+		<!-- Section 1: Basic Info -->
+		@card.Card() {
+			@card.Header() {
+				@card.Title() { Basic Information }
+			}
+			@card.Content() {
+				<div class="space-y-4">
+					@form.Item() {
+						@form.Label(form.LabelProps{For: "policy-name"}) { Name }
+						@input.Input(input.Props{
+							ID: "policy-name", Placeholder: "e.g. department-access-policy",
+							Attributes: templ.Attributes{"x-model": "formData.name", "required": "true"},
+						})
+					}
+					@form.Item() {
+						@form.Label(form.LabelProps{For: "policy-desc"}) { Description }
+						@textarea.Textarea(textarea.Props{
+							ID: "policy-desc", Placeholder: "Describe what this policy does...", Rows: 3,
+							Attributes: templ.Attributes{"x-model": "formData.description"},
+						})
+					}
+					<div class="grid grid-cols-2 gap-4">
+						@form.Item() {
+							@form.Label(form.LabelProps{For: "policy-effect"}) { Effect }
+							<select
+								id="policy-effect"
+								x-model="formData.effect"
+								class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							>
+								<option value="allow">Allow</option>
+								<option value="deny">Deny</option>
+							</select>
+						}
+						@form.Item() {
+							@form.Label(form.LabelProps{For: "policy-priority"}) { Priority }
+							@input.Input(input.Props{
+								ID: "policy-priority", Type: input.TypeNumber,
+								Attributes: templ.Attributes{"x-model.number": "formData.priority"},
+							})
+						}
+					</div>
+					@form.ItemFlex() {
+						@form.Label(form.LabelProps{For: "policy-active"}) { Active }
+						@switchcomp.Switch(switchcomp.Props{
+							ID: "policy-active",
+							Attributes: templ.Attributes{"x-model": "formData.is_active"},
+						})
+					}
+				</div>
+			}
+		}
+
+		<!-- Section 2: Subjects -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center justify-between w-full">
+					<div>
+						@card.Title() { Subjects }
+						@card.Description() { Define which subjects this policy applies to. Leave empty for all subjects. }
+					</div>
+					@button.Button(button.Props{
+						Variant: button.VariantOutline,
+						Size:    button.SizeSm,
+						Attributes: templ.Attributes{"@click": "formData.subjects.push({kind:'',id:'',role:''})"},
+					}) {
+						@icons.Plus(icons.WithSize(14))
+						<span class="ml-1">Add Subject</span>
+					}
+				</div>
+			}
+			@card.Content() {
+				<div class="space-y-3">
+					<template x-for="(subj, i) in formData.subjects" :key="i">
+						<div class="flex items-end gap-3 p-3 bg-muted/50 rounded-md">
+							<div class="flex-1">
+								<label class="text-xs text-muted-foreground">Kind</label>
+								<select
+									x-model="subj.kind"
+									class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+								>
+									<option value="">Any</option>
+									<option value="user">User</option>
+									<option value="api_key">API Key</option>
+									<option value="service">Service</option>
+									<option value="service_acct">Service Account</option>
+								</select>
+							</div>
+							<div class="flex-1">
+								<label class="text-xs text-muted-foreground">ID</label>
+								<input x-model="subj.id" placeholder="Any" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"/>
+							</div>
+							<div class="flex-1">
+								<label class="text-xs text-muted-foreground">Role</label>
+								<input x-model="subj.role" placeholder="Any" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"/>
+							</div>
+							<button type="button" @click="formData.subjects.splice(i, 1)" class="h-9 w-9 flex items-center justify-center rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive">
+								@icons.X(icons.WithSize(16))
+							</button>
+						</div>
+					</template>
+					<p x-show="formData.subjects.length === 0" class="text-sm text-muted-foreground text-center py-2">No subject filters - policy applies to all subjects.</p>
+				</div>
+			}
+		}
+
+		<!-- Section 3: Actions & Resources -->
+		@card.Card() {
+			@card.Header() {
+				@card.Title() { Actions & Resources }
+				@card.Description() { Define action and resource patterns. Use comma-separated values. Leave empty for all. }
+			}
+			@card.Content() {
+				<div class="space-y-4">
+					@form.Item() {
+						@form.Label(form.LabelProps{For: "policy-actions"}) { Actions }
+						@form.Description() { Comma-separated action patterns (e.g. read, write, delete) }
+						@input.Input(input.Props{
+							ID: "policy-actions", Placeholder: "e.g. read, write, delete",
+							Attributes: templ.Attributes{"x-model": "actionsText"},
+						})
+					}
+					@form.Item() {
+						@form.Label(form.LabelProps{For: "policy-resources"}) { Resources }
+						@form.Description() { Comma-separated resource patterns (e.g. document, project) }
+						@input.Input(input.Props{
+							ID: "policy-resources", Placeholder: "e.g. document, project",
+							Attributes: templ.Attributes{"x-model": "resourcesText"},
+						})
+					}
+				</div>
+			}
+		}
+
+		<!-- Section 4: Conditions -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center justify-between w-full">
+					<div>
+						@card.Title() { Conditions }
+						@card.Description() { Attribute-based conditions that must be satisfied. }
+					</div>
+					@button.Button(button.Props{
+						Variant: button.VariantOutline,
+						Size:    button.SizeSm,
+						Attributes: templ.Attributes{"@click": "formData.conditions.push({field:'',operator:'eq',value:''})"},
+					}) {
+						@icons.Plus(icons.WithSize(14))
+						<span class="ml-1">Add Condition</span>
+					}
+				</div>
+			}
+			@card.Content() {
+				<div class="space-y-3">
+					<template x-for="(cond, i) in formData.conditions" :key="i">
+						<div class="flex items-end gap-3 p-3 bg-muted/50 rounded-md">
+							<div class="flex-1">
+								<label class="text-xs text-muted-foreground">Field</label>
+								<input x-model="cond.field" placeholder="e.g. context.ip" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"/>
+							</div>
+							<div class="w-40">
+								<label class="text-xs text-muted-foreground">Operator</label>
+								<select x-model="cond.operator" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+									<option value="eq">Equals (eq)</option>
+									<option value="neq">Not Equals (neq)</option>
+									<option value="in">In (in)</option>
+									<option value="not_in">Not In (not_in)</option>
+									<option value="contains">Contains</option>
+									<option value="starts_with">Starts With</option>
+									<option value="ends_with">Ends With</option>
+									<option value="gt">Greater Than (gt)</option>
+									<option value="lt">Less Than (lt)</option>
+									<option value="gte">GTE (gte)</option>
+									<option value="lte">LTE (lte)</option>
+									<option value="exists">Exists</option>
+									<option value="not_exists">Not Exists</option>
+									<option value="ip_in_cidr">IP in CIDR</option>
+									<option value="time_after">Time After</option>
+									<option value="time_before">Time Before</option>
+									<option value="regex">Regex</option>
+								</select>
+							</div>
+							<div class="flex-1">
+								<label class="text-xs text-muted-foreground">Value</label>
+								<input x-model="cond.value" placeholder="Value" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"/>
+							</div>
+							<button type="button" @click="formData.conditions.splice(i, 1)" class="h-9 w-9 flex items-center justify-center rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive">
+								@icons.X(icons.WithSize(16))
+							</button>
+						</div>
+					</template>
+					<p x-show="formData.conditions.length === 0" class="text-sm text-muted-foreground text-center py-2">No conditions - policy applies unconditionally.</p>
+				</div>
+			}
+		}
+	</div>
+}
+
+func policyFormAlpineData(p *policy.Policy) string {
+	if p == nil {
+		return `{
+			formData: {
+				name: '',
+				description: '',
+				effect: 'allow',
+				priority: 0,
+				is_active: true,
+				subjects: [],
+				conditions: []
+			},
+			actionsText: '',
+			resourcesText: '',
+			error: '',
+			submitting: false,
+			async submitForm() {
+				this.submitting = true;
+				this.error = '';
+				const data = {...this.formData};
+				data.actions = this.actionsText ? this.actionsText.split(',').map(s => s.trim()).filter(Boolean) : [];
+				data.resources = this.resourcesText ? this.resourcesText.split(',').map(s => s.trim()).filter(Boolean) : [];
+				data.subjects = data.subjects.filter(s => s.kind || s.id || s.role);
+				data.conditions = data.conditions.filter(c => c.field).map(c => ({field: c.field, operator: c.operator, value: c.value}));
+				try {
+					const resp = await fetch('/v1/policies', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+					if (resp.ok) { htmx.ajax('GET', '/policies', {target: '#content'}); }
+					else { const r = await resp.json(); this.error = r.error || r.message || 'Failed to create policy'; }
+				} catch(e) { this.error = e.message; }
+				this.submitting = false;
+			}
+		}`
+	}
+	// Build edit form data
+	subjectsJSON, _ := json.Marshal(p.Subjects)
+	conditionsJSON := buildConditionsJSON(p.Conditions)
+	actionsText := strings.Join(p.Actions, ", ")
+	resourcesText := strings.Join(p.Resources, ", ")
+
+	return fmt.Sprintf(`{
+		formData: {
+			name: %q,
+			description: %q,
+			effect: %q,
+			priority: %d,
+			is_active: %v,
+			subjects: %s,
+			conditions: %s
+		},
+		actionsText: %q,
+		resourcesText: %q,
+		error: '',
+		submitting: false,
+		async submitForm() {
+			this.submitting = true;
+			this.error = '';
+			const data = {...this.formData};
+			data.actions = this.actionsText ? this.actionsText.split(',').map(s => s.trim()).filter(Boolean) : [];
+			data.resources = this.resourcesText ? this.resourcesText.split(',').map(s => s.trim()).filter(Boolean) : [];
+			data.subjects = data.subjects.filter(s => s.kind || s.id || s.role);
+			data.conditions = data.conditions.filter(c => c.field).map(c => ({field: c.field, operator: c.operator, value: c.value}));
+			try {
+				const resp = await fetch('/v1/policies/%s', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+				if (resp.ok) { htmx.ajax('GET', '/policies/detail?id=%s', {target: '#content'}); }
+				else { const r = await resp.json(); this.error = r.error || r.message || 'Failed to update policy'; }
+			} catch(e) { this.error = e.message; }
+			this.submitting = false;
+		}
+	}`, p.Name, p.Description, string(p.Effect), p.Priority, p.IsActive,
+		string(subjectsJSON), conditionsJSON, actionsText, resourcesText,
+		p.ID.String(), p.ID.String())
+}
+
+func buildConditionsJSON(conditions []policy.Condition) string {
+	if len(conditions) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(conditions))
+	for _, c := range conditions {
+		parts = append(parts, fmt.Sprintf(`{"field":%q,"operator":%q,"value":%q}`, c.Field, string(c.Operator), fmt.Sprintf("%v", c.Value)))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}

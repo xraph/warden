@@ -1,0 +1,52 @@
+package components
+
+// PathRewriter adds an HTMX configRequest interceptor that rewrites bare page paths
+// (e.g. "/roles/detail") to fully-qualified dashboard extension paths
+// (e.g. "/dashboard/ext/warden/pages/roles/detail").
+//
+// It also handles htmx.ajax() calls that use partial paths like
+// "/ext/warden/pages/..." by prepending the dashboard base path.
+//
+// This component should wrap the outermost page content once.
+templ PathRewriter(pagesBase string) {
+	<div data-warden-pages-base={ pagesBase }>
+		{ children... }
+	</div>
+	<script>
+	(function(){
+		if (window.__wardenPathRewriterAttached) return;
+		window.__wardenPathRewriterAttached = true;
+
+		document.addEventListener('htmx:configRequest', function(e) {
+			var el = e.detail.elt;
+			var wrapper = el.closest('[data-warden-pages-base]');
+			if (!wrapper && document.querySelector('[data-warden-pages-base]')) {
+				wrapper = document.querySelector('[data-warden-pages-base]');
+			}
+			if (!wrapper) return;
+
+			var base = wrapper.getAttribute('data-warden-pages-base');
+			if (!base) return;
+
+			var dashBase = base.replace(/\/ext\/[^/]+\/pages$/, '');
+			var path = e.detail.path;
+			if (!path || !path.startsWith('/')) return;
+
+			// Already fully qualified
+			if (path.startsWith(base)) return;
+
+			// API paths — do not rewrite
+			if (path.startsWith('/v1/')) return;
+
+			// Partial ext path (from htmx.ajax calls) — add dashboard prefix
+			if (path.startsWith('/ext/')) {
+				e.detail.path = dashBase + path;
+				return;
+			}
+
+			// Bare page path — add full prefix
+			e.detail.path = base + path;
+		});
+	})();
+	</script>
+}

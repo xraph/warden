@@ -114,7 +114,7 @@ func (a *API) deleteResourceType(ctx forge.Context, _ *GetResourceTypeRequest) (
 	return nil, ctx.NoContent(http.StatusNoContent)
 }
 
-func (a *API) listResourceTypes(ctx forge.Context, req *ListResourceTypesRequest) ([]*resourcetype.ResourceType, error) {
+func (a *API) listResourceTypes(ctx forge.Context, req *ListResourceTypesRequest) (*ResourceTypeListResponse, error) {
 	filter := &resourcetype.ListFilter{
 		Search: req.Search,
 		Limit:  defaultLimit(req.Limit),
@@ -126,5 +126,5 @@ func (a *API) listResourceTypes(ctx forge.Context, req *ListResourceTypesRequest
 		return nil, mapError(err)
 	}
 
-	return rts, ctx.JSON(http.StatusOK, rts)
+	return &ResourceTypeListResponse{Body: rts}, nil
 }

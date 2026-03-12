@@ -1,0 +1,155 @@
+package pages
+
+import (
+	"fmt"
+
+	"github.com/xraph/warden/dashboard/components"
+	"github.com/xraph/warden/resourcetype"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ ResourceTypeDetailPage(rt *resourcetype.ResourceType) {
+	<div class="space-y-6">
+		<!-- Header -->
+		<div class="flex items-center justify-between">
+			<div>
+				<h1 class="text-3xl font-bold tracking-tight">{ rt.Name }</h1>
+				if rt.Description != "" {
+					<p class="text-muted-foreground mt-1">{ rt.Description }</p>
+				}
+			</div>
+			<div class="flex items-center gap-2">
+				@button.Button(button.Props{
+					Variant: button.VariantDestructive,
+					Attributes: templ.Attributes{
+						"onclick": fmt.Sprintf("tuiOpenDialog('delete-rt-%s')", rt.ID.String()),
+					},
+				}) {
+					@icons.Trash2(icons.WithSize(16))
+					<span class="ml-2">Delete</span>
+				}
+			</div>
+		</div>
+
+		<!-- Info -->
+		@card.Card() {
+			@card.Header() {
+				@card.Title() {
+					Resource Type Details
+				}
+			}
+			@card.Content() {
+				<dl class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+					<dt class="text-muted-foreground">ID</dt>
+					<dd class="font-mono text-xs">{ rt.ID.String() }</dd>
+					<dt class="text-muted-foreground">Name</dt>
+					<dd>{ rt.Name }</dd>
+					<dt class="text-muted-foreground">Created</dt>
+					<dd>{ rt.CreatedAt.Format("Jan 02, 2006 15:04") }</dd>
+					<dt class="text-muted-foreground">Updated</dt>
+					<dd>{ rt.UpdatedAt.Format("Jan 02, 2006 15:04") }</dd>
+				</dl>
+			}
+		}
+
+		@separator.Separator()
+
+		<!-- Relations -->
+		@card.Card() {
+			@card.Header() {
+				@card.Title() {
+					Relations
+				}
+				@card.Description() {
+					Valid relations for this resource type.
+				}
+			}
+			@card.Content() {
+				if len(rt.Relations) == 0 {
+					<p class="text-sm text-muted-foreground py-4 text-center">No relations defined.</p>
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Name }
+								@table.Head() { Allowed Subjects }
+							}
+						}
+						@table.Body() {
+							for _, rel := range rt.Relations {
+								@table.Row() {
+									@table.Cell() {
+										<span class="font-medium">{ rel.Name }</span>
+									}
+									@table.Cell() {
+										<div class="flex flex-wrap gap-1">
+											for _, subj := range rel.AllowedSubjects {
+												@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+													{ subj }
+												}
+											}
+										</div>
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		<!-- Derived Permissions -->
+		@card.Card() {
+			@card.Header() {
+				@card.Title() {
+					Derived Permissions
+				}
+				@card.Description() {
+					Permission derivation rules.
+				}
+			}
+			@card.Content() {
+				if len(rt.Permissions) == 0 {
+					<p class="text-sm text-muted-foreground py-4 text-center">No permission rules defined.</p>
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Name }
+								@table.Head() { Expression }
+							}
+						}
+						@table.Body() {
+							for _, perm := range rt.Permissions {
+								@table.Row() {
+									@table.Cell() {
+										<span class="font-medium">{ perm.Name }</span>
+									}
+									@table.Cell() {
+										<code class="text-xs bg-muted px-2 py-1 rounded">{ perm.Expression }</code>
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		<!-- Delete Confirm Dialog -->
+		@components.ConfirmDialog(components.ConfirmDialogProps{
+			ID:           "delete-rt-" + rt.ID.String(),
+			Title:        "Delete Resource Type",
+			Description:  "Are you sure you want to delete resource type \"" + rt.Name + "\"? This action cannot be undone.",
+			ConfirmLabel: "Delete",
+			HxEndpoint:   "/v1/resource-types/" + rt.ID.String(),
+			HxMethod:     "delete",
+		})
+		@components.DialogHelpers()
+	</div>
+}

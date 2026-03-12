@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
+	log "github.com/xraph/go-utils/log"
+
+	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/store"
@@ -20,7 +22,7 @@ type Engine struct {
 	graphWalker GraphWalker
 	cache       Cache
 	plugins     *plugin.Registry
-	logger      *slog.Logger
+	logger      log.Logger
 	config      Config
 }
 
@@ -29,7 +31,7 @@ func NewEngine(opts ...Option) (*Engine, error) {
 	e := &Engine{
 		evaluator:   DefaultEvaluator(),
 		graphWalker: DefaultGraphWalker(10),
-		logger:      slog.Default(),
+		logger:      log.NewNoopLogger(),
 		config:      DefaultConfig(),
 	}
 	for _, opt := range opts {
@@ -48,8 +50,16 @@ func NewEngine(opts ...Option) (*Engine, error) {
 // Store returns the underlying composite store.
 func (e *Engine) Store() store.Store { return e.store }
 
+// Config returns the engine configuration.
+func (e *Engine) Config() Config { return e.config }
+
 // Plugins returns the plugin registry (may be nil).
 func (e *Engine) Plugins() *plugin.Registry { return e.plugins }
+
+// Health checks the health of the engine by pinging its store.
+func (e *Engine) Health(ctx context.Context) error {
+	return e.store.Ping(ctx)
+}
 
 // Start performs any startup initialization.
 func (e *Engine) Start(_ context.Context) error { return nil }
@@ -61,6 +71,18 @@ func (e *Engine) Stop(_ context.Context) error { return nil }
 func (e *Engine) Check(ctx context.Context, req *CheckRequest) (*CheckResult, error) {
 	start := time.Now()
 	scope := scopeFromContext(ctx)
+	if req.TenantID != "" {
+		scope.tenantID = req.TenantID
+	}
+
+	e.logger.Debug("warden: check",
+		log.String("subject_kind", string(req.Subject.Kind)),
+		log.String("subject_id", req.Subject.ID),
+		log.String("action", req.Action.Name),
+		log.String("resource_type", req.Resource.Type),
+		log.String("scope_app_id", scope.appID),
+		log.String("scope_tenant_id", scope.tenantID),
+	)
 
 	// 1. Cache hit?
 	if e.cache != nil {
@@ -116,6 +138,11 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest) (*CheckResult, er
 		e.plugins.EmitAfterCheck(ctx, req, result)
 	}
 
+	// 8. Write check log entry (fire-and-forget).
+	if e.config.checkLogEnabled() {
+		go e.writeCheckLog(ctx, scope, req, result)
+	}
+
 	return result, nil
 }
 
@@ -144,6 +171,26 @@ func (e *Engine) CanI(ctx context.Context, subjectKind SubjectKind, subjectID, a
 	return result.Allowed, nil
 }
 
+func (e *Engine) writeCheckLog(ctx context.Context, scope tenantScope, req *CheckRequest, result *CheckResult) {
+	entry := &checklog.Entry{
+		ID:           id.NewCheckLogID(),
+		TenantID:     scope.tenantID,
+		AppID:        scope.appID,
+		SubjectKind:  string(req.Subject.Kind),
+		SubjectID:    req.Subject.ID,
+		Action:       req.Action.Name,
+		ResourceType: req.Resource.Type,
+		ResourceID:   req.Resource.ID,
+		Decision:     string(result.Decision),
+		Reason:       result.Reason,
+		EvalTimeNs:   result.EvalTimeNs,
+		CreatedAt:    time.Now(),
+	}
+	if err := e.store.CreateCheckLog(context.WithoutCancel(ctx), entry); err != nil {
+		e.logger.Error("warden: failed to write check log", log.Error(err))
+	}
+}
+
 func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, error) {
 	// 1. Get roles assigned to subject (global + resource-scoped).
 	globalRoles, err := e.store.ListRolesForSubject(ctx, scope.tenantID, string(req.Subject.Kind), req.Subject.ID)
@@ -159,6 +206,11 @@ func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *Check
 	allRoles = append(allRoles, resourceRoles...)
 
 	if len(allRoles) == 0 {
+		e.logger.Debug("warden: rbac no roles found",
+			log.String("tenant_id", scope.tenantID),
+			log.String("subject_kind", string(req.Subject.Kind)),
+			log.String("subject_id", req.Subject.ID),
+		)
 		return &CheckResult{Decision: DecisionDenyNoRoles, Reason: "subject has no roles"}, nil
 	}
 
@@ -167,24 +219,54 @@ func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *Check
 
 	// 3. Check if any role grants "resource:action" permission (glob matching).
 	permName := req.Resource.Type + ":" + req.Action.Name
+
+	e.logger.Debug("warden: rbac evaluating",
+		log.Int("role_count", len(allRoles)),
+		log.String("perm_required", permName),
+		log.String("tenant_id", scope.tenantID),
+	)
+
 	for _, roleID := range allRoles {
 		perms, err := e.store.ListRolePermissions(ctx, roleID)
 		if err != nil {
+			e.logger.Warn("warden: rbac ListRolePermissions error",
+				log.String("role_id", roleID.String()),
+				log.Error(err),
+			)
 			continue
 		}
+
+		e.logger.Debug("warden: rbac checking role",
+			log.String("role_id", roleID.String()),
+			log.Int("perm_count", len(perms)),
+		)
+
 		for _, permID := range perms {
 			perm, err := e.store.GetPermission(ctx, permID)
 			if err != nil || perm == nil {
+				e.logger.Warn("warden: rbac GetPermission error",
+					log.String("perm_id", permID.String()),
+					log.Error(err),
+				)
 				continue
 			}
-			if matchPermission(perm.Resource+":"+perm.Action, permName) {
+			storedPerm := perm.Resource + ":" + perm.Action
+			matched := matchPermission(storedPerm, permName)
+
+			e.logger.Debug("warden: rbac checking perm",
+				log.String("stored_perm", storedPerm),
+				log.String("required_perm", permName),
+				log.Bool("match", matched),
+			)
+
+			if matched {
 				return &CheckResult{
 					Allowed:  true,
 					Decision: DecisionAllow,
 					MatchedBy: []MatchInfo{{
 						Source: "rbac",
 						RuleID: roleID.String(),
-						Detail: "role grants " + perm.Resource + ":" + perm.Action,
+						Detail: "role grants " + storedPerm,
 					}},
 				}, nil
 			}

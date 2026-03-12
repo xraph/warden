@@ -1,0 +1,168 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/xraph/warden/dashboard/components"
+	"github.com/xraph/warden/permission"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/dropdown"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ PermissionsPage(perms []*permission.Permission, search, resource, action string, pg components.PaginationMeta) {
+	<div class="space-y-6">
+		@components.PageHeader("Permissions", strconv.FormatInt(pg.Total, 10), "") {
+			@button.Button(button.Props{
+				Attributes: templ.Attributes{
+					"onclick": "tuiOpenDialog('create-permission-dialog')",
+				},
+			}) {
+				@icons.Plus(icons.WithSize(16))
+				<span class="ml-2">Create Permission</span>
+			}
+		}
+
+		<!-- Search & Filter Toolbar -->
+		<div class="flex items-center gap-3 flex-wrap">
+			@input.Input(input.Props{
+				Name:        "search",
+				Type:        input.TypeSearch,
+				Placeholder: "Search permissions...",
+				Value:       search,
+				Class:       "max-w-sm",
+				Attributes: templ.Attributes{
+					"hx-get":      "/permissions",
+					"hx-trigger":  "input changed delay:300ms, search",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='resource'],[name='action']",
+				},
+			})
+			@input.Input(input.Props{
+				Name:        "resource",
+				Type:        input.TypeText,
+				Placeholder: "Filter resource...",
+				Value:       resource,
+				Class:       "max-w-[180px]",
+				Attributes: templ.Attributes{
+					"hx-get":      "/permissions",
+					"hx-trigger":  "input changed delay:300ms",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='search'],[name='action']",
+				},
+			})
+			@input.Input(input.Props{
+				Name:        "action",
+				Type:        input.TypeText,
+				Placeholder: "Filter action...",
+				Value:       action,
+				Class:       "max-w-[180px]",
+				Attributes: templ.Attributes{
+					"hx-get":      "/permissions",
+					"hx-trigger":  "input changed delay:300ms",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='search'],[name='resource']",
+				},
+			})
+		</div>
+
+		<!-- Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(perms) == 0 {
+					@emptyState("No permissions found.", keyEmpty())
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Name }
+								@table.Head() { Resource }
+								@table.Head() { Action }
+								@table.Head() { System }
+								@table.Head() { Created }
+								@table.Head() { }
+							}
+						}
+						@table.Body() {
+							for _, p := range perms {
+								@table.Row() {
+									@table.Cell() {
+										<span class="font-medium">{ p.Name }</span>
+									}
+									@table.Cell() {
+										<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ p.Resource }</code>
+									}
+									@table.Cell() {
+										<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ p.Action }</code>
+									}
+									@table.Cell() {
+										if p.IsSystem {
+											@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+												System
+											}
+										}
+									}
+									@table.Cell() {
+										{{ created := p.CreatedAt.Format("Jan 02, 2006") }}
+										{ created }
+									}
+									@table.Cell() {
+										if !p.IsSystem {
+											@dropdown.Dropdown() {
+												@dropdown.Trigger(dropdown.TriggerProps{Class: "cursor-pointer"}) {
+													@button.Button(button.Props{Variant: button.VariantGhost, Size: button.SizeIcon}) {
+														@icons.Ellipsis(icons.WithSize(16))
+													}
+												}
+												@dropdown.Content() {
+													@dropdown.Item(dropdown.ItemProps{
+														Class: "text-destructive",
+														Attributes: templ.Attributes{
+															"onclick": fmt.Sprintf("tuiOpenDialog('delete-perm-%s')", p.ID.String()),
+														},
+													}) {
+														@icons.Trash2(icons.WithSize(14))
+														<span class="ml-2">Delete</span>
+													}
+												}
+											}
+											@components.ConfirmDialog(components.ConfirmDialogProps{
+												ID:           "delete-perm-" + p.ID.String(),
+												Title:        "Delete Permission",
+												Description:  "Are you sure you want to delete permission \"" + p.Name + "\"?",
+												ConfirmLabel: "Delete",
+												HxEndpoint:   "/v1/permissions/" + p.ID.String(),
+												HxMethod:     "delete",
+											})
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if pg.TotalPages > 1 {
+			@paginationNav(pg, "/permissions", map[string]string{"search": search, "resource": resource, "action": action})
+		}
+
+		<!-- Create Permission Dialog -->
+		@PermissionCreateDialog()
+		@components.DialogHelpers()
+		<script>
+		if (new URLSearchParams(window.location.search).get('create') === '1') {
+			requestAnimationFrame(function(){ tuiOpenDialog('create-permission-dialog'); });
+		}
+		</script>
+	</div>
+}

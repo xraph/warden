@@ -1,0 +1,213 @@
+package pages
+
+import (
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/form"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/textarea"
+	"github.com/xraph/forgeui/icons"
+)
+
+// PlaygroundPage renders the authorization playground for testing access checks.
+templ PlaygroundPage() {
+	<div
+		class="space-y-6"
+		x-data="{
+			request: {
+				subject_kind: 'user',
+				subject_id: '',
+				action: '',
+				resource_type: '',
+				resource_id: '',
+				context: ''
+			},
+			result: null,
+			loading: false,
+			error: '',
+			async checkAccess() {
+				this.loading = true;
+				this.error = '';
+				this.result = null;
+				const data = {...this.request};
+				if (data.context) {
+					try { data.context = JSON.parse(data.context); }
+					catch(e) { this.error = 'Invalid JSON in context field'; this.loading = false; return; }
+				} else {
+					delete data.context;
+				}
+				try {
+					const resp = await fetch('/v1/authz/check', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+					if (resp.ok) { this.result = await resp.json(); }
+					else { const r = await resp.json(); this.error = r.error || r.message || 'Check failed'; }
+				} catch(e) { this.error = e.message; }
+				this.loading = false;
+			}
+		}"
+	>
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Authorization Playground</h1>
+			<p class="text-muted-foreground mt-1">Test authorization checks against your configured policies, roles, and relations.</p>
+		</div>
+
+		<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+			<!-- Left: Request Builder -->
+			@card.Card() {
+				@card.Header() {
+					@card.Title() {
+						@icons.Send(icons.WithSize(18))
+						<span class="ml-2">Request Builder</span>
+					}
+				}
+				@card.Content() {
+					<div class="space-y-4">
+						@form.Item() {
+							@form.Label(form.LabelProps{For: "pg-kind"}) { Subject Kind }
+							<select
+								id="pg-kind"
+								x-model="request.subject_kind"
+								class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							>
+								<option value="user">User</option>
+								<option value="api_key">API Key</option>
+								<option value="service">Service</option>
+								<option value="service_acct">Service Account</option>
+							</select>
+						}
+						@form.Item() {
+							@form.Label(form.LabelProps{For: "pg-sid"}) { Subject ID }
+							@input.Input(input.Props{
+								ID: "pg-sid", Placeholder: "e.g. user-123",
+								Attributes: templ.Attributes{"x-model": "request.subject_id", "required": "true"},
+							})
+						}
+						@form.Item() {
+							@form.Label(form.LabelProps{For: "pg-action"}) { Action }
+							@input.Input(input.Props{
+								ID: "pg-action", Placeholder: "e.g. read",
+								Attributes: templ.Attributes{"x-model": "request.action", "required": "true"},
+							})
+						}
+						@form.Item() {
+							@form.Label(form.LabelProps{For: "pg-rt"}) { Resource Type }
+							@input.Input(input.Props{
+								ID: "pg-rt", Placeholder: "e.g. document",
+								Attributes: templ.Attributes{"x-model": "request.resource_type", "required": "true"},
+							})
+						}
+						@form.Item() {
+							@form.Label(form.LabelProps{For: "pg-rid"}) { Resource ID (optional) }
+							@input.Input(input.Props{
+								ID: "pg-rid", Placeholder: "e.g. doc-456",
+								Attributes: templ.Attributes{"x-model": "request.resource_id"},
+							})
+						}
+						@form.Item() {
+							@form.Label(form.LabelProps{For: "pg-ctx"}) { Context JSON (optional) }
+							@textarea.Textarea(textarea.Props{
+								ID: "pg-ctx", Placeholder: `{"ip": "192.168.1.1"}`, Rows: 3,
+								Class: "font-mono text-sm",
+								Attributes: templ.Attributes{"x-model": "request.context"},
+							})
+						}
+						@button.Button(button.Props{
+							Class: "w-full",
+							Attributes: templ.Attributes{
+								"@click":    "checkAccess()",
+								":disabled": "loading || !request.subject_id || !request.action || !request.resource_type",
+							},
+						}) {
+							<span x-show="!loading">
+								@icons.Zap(icons.WithSize(16))
+								<span class="ml-2">Check Access</span>
+							</span>
+							<span x-show="loading">Checking...</span>
+						}
+					</div>
+				}
+			}
+
+			<!-- Right: Result Display -->
+			@card.Card() {
+				@card.Header() {
+					@card.Title() {
+						@icons.CheckCircle(icons.WithSize(18))
+						<span class="ml-2">Result</span>
+					}
+				}
+				@card.Content() {
+					<!-- Error State -->
+					<div x-show="error" x-cloak class="p-4 bg-destructive/10 text-destructive rounded-md text-sm" x-text="error"></div>
+
+					<!-- Empty State -->
+					<div x-show="!result && !error" class="flex flex-col items-center justify-center py-12 text-center">
+						<span class="text-muted-foreground/40 mb-4">
+							@icons.Zap(icons.WithSize(40))
+						</span>
+						<p class="text-sm text-muted-foreground">Run an authorization check to see results here.</p>
+					</div>
+
+					<!-- Result Display -->
+					<div x-show="result" x-cloak class="space-y-6">
+						<!-- Decision Badge -->
+						<div class="flex items-center justify-center py-6">
+							<template x-if="result && result.allowed">
+								<div class="flex items-center gap-3 px-6 py-4 bg-green-500/10 text-green-600 rounded-lg">
+									@icons.CheckCircle(icons.WithSize(32))
+									<span class="text-2xl font-bold">ALLOWED</span>
+								</div>
+							</template>
+							<template x-if="result && !result.allowed">
+								<div class="flex items-center gap-3 px-6 py-4 bg-red-500/10 text-red-600 rounded-lg">
+									@icons.XCircle(icons.WithSize(32))
+									<span class="text-2xl font-bold">DENIED</span>
+								</div>
+							</template>
+						</div>
+
+						<!-- Details -->
+						<dl class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+							<dt class="text-muted-foreground">Decision</dt>
+							<dd class="font-mono text-xs" x-text="result?.decision"></dd>
+							<dt class="text-muted-foreground">Reason</dt>
+							<dd class="text-xs" x-text="result?.reason || '-'"></dd>
+							<dt class="text-muted-foreground">Eval Time</dt>
+							<dd class="font-mono text-xs" x-text="result ? (result.eval_time_ns < 1000 ? result.eval_time_ns + 'ns' : result.eval_time_ns < 1000000 ? (result.eval_time_ns/1000).toFixed(1) + 'us' : (result.eval_time_ns/1000000).toFixed(1) + 'ms') : '-'"></dd>
+						</dl>
+
+						<!-- Matched By -->
+						<template x-if="result && result.matched_by && result.matched_by.length > 0">
+							<div>
+								<h4 class="text-sm font-medium mb-2">Matched By</h4>
+								<div class="overflow-auto rounded-md border">
+									<table class="w-full text-sm">
+										<thead>
+											<tr class="border-b bg-muted/50">
+												<th class="px-3 py-2 text-left font-medium">Source</th>
+												<th class="px-3 py-2 text-left font-medium">Rule ID</th>
+												<th class="px-3 py-2 text-left font-medium">Detail</th>
+											</tr>
+										</thead>
+										<tbody>
+											<template x-for="match in result.matched_by" :key="match.rule_id">
+												<tr class="border-b">
+													<td class="px-3 py-2">
+														@badge.Badge(badge.Props{Variant: badge.VariantOutline, Attributes: templ.Attributes{"x-text": "match.source"}}) {
+														}
+													</td>
+													<td class="px-3 py-2 font-mono text-xs" x-text="match.rule_id || '-'"></td>
+													<td class="px-3 py-2 text-xs" x-text="match.detail || '-'"></td>
+												</tr>
+											</template>
+										</tbody>
+									</table>
+								</div>
+							</div>
+						</template>
+					</div>
+				}
+			}
+		</div>
+	</div>
+}

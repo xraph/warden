@@ -1,0 +1,18 @@
+package widgets
+
+import (
+	"strconv"
+
+	"github.com/xraph/warden/dashboard/components"
+)
+
+templ StatsWidget(roles, permissions, assignments, relations, policies, resourceTypes int64) {
+	<div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+		@components.StatCard("shield", "Roles", strconv.FormatInt(roles, 10), "RBAC roles")
+		@components.StatCard("key-round", "Permissions", strconv.FormatInt(permissions, 10), "Definitions")
+		@components.StatCard("user-check", "Assignments", strconv.FormatInt(assignments, 10), "Role bindings")
+		@components.StatCard("git-branch", "Relations", strconv.FormatInt(relations, 10), "ReBAC tuples")
+		@components.StatCard("file-lock", "Policies", strconv.FormatInt(policies, 10), "ABAC policies")
+		@components.StatCard("boxes", "Resource Types", strconv.FormatInt(resourceTypes, 10), "Type defs")
+	</div>
+}

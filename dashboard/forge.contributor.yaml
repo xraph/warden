@@ -1,0 +1,70 @@
+name: warden
+display_name: "Warden"
+icon: shield-check
+version: 0.1.0
+type: templ
+build:
+  mode: local
+
+nav:
+  - label: Overview
+    path: /
+    icon: layout-dashboard
+    group: Warden
+    priority: 0
+  - label: Roles
+    path: /roles
+    icon: shield
+    group: Warden
+    priority: 1
+  - label: Permissions
+    path: /permissions
+    icon: key-round
+    group: Warden
+    priority: 2
+  - label: Assignments
+    path: /assignments
+    icon: user-check
+    group: Warden
+    priority: 3
+  - label: Relations
+    path: /relations
+    icon: git-branch
+    group: Warden
+    priority: 4
+  - label: Policies
+    path: /policies
+    icon: file-lock
+    group: Warden
+    priority: 5
+  - label: Resource Types
+    path: /resource-types
+    icon: boxes
+    group: Warden
+    priority: 6
+  - label: Check Logs
+    path: /check-logs
+    icon: scroll-text
+    group: Warden
+    priority: 7
+
+widgets:
+  - id: warden-stats
+    title: "Authz Stats"
+    description: "Warden entity counts"
+    size: md
+    refresh_sec: 60
+  - id: warden-recent-checks
+    title: "Recent Checks"
+    description: "Recent authorization check results"
+    size: lg
+    refresh_sec: 15
+
+settings:
+  - id: warden-config
+    title: "Warden Settings"
+    description: "Configure authorization engine behavior"
+    group: Warden
+    icon: shield-check
+
+searchable: true

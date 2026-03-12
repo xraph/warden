@@ -30,7 +30,7 @@ if err := s.Migrate(ctx); err != nil {
 | Aspect | Detail |
 |--------|--------|
 | Driver | grove ORM + mongodriver |
-| Migrations | Index creation on collections |
+| Migrations | Grove migrations with JSON Schema validation + indexes |
 | Transactions | MongoDB sessions (replica-set required for multi-doc txns) |
 | Collections | `warden_roles`, `warden_permissions`, `warden_role_permissions`, `warden_assignments`, `warden_relations`, `warden_policies`, `warden_resource_types`, `warden_check_logs` |
 
@@ -50,6 +50,17 @@ This includes:
 - `policy.Store` — Policy CRUD + active policy lookup
 - `resourcetype.Store` — Resource type CRUD
 - `checklog.Store` — Check log append + query
+
+## Grove Migrations
+
+The store exports a `Migrations` group for use with Grove's migration orchestrator. This enables tracked, versioned migrations across all stores in your application:
+
+```go
+import mongostore "github.com/xraph/warden/store/mongo"
+
+// mongostore.Migrations is a migrate.Group for the warden mongo store.
+// Register it with the grove migration orchestrator for coordinated migrations.
+```
 
 ## When to Use
 

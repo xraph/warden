@@ -1,0 +1,89 @@
+package pages
+
+import (
+	"github.com/xraph/warden/role"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/dialog"
+	"github.com/xraph/forgeui/components/form"
+	"github.com/xraph/forgeui/components/input"
+)
+
+// AssignmentCreateDialog renders a create assignment modal dialog.
+templ AssignmentCreateDialog(roles []*role.Role) {
+	@dialog.Dialog(dialog.Props{ID: "create-assignment-dialog"}) {
+		@dialog.Content() {
+			@dialog.Header() {
+				@dialog.Title() {
+					Assign Role
+				}
+				@dialog.Description() {
+					Assign a role to a subject with optional resource scope and expiration.
+				}
+			}
+			<div id="create-assignment-errors" class="text-sm text-destructive"></div>
+			<form
+				hx-post="/v1/assignments"
+				hx-ext="json-enc"
+				hx-target="#create-assignment-errors"
+				hx-swap="innerHTML"
+				hx-on::after-request="if(event.detail.successful) { tuiCloseDialog('create-assignment-dialog'); htmx.ajax('GET', '/assignments', {target:'#content'}); }"
+				class="space-y-4"
+			>
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "assign-role"}) { Role }
+					<select
+						id="assign-role"
+						name="role_id"
+						class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						required
+					>
+						<option value="">Select a role...</option>
+						for _, r := range roles {
+							<option value={ r.ID.String() }>{ r.Name }</option>
+						}
+					</select>
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "assign-kind"}) { Subject Kind }
+					<select
+						id="assign-kind"
+						name="subject_kind"
+						class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						required
+					>
+						<option value="user">User</option>
+						<option value="api_key">API Key</option>
+						<option value="service">Service</option>
+						<option value="service_acct">Service Account</option>
+					</select>
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "assign-subject"}) { Subject ID }
+					@input.Input(input.Props{ID: "assign-subject", Name: "subject_id", Placeholder: "e.g. user-123", Attributes: templ.Attributes{"required": "true"}})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "assign-rt"}) { Resource Type (optional) }
+					@input.Input(input.Props{ID: "assign-rt", Name: "resource_type", Placeholder: "e.g. document"})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "assign-rid"}) { Resource ID (optional) }
+					@input.Input(input.Props{ID: "assign-rid", Name: "resource_id", Placeholder: "e.g. doc-456"})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "assign-expires"}) { Expires At (optional) }
+					@input.Input(input.Props{ID: "assign-expires", Name: "expires_at", Type: input.TypeDateTime})
+				}
+				@dialog.Footer() {
+					@dialog.Close() {
+						@button.Button(button.Props{Variant: button.VariantOutline}) {
+							Cancel
+						}
+					}
+					@button.Button(button.Props{Type: "submit"}) {
+						Assign Role
+					}
+				}
+			</form>
+		}
+	}
+}

@@ -1,0 +1,207 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/xraph/warden/dashboard/components"
+	"github.com/xraph/warden/policy"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/dropdown"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ PoliciesPage(policies []*policy.Policy, search, effectFilter, activeFilter string, pg components.PaginationMeta) {
+	<div class="space-y-6">
+		@components.PageHeader("ABAC Policies", strconv.FormatInt(pg.Total, 10), "Attribute-based access control policies with conditions.") {
+			@button.Button(button.Props{
+				Attributes: templ.Attributes{
+					"hx-get":      "/policies/create",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+				},
+			}) {
+				@icons.Plus(icons.WithSize(16))
+				<span class="ml-2">Create Policy</span>
+			}
+		}
+
+		<!-- Filter Toolbar -->
+		<div class="flex items-center gap-3 flex-wrap">
+			@input.Input(input.Props{
+				Name:        "search",
+				Type:        input.TypeSearch,
+				Placeholder: "Search policies...",
+				Value:       search,
+				Class:       "max-w-sm",
+				Attributes: templ.Attributes{
+					"hx-get":      "/policies",
+					"hx-trigger":  "input changed delay:300ms, search",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='effect'],[name='active']",
+				},
+			})
+			<select
+				name="effect"
+				class="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				hx-get="/policies"
+				hx-trigger="change"
+				hx-target="#content"
+				hx-push-url="true"
+				hx-include="[name='search'],[name='active']"
+			>
+				<option value="">All Effects</option>
+				<option value="allow" selected?={ effectFilter == "allow" }>Allow</option>
+				<option value="deny" selected?={ effectFilter == "deny" }>Deny</option>
+			</select>
+			<select
+				name="active"
+				class="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				hx-get="/policies"
+				hx-trigger="change"
+				hx-target="#content"
+				hx-push-url="true"
+				hx-include="[name='search'],[name='effect']"
+			>
+				<option value="">All Status</option>
+				<option value="true" selected?={ activeFilter == "true" }>Active</option>
+				<option value="false" selected?={ activeFilter == "false" }>Inactive</option>
+			</select>
+		</div>
+
+		<!-- Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(policies) == 0 {
+					@emptyState("No policies found.", fileLockEmpty())
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Name }
+								@table.Head() { Effect }
+								@table.Head() { Priority }
+								@table.Head() { Active }
+								@table.Head() { Conditions }
+								@table.Head() { Created }
+								@table.Head() { }
+							}
+						}
+						@table.Body() {
+							for _, p := range policies {
+								@table.Row() {
+									@table.Cell() {
+										<a
+											class="font-medium text-primary hover:underline cursor-pointer"
+											hx-get={ "/policies/detail?id=" + p.ID.String() }
+											hx-target="#content"
+											hx-push-url="true"
+										>
+											{ p.Name }
+										</a>
+									}
+									@table.Cell() {
+										@effectBadge(p.Effect)
+									}
+									@table.Cell() {
+										<span class="font-mono text-sm">{ strconv.Itoa(p.Priority) }</span>
+									}
+									@table.Cell() {
+										if p.IsActive {
+											@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+												Active
+											}
+										} else {
+											@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+												Inactive
+											}
+										}
+									}
+									@table.Cell() {
+										<span class="text-sm">{ strconv.Itoa(len(p.Conditions)) }</span>
+									}
+									@table.Cell() {
+										{{ created := p.CreatedAt.Format("Jan 02, 2006") }}
+										{ created }
+									}
+									@table.Cell() {
+										@dropdown.Dropdown() {
+											@dropdown.Trigger(dropdown.TriggerProps{Class: "cursor-pointer"}) {
+												@button.Button(button.Props{Variant: button.VariantGhost, Size: button.SizeIcon}) {
+													@icons.Ellipsis(icons.WithSize(16))
+												}
+											}
+											@dropdown.Content() {
+												@dropdown.Item(dropdown.ItemProps{
+													Attributes: templ.Attributes{
+														"hx-get":      "/policies/detail?id=" + p.ID.String(),
+														"hx-target":   "#content",
+														"hx-push-url": "true",
+													},
+												}) {
+													@icons.Eye(icons.WithSize(14))
+													<span class="ml-2">View Details</span>
+												}
+												@dropdown.Item(dropdown.ItemProps{
+													Attributes: templ.Attributes{
+														"hx-get":      "/policies/edit?id=" + p.ID.String(),
+														"hx-target":   "#content",
+														"hx-push-url": "true",
+													},
+												}) {
+													@icons.Pencil(icons.WithSize(14))
+													<span class="ml-2">Edit</span>
+												}
+												@dropdown.Separator()
+												@dropdown.Item(dropdown.ItemProps{
+													Class: "text-destructive",
+													Attributes: templ.Attributes{
+														"onclick": fmt.Sprintf("tuiOpenDialog('delete-policy-%s')", p.ID.String()),
+													},
+												}) {
+													@icons.Trash2(icons.WithSize(14))
+													<span class="ml-2">Delete</span>
+												}
+											}
+										}
+										@components.ConfirmDialog(components.ConfirmDialogProps{
+											ID:           "delete-policy-" + p.ID.String(),
+											Title:        "Delete Policy",
+											Description:  "Are you sure you want to delete policy \"" + p.Name + "\"?",
+											ConfirmLabel: "Delete",
+											HxEndpoint:   "/v1/policies/" + p.ID.String(),
+											HxMethod:     "delete",
+										})
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if pg.TotalPages > 1 {
+			@paginationNav(pg, "/policies", map[string]string{"search": search, "effect": effectFilter, "active": activeFilter})
+		}
+
+		@components.DialogHelpers()
+	</div>
+}
+
+templ effectBadge(effect policy.Effect) {
+	if effect == policy.EffectAllow {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			Allow
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+			Deny
+		}
+	}
+}

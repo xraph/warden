@@ -1,0 +1,265 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/xraph/warden/dashboard/components"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/dropdown"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/components/pagination"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ RolesPage(rows []RoleRow, search string, pg components.PaginationMeta) {
+	<div class="space-y-6">
+		@components.PageHeader("Roles", strconv.FormatInt(pg.Total, 10), "") {
+			@RoleCreateDialogTrigger()
+		}
+
+		<!-- Search & Filter Toolbar -->
+		<div class="flex items-center gap-3">
+			@input.Input(input.Props{
+				Name:        "search",
+				Type:        input.TypeSearch,
+				Placeholder: "Search roles...",
+				Value:       search,
+				Class:       "max-w-sm",
+				Attributes: templ.Attributes{
+					"hx-get":     "/roles",
+					"hx-trigger": "input changed delay:300ms, search",
+					"hx-target":  "#content",
+					"hx-push-url": "true",
+					"hx-include": "this",
+				},
+			})
+		</div>
+
+		<!-- Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(rows) == 0 {
+					@emptyState("No roles found.", shieldEmpty())
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Name }
+								@table.Head() { Slug }
+								@table.Head() { Parent }
+								@table.Head() { Permissions }
+								@table.Head() { Relations }
+								@table.Head() { Flags }
+								@table.Head() { Description }
+								@table.Head() { Created }
+								@table.Head() { }
+							}
+						}
+						@table.Body() {
+							for _, row := range rows {
+								@table.Row() {
+									@table.Cell() {
+										<a
+											class="font-medium text-primary hover:underline cursor-pointer"
+											hx-get={ "/roles/detail?id=" + row.Role.ID.String() }
+											hx-target="#content"
+											hx-push-url="true"
+										>
+											{ row.Role.Name }
+										</a>
+									}
+									@table.Cell() {
+										<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ row.Role.Slug }</code>
+									}
+									@table.Cell() {
+										if row.ParentName != "" {
+											<a
+												class="text-sm text-primary hover:underline cursor-pointer"
+												hx-get={ "/roles/detail?id=" + row.ParentID }
+												hx-target="#content"
+												hx-push-url="true"
+											>
+												{ row.ParentName }
+											</a>
+										} else {
+											<span class="text-sm text-muted-foreground italic">—</span>
+										}
+									}
+									@table.Cell() {
+										if row.PermissionCount > 0 {
+											@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+												{ strconv.Itoa(row.PermissionCount) }
+											}
+										} else {
+											<span class="text-sm text-muted-foreground">0</span>
+										}
+									}
+									@table.Cell() {
+										if row.RelationCount > 0 {
+											@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+												{ strconv.FormatInt(row.RelationCount, 10) }
+											}
+										} else {
+											<span class="text-sm text-muted-foreground">0</span>
+										}
+									}
+									@table.Cell() {
+										<div class="flex gap-1">
+											if row.Role.IsSystem {
+												@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+													System
+												}
+											}
+											if row.Role.IsDefault {
+												@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+													Default
+												}
+											}
+										</div>
+									}
+									@table.Cell() {
+										if row.Role.Description != "" {
+											<span class="text-sm text-muted-foreground">{ row.Role.Description }</span>
+										} else {
+											<span class="text-sm text-muted-foreground italic">No description</span>
+										}
+									}
+									@table.Cell() {
+										{{ created := row.Role.CreatedAt.Format("Jan 02, 2006") }}
+										{ created }
+									}
+									@table.Cell() {
+										@dropdown.Dropdown() {
+											@dropdown.Trigger(dropdown.TriggerProps{Class: "cursor-pointer"}) {
+												@button.Button(button.Props{Variant: button.VariantGhost, Size: button.SizeIcon}) {
+													@icons.Ellipsis(icons.WithSize(16))
+												}
+											}
+											@dropdown.Content() {
+												@dropdown.Item(dropdown.ItemProps{
+													Attributes: templ.Attributes{
+														"hx-get":    "/roles/detail?id=" + row.Role.ID.String(),
+														"hx-target": "#content",
+														"hx-push-url": "true",
+													},
+												}) {
+													@icons.Eye(icons.WithSize(14))
+													<span class="ml-2">View Details</span>
+												}
+												if !row.Role.IsSystem {
+													@dropdown.Separator()
+													@dropdown.Item(dropdown.ItemProps{
+														Class: "text-destructive",
+														Attributes: templ.Attributes{
+															"onclick": fmt.Sprintf("tuiOpenDialog('delete-role-%s')", row.Role.ID.String()),
+														},
+													}) {
+														@icons.Trash2(icons.WithSize(14))
+														<span class="ml-2">Delete</span>
+													}
+												}
+											}
+										}
+										if !row.Role.IsSystem {
+											@components.ConfirmDialog(components.ConfirmDialogProps{
+												ID:           "delete-role-" + row.Role.ID.String(),
+												Title:        "Delete Role",
+												Description:  "Are you sure you want to delete role \"" + row.Role.Name + "\"? This action cannot be undone.",
+												ConfirmLabel: "Delete",
+												HxEndpoint:   "/v1/roles/" + row.Role.ID.String(),
+												HxMethod:     "delete",
+											})
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		<!-- Pagination -->
+		if pg.TotalPages > 1 {
+			@paginationNav(pg, "/roles", map[string]string{"search": search})
+		}
+
+		<!-- Create Role Dialog -->
+		{{ roles := extractRoles(rows) }}
+		@RoleCreateDialog(roles)
+		@components.DialogHelpers()
+		<script>
+		if (new URLSearchParams(window.location.search).get('create') === '1') {
+			requestAnimationFrame(function(){ tuiOpenDialog('create-role-dialog'); });
+		}
+		</script>
+	</div>
+}
+
+templ RoleCreateDialogTrigger() {
+	@button.Button(button.Props{
+		Attributes: templ.Attributes{
+			"onclick": "tuiOpenDialog('create-role-dialog')",
+		},
+	}) {
+		@icons.Plus(icons.WithSize(16))
+		<span class="ml-2">Create Role</span>
+	}
+}
+
+// paginationNav renders pagination controls.
+templ paginationNav(pg components.PaginationMeta, basePath string, filters map[string]string) {
+	{{ pgData := pagination.CreatePagination(pg.CurrentPage, pg.TotalPages, 7) }}
+	@pagination.Pagination() {
+		@pagination.Content() {
+			@pagination.Previous(pagination.PreviousProps{
+				Disabled: !pgData.HasPrevious,
+				Attributes: templ.Attributes{
+					"hx-get":      buildPaginatedURL(basePath, filters, pg.Limit, (pg.CurrentPage-2)*pg.Limit),
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+				},
+			})
+			for _, page := range pgData.Pages {
+				if page == -1 {
+					@pagination.Ellipsis()
+				} else {
+					@pagination.Item() {
+						@pagination.Link(pagination.LinkProps{
+							IsActive: page == pgData.CurrentPage,
+							Attributes: templ.Attributes{
+								"hx-get":      buildPaginatedURL(basePath, filters, pg.Limit, (page-1)*pg.Limit),
+								"hx-target":   "#content",
+								"hx-push-url": "true",
+							},
+						}) {
+							{ strconv.Itoa(page) }
+						}
+					}
+				}
+			}
+			@pagination.Next(pagination.NextProps{
+				Disabled: !pgData.HasNext,
+				Attributes: templ.Attributes{
+					"hx-get":      buildPaginatedURL(basePath, filters, pg.Limit, pg.CurrentPage*pg.Limit),
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+				},
+			})
+		}
+	}
+}
+
+func buildPaginatedURL(basePath string, filters map[string]string, limit, offset int) string {
+	url := fmt.Sprintf("%s?limit=%d&offset=%d", basePath, limit, offset)
+	for k, v := range filters {
+		if v != "" {
+			url += fmt.Sprintf("&%s=%s", k, v)
+		}
+	}
+	return url
+}

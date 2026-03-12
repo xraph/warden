@@ -1,0 +1,155 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/xraph/warden/dashboard/components"
+	"github.com/xraph/warden/resourcetype"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/dropdown"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ ResourceTypesPage(types []*resourcetype.ResourceType, search string, pg components.PaginationMeta) {
+	<div class="space-y-6">
+		@components.PageHeader("Resource Types", strconv.FormatInt(pg.Total, 10), "ReBAC schema definitions (OpenFGA-style authorization model).") {
+			@button.Button(button.Props{
+				Attributes: templ.Attributes{
+					"hx-get":      "/resource-types/create",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+				},
+			}) {
+				@icons.Plus(icons.WithSize(16))
+				<span class="ml-2">Create Resource Type</span>
+			}
+		}
+
+		<!-- Search -->
+		<div class="flex items-center gap-3">
+			@input.Input(input.Props{
+				Name:        "search",
+				Type:        input.TypeSearch,
+				Placeholder: "Search resource types...",
+				Value:       search,
+				Class:       "max-w-sm",
+				Attributes: templ.Attributes{
+					"hx-get":      "/resource-types",
+					"hx-trigger":  "input changed delay:300ms, search",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "this",
+				},
+			})
+		</div>
+
+		<!-- Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(types) == 0 {
+					@emptyState("No resource types found.", boxesEmpty())
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Name }
+								@table.Head() { Description }
+								@table.Head() { Relations }
+								@table.Head() { Permissions }
+								@table.Head() { Created }
+								@table.Head() { }
+							}
+						}
+						@table.Body() {
+							for _, rt := range types {
+								@table.Row() {
+									@table.Cell() {
+										<a
+											class="font-medium text-primary hover:underline cursor-pointer"
+											hx-get={ "/resource-types/detail?id=" + rt.ID.String() }
+											hx-target="#content"
+											hx-push-url="true"
+										>
+											{ rt.Name }
+										</a>
+									}
+									@table.Cell() {
+										if rt.Description != "" {
+											<span class="text-sm text-muted-foreground">{ rt.Description }</span>
+										} else {
+											<span class="text-sm text-muted-foreground italic">No description</span>
+										}
+									}
+									@table.Cell() {
+										@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+											{ strconv.Itoa(len(rt.Relations)) }
+										}
+									}
+									@table.Cell() {
+										@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+											{ strconv.Itoa(len(rt.Permissions)) }
+										}
+									}
+									@table.Cell() {
+										{{ created := rt.CreatedAt.Format("Jan 02, 2006") }}
+										{ created }
+									}
+									@table.Cell() {
+										@dropdown.Dropdown() {
+											@dropdown.Trigger(dropdown.TriggerProps{Class: "cursor-pointer"}) {
+												@button.Button(button.Props{Variant: button.VariantGhost, Size: button.SizeIcon}) {
+													@icons.Ellipsis(icons.WithSize(16))
+												}
+											}
+											@dropdown.Content() {
+												@dropdown.Item(dropdown.ItemProps{
+													Attributes: templ.Attributes{
+														"hx-get":      "/resource-types/detail?id=" + rt.ID.String(),
+														"hx-target":   "#content",
+														"hx-push-url": "true",
+													},
+												}) {
+													@icons.Eye(icons.WithSize(14))
+													<span class="ml-2">View Details</span>
+												}
+												@dropdown.Separator()
+												@dropdown.Item(dropdown.ItemProps{
+													Class: "text-destructive",
+													Attributes: templ.Attributes{
+														"onclick": fmt.Sprintf("tuiOpenDialog('delete-rt-%s')", rt.ID.String()),
+													},
+												}) {
+													@icons.Trash2(icons.WithSize(14))
+													<span class="ml-2">Delete</span>
+												}
+											}
+										}
+										@components.ConfirmDialog(components.ConfirmDialogProps{
+											ID:           "delete-rt-" + rt.ID.String(),
+											Title:        "Delete Resource Type",
+											Description:  "Are you sure you want to delete resource type \"" + rt.Name + "\"?",
+											ConfirmLabel: "Delete",
+											HxEndpoint:   "/v1/resource-types/" + rt.ID.String(),
+											HxMethod:     "delete",
+										})
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if pg.TotalPages > 1 {
+			@paginationNav(pg, "/resource-types", map[string]string{"search": search})
+		}
+
+		@components.DialogHelpers()
+	</div>
+}

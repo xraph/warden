@@ -2,7 +2,8 @@ package plugin
 
 import (
 	"context"
-	"log/slog"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
@@ -88,7 +89,7 @@ type shutdownEntry struct {
 // only over plugins implementing the relevant hook.
 type Registry struct {
 	plugins []Plugin
-	logger  *slog.Logger
+	logger  log.Logger
 
 	beforeCheck        []beforeCheckEntry
 	afterCheck         []afterCheckEntry
@@ -110,7 +111,7 @@ type Registry struct {
 }
 
 // NewRegistry creates a plugin registry with the given logger.
-func NewRegistry(logger *slog.Logger) *Registry {
+func NewRegistry(logger log.Logger) *Registry {
 	return &Registry{logger: logger}
 }
 
@@ -361,8 +362,8 @@ func (r *Registry) EmitShutdown(ctx context.Context) {
 // Errors from hooks are never propagated — they must not block the pipeline.
 func (r *Registry) logHookError(hook, pluginName string, err error) {
 	r.logger.Warn("plugin hook error",
-		slog.String("hook", hook),
-		slog.String("plugin", pluginName),
-		slog.String("error", err.Error()),
+		log.String("hook", hook),
+		log.String("plugin", pluginName),
+		log.String("error", err.Error()),
 	)
 }

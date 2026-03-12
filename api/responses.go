@@ -28,3 +28,43 @@ type ListResponse[T any] struct {
 	Limit  int   `json:"limit" description:"Page size"`
 	Offset int   `json:"offset" description:"Page offset"`
 }
+
+// RoleListResponse wraps a list of roles.
+type RoleListResponse struct {
+	Body any `json:"roles" body:"" description:"List of roles"`
+}
+
+// PermissionListResponse wraps a list of permissions.
+type PermissionListResponse struct {
+	Body any `json:"permissions" body:"" description:"List of permissions"`
+}
+
+// AssignmentListResponse wraps a list of assignments.
+type AssignmentListResponse struct {
+	Body any `json:"assignments" body:"" description:"List of assignments"`
+}
+
+// SubjectRolesResponse wraps a list of role IDs for a subject.
+type SubjectRolesResponse struct {
+	Body any `json:"role_ids" body:"" description:"List of role IDs"`
+}
+
+// RelationListResponse wraps a list of relation tuples.
+type RelationListResponse struct {
+	Body any `json:"relations" body:"" description:"List of relations"`
+}
+
+// PolicyListResponse wraps a list of policies.
+type PolicyListResponse struct {
+	Body any `json:"policies" body:"" description:"List of policies"`
+}
+
+// ResourceTypeListResponse wraps a list of resource types.
+type ResourceTypeListResponse struct {
+	Body any `json:"resource_types" body:"" description:"List of resource types"`
+}
+
+// CheckLogListResponse wraps a list of check log entries.
+type CheckLogListResponse struct {
+	Body any `json:"check_logs" body:"" description:"List of check logs"`
+}

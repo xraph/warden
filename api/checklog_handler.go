@@ -22,7 +22,7 @@ func (a *API) registerCheckLogRoutes(router forge.Router) error {
 	)
 }
 
-func (a *API) listCheckLogs(ctx forge.Context, req *ListCheckLogsRequest) ([]*checklog.Entry, error) {
+func (a *API) listCheckLogs(ctx forge.Context, req *ListCheckLogsRequest) (*CheckLogListResponse, error) {
 	filter := &checklog.QueryFilter{
 		SubjectKind:  req.SubjectKind,
 		SubjectID:    req.SubjectID,
@@ -53,5 +53,5 @@ func (a *API) listCheckLogs(ctx forge.Context, req *ListCheckLogsRequest) ([]*ch
 		return nil, mapError(err)
 	}
 
-	return logs, ctx.JSON(http.StatusOK, logs)
+	return &CheckLogListResponse{Body: logs}, nil
 }

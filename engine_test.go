@@ -401,3 +401,48 @@ func TestABACTimeCondition(t *testing.T) {
 		t.Fatalf("expected allowed before time limit, got %s: %s", result.Decision, result.Reason)
 	}
 }
+
+func TestCheckWithTenantOverride(t *testing.T) {
+	// Context has tenant "t1", but CheckRequest overrides to "t2".
+	ctx := WithTenant(context.Background(), "app1", "t1")
+	eng, s := newTestEngine(t)
+
+	// Create role + permission in tenant "t2".
+	roleID := id.NewRoleID()
+	permID := id.NewPermissionID()
+
+	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t2", Name: "admin", Slug: "admin"})
+	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t2", Name: "document:read", Resource: "document", Action: "read"})
+	_ = s.AttachPermission(ctx, roleID, permID)
+	_ = s.CreateAssignment(ctx, &assignment.Assignment{
+		ID: id.NewAssignmentID(), TenantID: "t2",
+		RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
+	})
+
+	// Without tenant override — context tenant "t1" is used, should be denied.
+	result, err := eng.Check(ctx, &CheckRequest{
+		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+		Action:   Action{Name: "read"},
+		Resource: Resource{Type: "document", ID: "doc1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Allowed {
+		t.Fatal("expected denied when using context tenant t1 (no data in t1)")
+	}
+
+	// With tenant override — should use "t2" and find the role/permission.
+	result, err = eng.Check(ctx, &CheckRequest{
+		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+		Action:   Action{Name: "read"},
+		Resource: Resource{Type: "document", ID: "doc1"},
+		TenantID: "t2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Allowed {
+		t.Fatalf("expected allowed with tenant override t2, got %s: %s", result.Decision, result.Reason)
+	}
+}

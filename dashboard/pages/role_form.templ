@@ -1,0 +1,130 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/warden/role"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/dialog"
+	"github.com/xraph/forgeui/components/form"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/textarea"
+	switchcomp "github.com/xraph/forgeui/components/switch"
+)
+
+// RoleCreateDialog renders a create role modal dialog.
+templ RoleCreateDialog(roles []*role.Role) {
+	@dialog.Dialog(dialog.Props{ID: "create-role-dialog"}) {
+		@dialog.Content() {
+			@dialog.Header() {
+				@dialog.Title() {
+					Create Role
+				}
+				@dialog.Description() {
+					Create a new authorization role.
+				}
+			}
+			<div id="create-role-errors" class="text-sm text-destructive"></div>
+			<form
+				hx-post="/v1/roles"
+				hx-ext="json-enc"
+				hx-target="#create-role-errors"
+				hx-swap="innerHTML"
+				hx-on::after-request="if(event.detail.successful) { tuiCloseDialog('create-role-dialog'); htmx.ajax('GET', '/roles', {target:'#content'}); }"
+				class="space-y-4"
+			>
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "role-name"}) { Name }
+					@input.Input(input.Props{ID: "role-name", Name: "name", Placeholder: "e.g. admin", Attributes: templ.Attributes{"required": "true"}})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "role-slug"}) { Slug }
+					@input.Input(input.Props{ID: "role-slug", Name: "slug", Placeholder: "e.g. admin", Attributes: templ.Attributes{"required": "true"}})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "role-desc"}) { Description }
+					@textarea.Textarea(textarea.Props{ID: "role-desc", Name: "description", Placeholder: "Optional description...", Rows: 3})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "role-parent"}) { Parent Role }
+					<select
+						id="role-parent"
+						name="parent_id"
+						class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					>
+						<option value="">None</option>
+						for _, r := range roles {
+							<option value={ r.ID.String() }>{ r.Name }</option>
+						}
+					</select>
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "role-max"}) { Max Members (0 = unlimited) }
+					@input.Input(input.Props{ID: "role-max", Name: "max_members", Type: input.TypeNumber, Value: "0"})
+				}
+				@form.ItemFlex() {
+					@form.Label(form.LabelProps{For: "role-default"}) { Default Role }
+					@switchcomp.Switch(switchcomp.Props{ID: "role-default", Name: "is_default"})
+				}
+				@dialog.Footer() {
+					@dialog.Close() {
+						@button.Button(button.Props{Variant: button.VariantOutline}) {
+							Cancel
+						}
+					}
+					@button.Button(button.Props{Type: "submit"}) {
+						Create Role
+					}
+				}
+			</form>
+		}
+	}
+}
+
+// RoleEditDialog renders an edit role modal dialog.
+templ RoleEditDialog(r *role.Role, roles []*role.Role) {
+	@dialog.Dialog(dialog.Props{ID: "edit-role-dialog"}) {
+		@dialog.Content() {
+			@dialog.Header() {
+				@dialog.Title() {
+					Edit Role
+				}
+				@dialog.Description() {
+					Update role details.
+				}
+			}
+			<div id="edit-role-errors" class="text-sm text-destructive"></div>
+			<form
+				{ htmxFormAttrs("/v1/roles/" + r.ID.String(), "put", "#edit-role-errors", "edit-role-dialog", "/roles/detail?id=" + r.ID.String())... }
+				class="space-y-4"
+			>
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "edit-role-name"}) { Name }
+					@input.Input(input.Props{ID: "edit-role-name", Name: "name", Value: r.Name})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "edit-role-desc"}) { Description }
+					@textarea.Textarea(textarea.Props{ID: "edit-role-desc", Name: "description", Value: r.Description, Rows: 3})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "edit-role-max"}) { Max Members }
+					@input.Input(input.Props{ID: "edit-role-max", Name: "max_members", Type: input.TypeNumber, Value: strconv.Itoa(r.MaxMembers)})
+				}
+				@form.ItemFlex() {
+					@form.Label(form.LabelProps{For: "edit-role-default"}) { Default Role }
+					@switchcomp.Switch(switchcomp.Props{ID: "edit-role-default", Name: "is_default", Checked: r.IsDefault})
+				}
+				@dialog.Footer() {
+					@dialog.Close() {
+						@button.Button(button.Props{Variant: button.VariantOutline}) {
+							Cancel
+						}
+					}
+					@button.Button(button.Props{Type: "submit"}) {
+						Save Changes
+					}
+				}
+			</form>
+		}
+	}
+}

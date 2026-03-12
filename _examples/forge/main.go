@@ -3,8 +3,8 @@ package main
 
 import (
 	"context"
-	"log"
-	"log/slog"
+	"fmt"
+	"os"
 
 	"github.com/xraph/forge"
 
@@ -19,12 +19,12 @@ func main() {
 		forge.WithExtensions(
 			wardenext.New(
 				wardenext.WithStore(s),
-				wardenext.WithLogger(slog.Default()),
 			),
 		),
 	)
 
 	if err := app.Start(context.Background()); err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "warden: %v\n", err)
+		os.Exit(1)
 	}
 }

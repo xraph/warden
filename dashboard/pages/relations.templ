@@ -1,0 +1,175 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/xraph/warden/dashboard/components"
+	"github.com/xraph/warden/relation"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/dropdown"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ RelationsPage(tuples []*relation.Tuple, objectType, rel, subjectType string, pg components.PaginationMeta) {
+	<div class="space-y-6">
+		@components.PageHeader("Relation Tuples", strconv.FormatInt(pg.Total, 10), "Zanzibar-style relation tuples for relationship-based access control (ReBAC).") {
+			@button.Button(button.Props{
+				Attributes: templ.Attributes{
+					"onclick": "tuiOpenDialog('create-relation-dialog')",
+				},
+			}) {
+				@icons.Plus(icons.WithSize(16))
+				<span class="ml-2">Write Relation</span>
+			}
+		}
+
+		<!-- Filter Toolbar -->
+		<div class="flex items-center gap-3 flex-wrap">
+			@input.Input(input.Props{
+				Name:        "object_type",
+				Type:        input.TypeText,
+				Placeholder: "Object Type...",
+				Value:       objectType,
+				Class:       "max-w-[180px]",
+				Attributes: templ.Attributes{
+					"hx-get":      "/relations",
+					"hx-trigger":  "input changed delay:300ms",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='relation'],[name='subject_type']",
+				},
+			})
+			@input.Input(input.Props{
+				Name:        "relation",
+				Type:        input.TypeText,
+				Placeholder: "Relation...",
+				Value:       rel,
+				Class:       "max-w-[180px]",
+				Attributes: templ.Attributes{
+					"hx-get":      "/relations",
+					"hx-trigger":  "input changed delay:300ms",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='object_type'],[name='subject_type']",
+				},
+			})
+			@input.Input(input.Props{
+				Name:        "subject_type",
+				Type:        input.TypeText,
+				Placeholder: "Subject Type...",
+				Value:       subjectType,
+				Class:       "max-w-[180px]",
+				Attributes: templ.Attributes{
+					"hx-get":      "/relations",
+					"hx-trigger":  "input changed delay:300ms",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='object_type'],[name='relation']",
+				},
+			})
+		</div>
+
+		<!-- Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(tuples) == 0 {
+					@emptyState("No relation tuples found.", gitBranchEmpty())
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Object }
+								@table.Head() { Relation }
+								@table.Head() { Subject }
+								@table.Head() { Tuple }
+								@table.Head() { Created }
+								@table.Head() { }
+							}
+						}
+						@table.Body() {
+							for _, t := range tuples {
+								@table.Row() {
+									@table.Cell() {
+										<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ fmt.Sprintf("%s:%s", t.ObjectType, t.ObjectID) }</code>
+									}
+									@table.Cell() {
+										@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+											{ t.Relation }
+										}
+									}
+									@table.Cell() {
+										<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ fmt.Sprintf("%s:%s", t.SubjectType, t.SubjectID) }</code>
+										if t.SubjectRelation != "" {
+											<span class="text-xs text-muted-foreground ml-1">#{ t.SubjectRelation }</span>
+										}
+									}
+									@table.Cell() {
+										<code class="text-xs font-mono">{ formatTuple(t) }</code>
+									}
+									@table.Cell() {
+										{{ created := t.CreatedAt.Format("Jan 02, 2006") }}
+										{ created }
+									}
+									@table.Cell() {
+										@dropdown.Dropdown() {
+											@dropdown.Trigger(dropdown.TriggerProps{Class: "cursor-pointer"}) {
+												@button.Button(button.Props{Variant: button.VariantGhost, Size: button.SizeIcon}) {
+													@icons.Ellipsis(icons.WithSize(16))
+												}
+											}
+											@dropdown.Content() {
+												@dropdown.Item(dropdown.ItemProps{
+													Class: "text-destructive",
+													Attributes: templ.Attributes{
+														"onclick": fmt.Sprintf("tuiOpenDialog('delete-rel-%s')", t.ID.String()),
+													},
+												}) {
+													@icons.Trash2(icons.WithSize(14))
+													<span class="ml-2">Delete</span>
+												}
+											}
+										}
+										@components.ConfirmDialog(components.ConfirmDialogProps{
+											ID:           "delete-rel-" + t.ID.String(),
+											Title:        "Delete Relation",
+											Description:  "Delete relation tuple " + formatTuple(t) + "?",
+											ConfirmLabel: "Delete",
+											HxEndpoint:   "/v1/relations/delete",
+											HxMethod:     "post",
+										})
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if pg.TotalPages > 1 {
+			@paginationNav(pg, "/relations", map[string]string{"object_type": objectType, "relation": rel, "subject_type": subjectType})
+		}
+
+		<!-- Create Relation Dialog -->
+		@RelationCreateDialog()
+		@components.DialogHelpers()
+		<script>
+		if (new URLSearchParams(window.location.search).get('create') === '1') {
+			requestAnimationFrame(function(){ tuiOpenDialog('create-relation-dialog'); });
+		}
+		</script>
+	</div>
+}
+
+func formatTuple(t *relation.Tuple) string {
+	subject := fmt.Sprintf("%s:%s", t.SubjectType, t.SubjectID)
+	if t.SubjectRelation != "" {
+		subject = fmt.Sprintf("%s#%s", subject, t.SubjectRelation)
+	}
+	return fmt.Sprintf("%s:%s#%s@%s", t.ObjectType, t.ObjectID, t.Relation, subject)
+}

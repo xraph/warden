@@ -198,7 +198,7 @@ func (a *API) deleteRole(ctx forge.Context, _ *GetRoleRequest) (*struct{}, error
 	return nil, ctx.NoContent(http.StatusNoContent)
 }
 
-func (a *API) listRoles(ctx forge.Context, req *ListRolesRequest) ([]*role.Role, error) {
+func (a *API) listRoles(ctx forge.Context, req *ListRolesRequest) (*RoleListResponse, error) {
 	filter := &role.ListFilter{
 		Search: req.Search,
 		Limit:  defaultLimit(req.Limit),
@@ -210,7 +210,7 @@ func (a *API) listRoles(ctx forge.Context, req *ListRolesRequest) ([]*role.Role,
 		return nil, mapError(err)
 	}
 
-	return roles, ctx.JSON(http.StatusOK, roles)
+	return &RoleListResponse{Body: roles}, nil
 }
 
 func (a *API) attachPermissionToRole(ctx forge.Context, req *AttachPermissionRequest) (*struct{}, error) {

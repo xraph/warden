@@ -1,0 +1,67 @@
+package pages
+
+import (
+	"github.com/xraph/warden/permission"
+	"github.com/xraph/warden/dashboard/components"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/dialog"
+	"github.com/xraph/forgeui/components/form"
+)
+
+// AttachPermissionDialog renders a dialog to attach a permission to a role.
+templ AttachPermissionDialog(roleID string, availablePerms []*permission.Permission) {
+	@dialog.Dialog(dialog.Props{ID: "attach-perm-dialog"}) {
+		@dialog.Content() {
+			@dialog.Header() {
+				@dialog.Title() {
+					Attach Permission
+				}
+				@dialog.Description() {
+					Select a permission to attach to this role.
+				}
+			}
+			<div id="attach-perm-errors" class="text-sm text-destructive"></div>
+			<form
+				{ htmxFormAttrs("/v1/roles/" + roleID + "/permissions", "post", "#attach-perm-errors", "attach-perm-dialog", "/roles/detail?id=" + roleID)... }
+				class="space-y-4"
+			>
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "attach-perm-select"}) { Permission }
+					<select
+						id="attach-perm-select"
+						name="permission_id"
+						class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						required
+					>
+						<option value="">Select a permission...</option>
+						for _, p := range availablePerms {
+							<option value={ p.ID.String() }>{ p.Name } ({ p.Resource }:{ p.Action })</option>
+						}
+					</select>
+				}
+				@dialog.Footer() {
+					@dialog.Close() {
+						@button.Button(button.Props{Variant: button.VariantOutline}) {
+							Cancel
+						}
+					}
+					@button.Button(button.Props{Type: "submit"}) {
+						Attach Permission
+					}
+				}
+			</form>
+		}
+	}
+}
+
+// DetachPermissionDialog renders a confirm dialog to detach a permission from a role.
+templ DetachPermissionDialog(roleID string, perm *permission.Permission) {
+	@components.ConfirmDialog(components.ConfirmDialogProps{
+		ID:           "detach-perm-" + perm.ID.String(),
+		Title:        "Detach Permission",
+		Description:  "Remove permission \"" + perm.Name + "\" from this role?",
+		ConfirmLabel: "Detach",
+		HxEndpoint:   "/v1/roles/" + roleID + "/permissions/" + perm.ID.String(),
+		HxMethod:     "delete",
+	})
+}

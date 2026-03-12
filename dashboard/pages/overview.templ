@@ -1,0 +1,263 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/xraph/warden"
+	"github.com/xraph/warden/checklog"
+	"github.com/xraph/warden/dashboard/components"
+	"github.com/xraph/warden/role"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ OverviewPage(roles, permissions, assignments, relations, policies, resourceTypes int64, recentLogs []*checklog.Entry, cfg warden.Config, allRoles []*role.Role) {
+	<div class="flex flex-col gap-8">
+		<!-- Page Header -->
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Authorization Overview</h1>
+			<p class="text-muted-foreground mt-1">Monitor your authorization system at a glance.</p>
+		</div>
+
+		<!-- Stats Grid -->
+		<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+			@components.StatCard("shield", "Roles", strconv.FormatInt(roles, 10), "RBAC roles")
+			@components.StatCard("key-round", "Permissions", strconv.FormatInt(permissions, 10), "Permission definitions")
+			@components.StatCard("user-check", "Assignments", strconv.FormatInt(assignments, 10), "Role assignments")
+			@components.StatCard("git-branch", "Relations", strconv.FormatInt(relations, 10), "ReBAC tuples")
+			@components.StatCard("file-lock", "Policies", strconv.FormatInt(policies, 10), "ABAC policies")
+			@components.StatCard("boxes", "Resource Types", strconv.FormatInt(resourceTypes, 10), "Type definitions")
+		</div>
+
+		<!-- Quick Actions & Engine Status -->
+		<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+			<!-- Quick Actions -->
+			@card.Card() {
+				@card.Header() {
+					@card.Title() {
+						Quick Actions
+					}
+					@card.Description() {
+						Common authorization management tasks.
+					}
+				}
+				@card.Content() {
+					<div class="grid grid-cols-2 gap-3">
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Class:   "justify-start h-auto py-3",
+							Attributes: templ.Attributes{
+								"onclick": "tuiOpenDialog('create-role-dialog')",
+							},
+						}) {
+							@icons.Shield(icons.WithSize(16))
+							<span class="ml-2">Create Role</span>
+						}
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Class:   "justify-start h-auto py-3",
+							Attributes: templ.Attributes{
+								"onclick": "tuiOpenDialog('create-permission-dialog')",
+							},
+						}) {
+							@icons.KeyRound(icons.WithSize(16))
+							<span class="ml-2">Create Permission</span>
+						}
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Class:   "justify-start h-auto py-3",
+							Attributes: templ.Attributes{
+								"onclick": "tuiOpenDialog('create-assignment-dialog')",
+							},
+						}) {
+							@icons.UserCheck(icons.WithSize(16))
+							<span class="ml-2">Assign Role</span>
+						}
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Class:   "justify-start h-auto py-3",
+							Attributes: templ.Attributes{
+								"onclick": "tuiOpenDialog('create-relation-dialog')",
+							},
+						}) {
+							@icons.GitBranch(icons.WithSize(16))
+							<span class="ml-2">Write Relation</span>
+						}
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Class:   "justify-start h-auto py-3",
+							Href:    "/policies/create",
+							Attributes: templ.Attributes{
+								"hx-get":      "/policies/create",
+								"hx-target":   "#content",
+								"hx-push-url": "true",
+							},
+						}) {
+							@icons.FileLock(icons.WithSize(16))
+							<span class="ml-2">Create Policy</span>
+						}
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Class:   "justify-start h-auto py-3",
+							Href:    "/resource-types/create",
+							Attributes: templ.Attributes{
+								"hx-get":      "/resource-types/create",
+								"hx-target":   "#content",
+								"hx-push-url": "true",
+							},
+						}) {
+							@icons.Boxes(icons.WithSize(16))
+							<span class="ml-2">Create Resource Type</span>
+						}
+					</div>
+				}
+			}
+
+			<!-- Engine Status -->
+			@card.Card() {
+				@card.Header() {
+					@card.Title() {
+						Engine Status
+					}
+					@card.Description() {
+						Authorization engine configuration.
+					}
+				}
+				@card.Content() {
+					<div class="space-y-4">
+						<div class="flex items-center justify-between text-sm">
+							<span class="text-muted-foreground">RBAC (Role-Based)</span>
+							@overviewEnabledBadge(cfg.EnableRBAC == nil || *cfg.EnableRBAC)
+						</div>
+						<div class="flex items-center justify-between text-sm">
+							<span class="text-muted-foreground">ABAC (Attribute-Based)</span>
+							@overviewEnabledBadge(cfg.EnableABAC == nil || *cfg.EnableABAC)
+						</div>
+						<div class="flex items-center justify-between text-sm">
+							<span class="text-muted-foreground">ReBAC (Relationship-Based)</span>
+							@overviewEnabledBadge(cfg.EnableReBAC == nil || *cfg.EnableReBAC)
+						</div>
+						if cfg.MaxGraphDepth > 0 {
+							<div class="flex items-center justify-between text-sm">
+								<span class="text-muted-foreground">Max Graph Depth</span>
+								<span class="font-mono text-sm">{ strconv.Itoa(cfg.MaxGraphDepth) }</span>
+							</div>
+						}
+						if cfg.CacheTTL > 0 {
+							<div class="flex items-center justify-between text-sm">
+								<span class="text-muted-foreground">Cache TTL</span>
+								<span class="font-mono text-sm">{ cfg.CacheTTL.String() }</span>
+							</div>
+						}
+					</div>
+				}
+			}
+		</div>
+
+		<!-- Recent Check Logs -->
+		<div>
+			@card.Card() {
+				@card.Header() {
+					<div class="flex items-center justify-between w-full">
+						<div>
+							@card.Title() {
+								Recent Authorization Checks
+							}
+							@card.Description() {
+								The last 10 authorization check results.
+							}
+						</div>
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Size:    button.SizeSm,
+							Attributes: templ.Attributes{
+								"hx-get":      "/check-logs",
+								"hx-target":   "#content",
+								"hx-push-url": "true",
+							},
+						}) {
+							View All
+						}
+					</div>
+				}
+				@card.Content() {
+					if len(recentLogs) == 0 {
+						<p class="text-sm text-muted-foreground py-4 text-center">No check logs recorded yet.</p>
+					} else {
+						@table.Table() {
+							@table.Header() {
+								@table.Row() {
+									@table.Head() { Subject }
+									@table.Head() { Action }
+									@table.Head() { Resource }
+									@table.Head() { Decision }
+									@table.Head() { Time }
+								}
+							}
+							@table.Body() {
+								for _, entry := range recentLogs {
+									@table.Row() {
+										@table.Cell() {
+											<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ fmt.Sprintf("%s:%s", entry.SubjectKind, entry.SubjectID) }</code>
+										}
+										@table.Cell() {
+											<span class="font-medium">{ entry.Action }</span>
+										}
+										@table.Cell() {
+											<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ fmt.Sprintf("%s:%s", entry.ResourceType, entry.ResourceID) }</code>
+										}
+										@table.Cell() {
+											@decisionBadge(entry.Decision)
+										}
+										@table.Cell() {
+											{{ created := entry.CreatedAt.Format("Jan 02, 15:04") }}
+											<span class="text-sm text-muted-foreground">{ created }</span>
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		</div>
+
+		<!-- Plugin-contributed sections slot -->
+		{ children... }
+
+		<!-- Create Dialogs -->
+		@RoleCreateDialog(allRoles)
+		@PermissionCreateDialog()
+		@AssignmentCreateDialog(allRoles)
+		@RelationCreateDialog()
+		@components.DialogHelpers()
+	</div>
+}
+
+templ decisionBadge(decision string) {
+	if decision == "allow" {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			Allow
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+			Deny
+		}
+	}
+}
+
+templ overviewEnabledBadge(enabled bool) {
+	if enabled {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			Enabled
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+			Disabled
+		}
+	}
+}

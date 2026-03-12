@@ -57,6 +57,7 @@ type CheckRequest struct {
 	Action   Action         `json:"action"`
 	Resource Resource       `json:"resource"`
 	Context  map[string]any `json:"context,omitempty"`
+	TenantID string         `json:"tenant_id,omitempty"` // Optional: overrides context-derived tenant.
 }
 
 // CheckResult is the outcome of an authorization check.

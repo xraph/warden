@@ -15,11 +15,14 @@ import (
 	"net/http"
 
 	"github.com/xraph/forge"
+	dashboard "github.com/xraph/forge/extensions/dashboard"
+	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/api"
+	wardendash "github.com/xraph/warden/dashboard"
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/store"
 	mongostore "github.com/xraph/warden/store/mongo"
@@ -36,8 +39,11 @@ const ExtensionDescription = "Composable permissions & authorization engine (RBA
 // ExtensionVersion is the semantic version.
 const ExtensionVersion = "0.1.0"
 
-// Ensure Extension implements forge.Extension at compile time.
-var _ forge.Extension = (*Extension)(nil)
+// Ensure Extension implements forge.Extension and dashboard.DashboardAware at compile time.
+var (
+	_ forge.Extension          = (*Extension)(nil)
+	_ dashboard.DashboardAware = (*Extension)(nil)
+)
 
 // Extension adapts Warden as a Forge extension.
 type Extension struct {
@@ -106,6 +112,16 @@ func (e *Extension) init(fapp forge.App) error {
 			return err
 		}
 		e.wardenOpts = append(e.wardenOpts, warden.WithStore(s))
+	} else if db, err := vessel.Inject[*grove.DB](fapp.Container()); err == nil {
+		// Auto-discover default grove.DB from container (matches authsome pattern).
+		s, err := e.buildStoreFromGroveDB(db)
+		if err != nil {
+			return err
+		}
+		e.wardenOpts = append(e.wardenOpts, warden.WithStore(s))
+		e.Logger().Info("warden: auto-discovered grove.DB from container",
+			forge.F("driver", db.Driver().Name()),
+		)
 	}
 
 	// Build warden options.
@@ -142,7 +158,11 @@ func (e *Extension) init(fapp forge.App) error {
 
 	// Register HTTP routes unless disabled.
 	if !e.config.DisableRoutes {
-		if err := e.apiHandler.RegisterRoutes(fapp.Router()); err != nil {
+		basePath := e.config.BasePath
+		if basePath == "" {
+			basePath = "/warden"
+		}
+		if err := e.apiHandler.RegisterRoutes(fapp.Router().Group(basePath)); err != nil {
 			return fmt.Errorf("warden: register routes: %w", err)
 		}
 	}
@@ -354,4 +374,17 @@ func (e *Extension) buildStoreFromGroveDB(db *grove.DB) (store.Store, error) {
 	default:
 		return nil, fmt.Errorf("warden: unsupported grove driver %q", driverName)
 	}
+}
+
+// ─── Dashboard Integration ───────────────────────────────────────────────────
+
+// DashboardContributor implements dashboard.DashboardAware. It returns a
+// LocalContributor that renders warden pages, widgets, and settings in the
+// Forge dashboard using templ + ForgeUI.
+func (e *Extension) DashboardContributor() contributor.LocalContributor {
+	return wardendash.New(
+		wardendash.NewManifest(e.eng, e.plugins),
+		e.eng,
+		e.plugins,
+	)
 }

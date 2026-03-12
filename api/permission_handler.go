@@ -115,7 +115,7 @@ func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*str
 	return nil, ctx.NoContent(http.StatusNoContent)
 }
 
-func (a *API) listPermissions(ctx forge.Context, req *ListPermissionsRequest) ([]*permission.Permission, error) {
+func (a *API) listPermissions(ctx forge.Context, req *ListPermissionsRequest) (*PermissionListResponse, error) {
 	filter := &permission.ListFilter{
 		Resource: req.Resource,
 		Action:   req.Action,
@@ -129,5 +129,5 @@ func (a *API) listPermissions(ctx forge.Context, req *ListPermissionsRequest) ([
 		return nil, mapError(err)
 	}
 
-	return perms, ctx.JSON(http.StatusOK, perms)
+	return &PermissionListResponse{Body: perms}, nil
 }

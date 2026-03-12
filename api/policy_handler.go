@@ -201,7 +201,7 @@ func (a *API) deletePolicy(ctx forge.Context, _ *GetPolicyRequest) (*struct{}, e
 	return nil, ctx.NoContent(http.StatusNoContent)
 }
 
-func (a *API) listPolicies(ctx forge.Context, req *ListPoliciesRequest) ([]*policy.Policy, error) {
+func (a *API) listPolicies(ctx forge.Context, req *ListPoliciesRequest) (*PolicyListResponse, error) {
 	filter := &policy.ListFilter{
 		Search: req.Search,
 		Limit:  defaultLimit(req.Limit),
@@ -225,5 +225,5 @@ func (a *API) listPolicies(ctx forge.Context, req *ListPoliciesRequest) ([]*poli
 		return nil, mapError(err)
 	}
 
-	return policies, ctx.JSON(http.StatusOK, policies)
+	return &PolicyListResponse{Body: policies}, nil
 }

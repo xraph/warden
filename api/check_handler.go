@@ -98,6 +98,7 @@ func toCheckRequest(r *CheckRequest) *warden.CheckRequest {
 		Action:   warden.Action{Name: r.Action},
 		Resource: warden.Resource{Type: r.ResourceType, ID: r.ResourceID},
 		Context:  r.Context,
+		TenantID: r.TenantID,
 	}
 }
 

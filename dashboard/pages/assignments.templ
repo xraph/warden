@@ -1,0 +1,194 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/xraph/warden/assignment"
+	"github.com/xraph/warden/dashboard/components"
+	"github.com/xraph/warden/role"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/dropdown"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ AssignmentsPage(assignments []*assignment.Assignment, subjectKind, subjectID, roleIDFilter string, allRoles []*role.Role, pg components.PaginationMeta) {
+	<div class="space-y-6">
+		@components.PageHeader("Role Assignments", strconv.FormatInt(pg.Total, 10), "") {
+			@button.Button(button.Props{
+				Attributes: templ.Attributes{
+					"onclick": "tuiOpenDialog('create-assignment-dialog')",
+				},
+			}) {
+				@icons.Plus(icons.WithSize(16))
+				<span class="ml-2">Assign Role</span>
+			}
+		}
+
+		<!-- Filter Toolbar -->
+		<div class="flex items-center gap-3 flex-wrap">
+			<select
+				name="subject_kind"
+				class="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				hx-get="/assignments"
+				hx-trigger="change"
+				hx-target="#content"
+				hx-push-url="true"
+				hx-include="[name='subject_id'],[name='role_id']"
+			>
+				<option value="">All Subject Types</option>
+				<option value="user" selected?={ subjectKind == "user" }>User</option>
+				<option value="api_key" selected?={ subjectKind == "api_key" }>API Key</option>
+				<option value="service" selected?={ subjectKind == "service" }>Service</option>
+				<option value="service_acct" selected?={ subjectKind == "service_acct" }>Service Account</option>
+			</select>
+			@input.Input(input.Props{
+				Name:        "subject_id",
+				Type:        input.TypeText,
+				Placeholder: "Subject ID...",
+				Value:       subjectID,
+				Class:       "max-w-[200px]",
+				Attributes: templ.Attributes{
+					"hx-get":      "/assignments",
+					"hx-trigger":  "input changed delay:300ms",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='subject_kind'],[name='role_id']",
+				},
+			})
+			<select
+				name="role_id"
+				class="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				hx-get="/assignments"
+				hx-trigger="change"
+				hx-target="#content"
+				hx-push-url="true"
+				hx-include="[name='subject_kind'],[name='subject_id']"
+			>
+				<option value="">All Roles</option>
+				for _, r := range allRoles {
+					<option value={ r.ID.String() } selected?={ roleIDFilter == r.ID.String() }>{ r.Name }</option>
+				}
+			</select>
+		</div>
+
+		<!-- Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(assignments) == 0 {
+					@emptyState("No role assignments found.", userCheckEmpty())
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Subject }
+								@table.Head() { Role ID }
+								@table.Head() { Resource Scope }
+								@table.Head() { Status }
+								@table.Head() { Granted By }
+								@table.Head() { Created }
+								@table.Head() { }
+							}
+						}
+						@table.Body() {
+							for _, a := range assignments {
+								@table.Row() {
+									@table.Cell() {
+										<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ fmt.Sprintf("%s:%s", a.SubjectKind, a.SubjectID) }</code>
+									}
+									@table.Cell() {
+										<span class="font-mono text-xs">{ a.RoleID.String() }</span>
+									}
+									@table.Cell() {
+										if a.ResourceType != "" {
+											<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ fmt.Sprintf("%s:%s", a.ResourceType, a.ResourceID) }</code>
+										} else {
+											<span class="text-sm text-muted-foreground italic">Global</span>
+										}
+									}
+									@table.Cell() {
+										@assignmentStatus(a.ExpiresAt)
+									}
+									@table.Cell() {
+										if a.GrantedBy != "" {
+											<span class="text-sm">{ a.GrantedBy }</span>
+										} else {
+											<span class="text-sm text-muted-foreground italic">-</span>
+										}
+									}
+									@table.Cell() {
+										{{ created := a.CreatedAt.Format("Jan 02, 2006") }}
+										{ created }
+									}
+									@table.Cell() {
+										@dropdown.Dropdown() {
+											@dropdown.Trigger(dropdown.TriggerProps{Class: "cursor-pointer"}) {
+												@button.Button(button.Props{Variant: button.VariantGhost, Size: button.SizeIcon}) {
+													@icons.Ellipsis(icons.WithSize(16))
+												}
+											}
+											@dropdown.Content() {
+												@dropdown.Item(dropdown.ItemProps{
+													Class: "text-destructive",
+													Attributes: templ.Attributes{
+														"onclick": fmt.Sprintf("tuiOpenDialog('revoke-assignment-%s')", a.ID.String()),
+													},
+												}) {
+													@icons.Trash2(icons.WithSize(14))
+													<span class="ml-2">Revoke</span>
+												}
+											}
+										}
+										@components.ConfirmDialog(components.ConfirmDialogProps{
+											ID:           "revoke-assignment-" + a.ID.String(),
+											Title:        "Revoke Assignment",
+											Description:  fmt.Sprintf("Revoke role from %s:%s?", a.SubjectKind, a.SubjectID),
+											ConfirmLabel: "Revoke",
+											HxEndpoint:   "/v1/assignments/" + a.ID.String(),
+											HxMethod:     "delete",
+										})
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if pg.TotalPages > 1 {
+			@paginationNav(pg, "/assignments", map[string]string{"subject_kind": subjectKind, "subject_id": subjectID, "role_id": roleIDFilter})
+		}
+
+		<!-- Create Assignment Dialog -->
+		@AssignmentCreateDialog(allRoles)
+		@components.DialogHelpers()
+		<script>
+		if (new URLSearchParams(window.location.search).get('create') === '1') {
+			requestAnimationFrame(function(){ tuiOpenDialog('create-assignment-dialog'); });
+		}
+		</script>
+	</div>
+}
+
+templ assignmentStatus(expiresAt *time.Time) {
+	if expiresAt != nil && expiresAt.Before(time.Now()) {
+		@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+			Expired
+		}
+	} else if expiresAt != nil {
+		@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+			{{ exp := expiresAt.Format("Jan 02") }}
+			Expires { exp }
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			Active
+		}
+	}
+}

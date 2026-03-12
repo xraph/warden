@@ -1,0 +1,191 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/xraph/warden/checklog"
+	"github.com/xraph/warden/dashboard/components"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/table"
+)
+
+templ CheckLogsPage(logs []*checklog.Entry, filters map[string]string, pg components.PaginationMeta) {
+	<div class="space-y-6">
+		@components.PageHeader("Authorization Check Logs", strconv.FormatInt(pg.Total, 10), "Audit trail of authorization check evaluations.") {
+		}
+
+		<!-- Filter Toolbar -->
+		<div class="flex items-center gap-3 flex-wrap">
+			<select
+				name="subject_kind"
+				class="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				hx-get="/check-logs"
+				hx-trigger="change"
+				hx-target="#content"
+				hx-push-url="true"
+				hx-include="[name='subject_id'],[name='action'],[name='resource_type'],[name='decision'],[name='after'],[name='before']"
+			>
+				<option value="">All Subject Types</option>
+				<option value="user" selected?={ filters["subject_kind"] == "user" }>User</option>
+				<option value="api_key" selected?={ filters["subject_kind"] == "api_key" }>API Key</option>
+				<option value="service" selected?={ filters["subject_kind"] == "service" }>Service</option>
+				<option value="service_acct" selected?={ filters["subject_kind"] == "service_acct" }>Service Account</option>
+			</select>
+			@input.Input(input.Props{
+				Name:        "subject_id",
+				Type:        input.TypeText,
+				Placeholder: "Subject ID...",
+				Value:       filters["subject_id"],
+				Class:       "max-w-[160px]",
+				Attributes: templ.Attributes{
+					"hx-get":      "/check-logs",
+					"hx-trigger":  "input changed delay:300ms",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='subject_kind'],[name='action'],[name='resource_type'],[name='decision'],[name='after'],[name='before']",
+				},
+			})
+			@input.Input(input.Props{
+				Name:        "action",
+				Type:        input.TypeText,
+				Placeholder: "Action...",
+				Value:       filters["action"],
+				Class:       "max-w-[140px]",
+				Attributes: templ.Attributes{
+					"hx-get":      "/check-logs",
+					"hx-trigger":  "input changed delay:300ms",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='subject_kind'],[name='subject_id'],[name='resource_type'],[name='decision'],[name='after'],[name='before']",
+				},
+			})
+			@input.Input(input.Props{
+				Name:        "resource_type",
+				Type:        input.TypeText,
+				Placeholder: "Resource Type...",
+				Value:       filters["resource_type"],
+				Class:       "max-w-[160px]",
+				Attributes: templ.Attributes{
+					"hx-get":      "/check-logs",
+					"hx-trigger":  "input changed delay:300ms",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-include":  "[name='subject_kind'],[name='subject_id'],[name='action'],[name='decision'],[name='after'],[name='before']",
+				},
+			})
+			<select
+				name="decision"
+				class="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				hx-get="/check-logs"
+				hx-trigger="change"
+				hx-target="#content"
+				hx-push-url="true"
+				hx-include="[name='subject_kind'],[name='subject_id'],[name='action'],[name='resource_type'],[name='after'],[name='before']"
+			>
+				<option value="">All Decisions</option>
+				<option value="allow" selected?={ filters["decision"] == "allow" }>Allow</option>
+				<option value="deny" selected?={ filters["decision"] == "deny" }>Deny</option>
+			</select>
+		</div>
+
+		<!-- Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(logs) == 0 {
+					@emptyState("No check logs found.", scrollTextEmpty())
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Subject }
+								@table.Head() { Action }
+								@table.Head() { Resource }
+								@table.Head() { Decision }
+								@table.Head() { Reason }
+								@table.Head() { Eval Time }
+								@table.Head() { IP }
+								@table.Head() { Time }
+							}
+						}
+						@table.Body() {
+							for _, entry := range logs {
+								@table.Row() {
+									@table.Cell() {
+										<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ fmt.Sprintf("%s:%s", entry.SubjectKind, entry.SubjectID) }</code>
+									}
+									@table.Cell() {
+										<span class="font-medium">{ entry.Action }</span>
+									}
+									@table.Cell() {
+										<code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ fmt.Sprintf("%s:%s", entry.ResourceType, entry.ResourceID) }</code>
+									}
+									@table.Cell() {
+										@checkDecisionBadge(entry.Decision)
+									}
+									@table.Cell() {
+										if entry.Reason != "" {
+											<span class="text-xs text-muted-foreground max-w-[200px] truncate block">{ entry.Reason }</span>
+										} else {
+											<span class="text-xs text-muted-foreground italic">-</span>
+										}
+									}
+									@table.Cell() {
+										<span class="font-mono text-xs">{ formatEvalTime(entry.EvalTimeNs) }</span>
+									}
+									@table.Cell() {
+										if entry.RequestIP != "" {
+											<span class="text-xs">{ entry.RequestIP }</span>
+										} else {
+											<span class="text-xs text-muted-foreground italic">-</span>
+										}
+									}
+									@table.Cell() {
+										{{ created := entry.CreatedAt.Format("Jan 02, 15:04:05") }}
+										<span class="text-xs">{ created }</span>
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if pg.TotalPages > 1 {
+			@paginationNav(pg, "/check-logs", map[string]string{
+				"subject_kind": filters["subject_kind"],
+				"subject_id": filters["subject_id"],
+				"action": filters["action"],
+				"resource_type": filters["resource_type"],
+				"decision": filters["decision"],
+			})
+		}
+	</div>
+}
+
+templ checkDecisionBadge(decision string) {
+	if decision == "allow" {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			Allow
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+			Deny
+		}
+	}
+}
+
+func formatEvalTime(ns int64) string {
+	d := time.Duration(ns)
+	if d < time.Microsecond {
+		return fmt.Sprintf("%dns", ns)
+	}
+	if d < time.Millisecond {
+		return fmt.Sprintf("%.1fus", float64(ns)/1000)
+	}
+	return fmt.Sprintf("%.1fms", float64(ns)/1e6)
+}

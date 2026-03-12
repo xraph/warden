@@ -1,0 +1,96 @@
+package pages
+
+import (
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/dialog"
+	"github.com/xraph/forgeui/components/form"
+	"github.com/xraph/forgeui/components/input"
+)
+
+// RelationCreateDialog renders a write relation tuple modal dialog.
+templ RelationCreateDialog() {
+	@dialog.Dialog(dialog.Props{ID: "create-relation-dialog"}) {
+		@dialog.Content() {
+			@dialog.Header() {
+				@dialog.Title() {
+					Write Relation Tuple
+				}
+				@dialog.Description() {
+					Create a new Zanzibar-style relation tuple.
+				}
+			}
+			<div id="create-relation-errors" class="text-sm text-destructive"></div>
+			<form
+				hx-post="/v1/relations"
+				hx-ext="json-enc"
+				hx-target="#create-relation-errors"
+				hx-swap="innerHTML"
+				hx-on::after-request="if(event.detail.successful) { tuiCloseDialog('create-relation-dialog'); htmx.ajax('GET', '/relations', {target:'#content'}); }"
+				class="space-y-4"
+				x-data="{ objectType: '', objectID: '', relation: '', subjectType: '', subjectID: '', subjectRelation: '' }"
+			>
+				<div class="grid grid-cols-2 gap-4">
+					@form.Item() {
+						@form.Label(form.LabelProps{For: "rel-ot"}) { Object Type }
+						@input.Input(input.Props{
+							ID: "rel-ot", Name: "object_type", Placeholder: "e.g. document",
+							Attributes: templ.Attributes{"required": "true", "x-model": "objectType"},
+						})
+					}
+					@form.Item() {
+						@form.Label(form.LabelProps{For: "rel-oid"}) { Object ID }
+						@input.Input(input.Props{
+							ID: "rel-oid", Name: "object_id", Placeholder: "e.g. doc-123",
+							Attributes: templ.Attributes{"required": "true", "x-model": "objectID"},
+						})
+					}
+				</div>
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "rel-relation"}) { Relation }
+					@input.Input(input.Props{
+						ID: "rel-relation", Name: "relation", Placeholder: "e.g. viewer",
+						Attributes: templ.Attributes{"required": "true", "x-model": "relation"},
+					})
+				}
+				<div class="grid grid-cols-2 gap-4">
+					@form.Item() {
+						@form.Label(form.LabelProps{For: "rel-st"}) { Subject Type }
+						@input.Input(input.Props{
+							ID: "rel-st", Name: "subject_type", Placeholder: "e.g. user",
+							Attributes: templ.Attributes{"required": "true", "x-model": "subjectType"},
+						})
+					}
+					@form.Item() {
+						@form.Label(form.LabelProps{For: "rel-sid"}) { Subject ID }
+						@input.Input(input.Props{
+							ID: "rel-sid", Name: "subject_id", Placeholder: "e.g. user-456",
+							Attributes: templ.Attributes{"required": "true", "x-model": "subjectID"},
+						})
+					}
+				</div>
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "rel-sr"}) { Subject Relation (optional) }
+					@input.Input(input.Props{
+						ID: "rel-sr", Name: "subject_relation", Placeholder: "e.g. member",
+						Attributes: templ.Attributes{"x-model": "subjectRelation"},
+					})
+				}
+				<!-- Live tuple preview -->
+				<div class="p-3 bg-muted rounded-md">
+					<span class="text-xs text-muted-foreground">Tuple Preview:</span>
+					<code class="block text-sm font-mono mt-1" x-text="objectType + ':' + objectID + '#' + relation + '@' + subjectType + ':' + subjectID + (subjectRelation ? '#' + subjectRelation : '')"></code>
+				</div>
+				@dialog.Footer() {
+					@dialog.Close() {
+						@button.Button(button.Props{Variant: button.VariantOutline}) {
+							Cancel
+						}
+					}
+					@button.Button(button.Props{Type: "submit"}) {
+						Write Relation
+					}
+				}
+			</form>
+		}
+	}
+}

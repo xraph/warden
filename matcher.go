@@ -8,6 +8,10 @@ func matchGlob(pattern, value string) bool {
 	if pattern == "*" {
 		return true
 	}
+	// Full wildcards: "*:*" and "*.*" match everything (any resource:action).
+	if pattern == "*:*" || pattern == "*.*" {
+		return true
+	}
 	if pattern == value {
 		return true
 	}

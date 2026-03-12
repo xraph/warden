@@ -1,0 +1,188 @@
+package pages
+
+import (
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/form"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/textarea"
+	"github.com/xraph/forgeui/icons"
+)
+
+// ResourceTypeCreatePage renders a full-page form for creating a new resource type.
+templ ResourceTypeCreatePage() {
+	<div
+		class="space-y-6"
+		x-data="{
+			formData: {
+				name: '',
+				description: '',
+				relations: [],
+				permissions: []
+			},
+			error: '',
+			submitting: false,
+			addRelation() {
+				this.formData.relations.push({name: '', allowed_subjects: ''});
+			},
+			addPermission() {
+				this.formData.permissions.push({name: '', expression: ''});
+			},
+			async submitForm() {
+				this.submitting = true;
+				this.error = '';
+				const data = {...this.formData};
+				data.relations = data.relations.filter(r => r.name).map(r => ({
+					name: r.name,
+					allowed_subjects: r.allowed_subjects ? r.allowed_subjects.split(',').map(s => s.trim()).filter(Boolean) : []
+				}));
+				data.permissions = data.permissions.filter(p => p.name).map(p => ({
+					name: p.name,
+					expression: p.expression
+				}));
+				try {
+					const resp = await fetch('/v1/resource-types', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+					if (resp.ok) { htmx.ajax('GET', '/resource-types', {target: '#content'}); }
+					else { const r = await resp.json(); this.error = r.error || r.message || 'Failed to create resource type'; }
+				} catch(e) { this.error = e.message; }
+				this.submitting = false;
+			}
+		}"
+	>
+		<div class="flex items-center justify-between">
+			<div>
+				<h1 class="text-3xl font-bold tracking-tight">Create Resource Type</h1>
+				<p class="text-muted-foreground mt-1">Define a new ReBAC resource type with relations and derived permissions.</p>
+			</div>
+			<div class="flex items-center gap-2">
+				@button.Button(button.Props{
+					Variant: button.VariantOutline,
+					Attributes: templ.Attributes{
+						"hx-get":      "/resource-types",
+						"hx-target":   "#content",
+						"hx-push-url": "true",
+					},
+				}) {
+					Cancel
+				}
+				@button.Button(button.Props{
+					Attributes: templ.Attributes{
+						"@click":    "submitForm()",
+						":disabled": "submitting",
+					},
+				}) {
+					<span x-show="!submitting">Create Resource Type</span>
+					<span x-show="submitting">Creating...</span>
+				}
+			</div>
+		</div>
+
+		<!-- Error display -->
+		<div x-show="error" x-cloak class="p-3 bg-destructive/10 text-destructive rounded-md text-sm" x-text="error"></div>
+
+		<!-- Section 1: Basic Info -->
+		@card.Card() {
+			@card.Header() {
+				@card.Title() { Basic Information }
+			}
+			@card.Content() {
+				<div class="space-y-4">
+					@form.Item() {
+						@form.Label(form.LabelProps{For: "rt-name"}) { Name }
+						@input.Input(input.Props{
+							ID: "rt-name", Placeholder: "e.g. document",
+							Attributes: templ.Attributes{"x-model": "formData.name", "required": "true"},
+						})
+					}
+					@form.Item() {
+						@form.Label(form.LabelProps{For: "rt-desc"}) { Description }
+						@textarea.Textarea(textarea.Props{
+							ID: "rt-desc", Placeholder: "Describe this resource type...", Rows: 3,
+							Attributes: templ.Attributes{"x-model": "formData.description"},
+						})
+					}
+				</div>
+			}
+		}
+
+		<!-- Section 2: Relations -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center justify-between w-full">
+					<div>
+						@card.Title() { Relations }
+						@card.Description() { Define valid relations for this resource type and their allowed subject types. }
+					</div>
+					@button.Button(button.Props{
+						Variant: button.VariantOutline,
+						Size:    button.SizeSm,
+						Attributes: templ.Attributes{"@click": "addRelation()"},
+					}) {
+						@icons.Plus(icons.WithSize(14))
+						<span class="ml-1">Add Relation</span>
+					}
+				</div>
+			}
+			@card.Content() {
+				<div class="space-y-3">
+					<template x-for="(rel, i) in formData.relations" :key="i">
+						<div class="flex items-end gap-3 p-3 bg-muted/50 rounded-md">
+							<div class="flex-1">
+								<label class="text-xs text-muted-foreground">Relation Name</label>
+								<input x-model="rel.name" placeholder="e.g. viewer" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"/>
+							</div>
+							<div class="flex-[2]">
+								<label class="text-xs text-muted-foreground">Allowed Subjects (comma-separated)</label>
+								<input x-model="rel.allowed_subjects" placeholder="e.g. user, group, team" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"/>
+							</div>
+							<button type="button" @click="formData.relations.splice(i, 1)" class="h-9 w-9 flex items-center justify-center rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive">
+								@icons.X(icons.WithSize(16))
+							</button>
+						</div>
+					</template>
+					<p x-show="formData.relations.length === 0" class="text-sm text-muted-foreground text-center py-2">No relations defined yet.</p>
+				</div>
+			}
+		}
+
+		<!-- Section 3: Derived Permissions -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center justify-between w-full">
+					<div>
+						@card.Title() { Derived Permissions }
+						@card.Description() { Define permissions derived from relations using expressions (e.g. "viewer or editor or owner"). }
+					</div>
+					@button.Button(button.Props{
+						Variant: button.VariantOutline,
+						Size:    button.SizeSm,
+						Attributes: templ.Attributes{"@click": "addPermission()"},
+					}) {
+						@icons.Plus(icons.WithSize(14))
+						<span class="ml-1">Add Permission</span>
+					}
+				</div>
+			}
+			@card.Content() {
+				<div class="space-y-3">
+					<template x-for="(perm, i) in formData.permissions" :key="i">
+						<div class="flex items-end gap-3 p-3 bg-muted/50 rounded-md">
+							<div class="flex-1">
+								<label class="text-xs text-muted-foreground">Permission Name</label>
+								<input x-model="perm.name" placeholder="e.g. can_view" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"/>
+							</div>
+							<div class="flex-[2]">
+								<label class="text-xs text-muted-foreground">Expression</label>
+								<input x-model="perm.expression" placeholder="e.g. viewer or editor or owner" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"/>
+							</div>
+							<button type="button" @click="formData.permissions.splice(i, 1)" class="h-9 w-9 flex items-center justify-center rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive">
+								@icons.X(icons.WithSize(16))
+							</button>
+						</div>
+					</template>
+					<p x-show="formData.permissions.length === 0" class="text-sm text-muted-foreground text-center py-2">No derived permissions defined yet.</p>
+				</div>
+			}
+		}
+	</div>
+}

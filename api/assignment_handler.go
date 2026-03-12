@@ -114,7 +114,7 @@ func (a *API) unassignRole(ctx forge.Context, _ *GetAssignmentRequest) (*struct{
 	return nil, ctx.NoContent(http.StatusNoContent)
 }
 
-func (a *API) listAssignments(ctx forge.Context, req *ListAssignmentsRequest) ([]*assignment.Assignment, error) {
+func (a *API) listAssignments(ctx forge.Context, req *ListAssignmentsRequest) (*AssignmentListResponse, error) {
 	filter := &assignment.ListFilter{
 		SubjectKind: req.SubjectKind,
 		SubjectID:   req.SubjectID,
@@ -135,10 +135,10 @@ func (a *API) listAssignments(ctx forge.Context, req *ListAssignmentsRequest) ([
 		return nil, mapError(err)
 	}
 
-	return assignments, ctx.JSON(http.StatusOK, assignments)
+	return &AssignmentListResponse{Body: assignments}, nil
 }
 
-func (a *API) listSubjectRoles(ctx forge.Context, _ *ListSubjectRolesRequest) ([]string, error) {
+func (a *API) listSubjectRoles(ctx forge.Context, _ *ListSubjectRolesRequest) (*SubjectRolesResponse, error) {
 	subjectKind := ctx.Param("subjectKind")
 	subjectID := ctx.Param("subjectId")
 
@@ -152,5 +152,5 @@ func (a *API) listSubjectRoles(ctx forge.Context, _ *ListSubjectRolesRequest) ([
 		ids[i] = r.String()
 	}
 
-	return ids, ctx.JSON(http.StatusOK, ids)
+	return &SubjectRolesResponse{Body: ids}, nil
 }

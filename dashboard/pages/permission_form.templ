@@ -1,0 +1,77 @@
+package pages
+
+import (
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/dialog"
+	"github.com/xraph/forgeui/components/form"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/textarea"
+	switchcomp "github.com/xraph/forgeui/components/switch"
+)
+
+// PermissionCreateDialog renders a create permission modal dialog.
+templ PermissionCreateDialog() {
+	@dialog.Dialog(dialog.Props{ID: "create-permission-dialog"}) {
+		@dialog.Content() {
+			@dialog.Header() {
+				@dialog.Title() {
+					Create Permission
+				}
+				@dialog.Description() {
+					Define a new permission for resource access control.
+				}
+			}
+			<div id="create-perm-errors" class="text-sm text-destructive"></div>
+			<form
+				hx-post="/v1/permissions"
+				hx-ext="json-enc"
+				hx-target="#create-perm-errors"
+				hx-swap="innerHTML"
+				hx-on::after-request="if(event.detail.successful) { tuiCloseDialog('create-permission-dialog'); htmx.ajax('GET', '/permissions', {target:'#content'}); }"
+				class="space-y-4"
+				x-data="{ resource: '', action: '' }"
+			>
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "perm-resource"}) { Resource }
+					@input.Input(input.Props{
+						ID: "perm-resource", Name: "resource", Placeholder: "e.g. document",
+						Attributes: templ.Attributes{"required": "true", "x-model": "resource"},
+					})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "perm-action"}) { Action }
+					@input.Input(input.Props{
+						ID: "perm-action", Name: "action", Placeholder: "e.g. read",
+						Attributes: templ.Attributes{"required": "true", "x-model": "action"},
+					})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "perm-name"}) { Name }
+					@form.Description() { Auto-composed from resource:action }
+					@input.Input(input.Props{
+						ID: "perm-name", Name: "name", Placeholder: "e.g. document:read",
+						Attributes: templ.Attributes{"x-bind:value": "resource && action ? resource + ':' + action : ''"},
+					})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "perm-desc"}) { Description }
+					@textarea.Textarea(textarea.Props{ID: "perm-desc", Name: "description", Placeholder: "Optional description...", Rows: 2})
+				}
+				@form.ItemFlex() {
+					@form.Label(form.LabelProps{For: "perm-system"}) { System Permission }
+					@switchcomp.Switch(switchcomp.Props{ID: "perm-system", Name: "is_system"})
+				}
+				@dialog.Footer() {
+					@dialog.Close() {
+						@button.Button(button.Props{Variant: button.VariantOutline}) {
+							Cancel
+						}
+					}
+					@button.Button(button.Props{Type: "submit"}) {
+						Create Permission
+					}
+				}
+			</form>
+		}
+	}
+}

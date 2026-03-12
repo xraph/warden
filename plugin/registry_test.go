@@ -2,8 +2,9 @@ package plugin
 
 import (
 	"context"
-	"log/slog"
 	"testing"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/role"
@@ -34,7 +35,7 @@ func (m *minimalPlugin) Name() string { return "minimal" }
 
 func TestRegistryDispatch(t *testing.T) {
 	ctx := context.Background()
-	reg := NewRegistry(slog.Default())
+	reg := NewRegistry(log.NewNoopLogger())
 
 	tp := &testPlugin{}
 	reg.Register(tp)

@@ -84,7 +84,7 @@ func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*st
 	return nil, ctx.NoContent(http.StatusNoContent)
 }
 
-func (a *API) listRelations(ctx forge.Context, req *ListRelationsRequest) ([]*relation.Tuple, error) {
+func (a *API) listRelations(ctx forge.Context, req *ListRelationsRequest) (*RelationListResponse, error) {
 	filter := &relation.ListFilter{
 		ObjectType:  req.ObjectType,
 		ObjectID:    req.ObjectID,
@@ -100,5 +100,5 @@ func (a *API) listRelations(ctx forge.Context, req *ListRelationsRequest) ([]*re
 		return nil, mapError(err)
 	}
 
-	return tuples, ctx.JSON(http.StatusOK, tuples)
+	return &RelationListResponse{Body: tuples}, nil
 }

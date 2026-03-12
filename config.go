@@ -23,19 +23,25 @@ type Config struct {
 	// EnableReBAC enables relationship-based access control evaluation.
 	// Defaults to true.
 	EnableReBAC *bool `json:"enable_rebac,omitempty"`
+
+	// EnableCheckLog enables writing authorization check results to the
+	// check log store. Defaults to true.
+	EnableCheckLog *bool `json:"enable_check_log,omitempty"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	t := true
 	return Config{
-		MaxGraphDepth: 10,
-		EnableRBAC:    &t,
-		EnableABAC:    &t,
-		EnableReBAC:   &t,
+		MaxGraphDepth:  10,
+		EnableRBAC:     &t,
+		EnableABAC:     &t,
+		EnableReBAC:    &t,
+		EnableCheckLog: &t,
 	}
 }
 
-func (c Config) rbacEnabled() bool  { return c.EnableRBAC == nil || *c.EnableRBAC }
-func (c Config) abacEnabled() bool  { return c.EnableABAC == nil || *c.EnableABAC }
-func (c Config) rebacEnabled() bool { return c.EnableReBAC == nil || *c.EnableReBAC }
+func (c Config) rbacEnabled() bool     { return c.EnableRBAC == nil || *c.EnableRBAC }
+func (c Config) abacEnabled() bool     { return c.EnableABAC == nil || *c.EnableABAC }
+func (c Config) rebacEnabled() bool    { return c.EnableReBAC == nil || *c.EnableReBAC }
+func (c Config) checkLogEnabled() bool { return c.EnableCheckLog == nil || *c.EnableCheckLog }
