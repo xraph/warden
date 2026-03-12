@@ -27,11 +27,11 @@ type PluginPage struct {
 	Render func(ctx context.Context) templ.Component
 }
 
-// DashboardPlugin is optionally implemented by warden plugins
+// Plugin is optionally implemented by warden plugins
 // to contribute UI sections to the warden dashboard contributor.
 // When plugins implement this interface, their pages, widgets, and
 // settings panels are automatically merged into the dashboard.
-type DashboardPlugin interface {
+type Plugin interface {
 	// DashboardWidgets returns widgets this plugin contributes.
 	DashboardWidgets(ctx context.Context) []PluginWidget
 	// DashboardSettingsPanel returns a settings templ component, or nil.
@@ -52,9 +52,9 @@ type PolicyDetailContributor interface {
 	DashboardPolicyDetailSection(ctx context.Context, policyID id.PolicyID) templ.Component
 }
 
-// DashboardPageContributor is an enhanced interface for plugins that need
+// PageContributor is an enhanced interface for plugins that need
 // access to route parameters when rendering dashboard pages.
-type DashboardPageContributor interface {
+type PageContributor interface {
 	// DashboardNavItems returns navigation items this plugin contributes.
 	DashboardNavItems() []contributor.NavItem
 	// DashboardRenderPage renders a page for the given route with params.

@@ -12,8 +12,8 @@ import (
 
 // NewManifest builds a contributor.Manifest for the warden dashboard.
 // It starts with the base nav items, widgets, and settings, then merges
-// any additional contributions from plugins implementing DashboardPlugin.
-func NewManifest(engine *warden.Engine, plugins []plugin.Plugin) *contributor.Manifest {
+// any additional contributions from plugins implementing Plugin.
+func NewManifest(_ *warden.Engine, plugins []plugin.Plugin) *contributor.Manifest {
 	m := &contributor.Manifest{
 		Name:        "warden",
 		DisplayName: "Warden",
@@ -41,12 +41,12 @@ func NewManifest(engine *warden.Engine, plugins []plugin.Plugin) *contributor.Ma
 
 	// Merge plugin-contributed nav items and widgets.
 	for _, p := range plugins {
-		// DashboardPageContributor provides nav items for pages with route params.
-		if dpc, ok := p.(DashboardPageContributor); ok {
+		// PageContributor provides nav items for pages with route params.
+		if dpc, ok := p.(PageContributor); ok {
 			m.Nav = append(m.Nav, dpc.DashboardNavItems()...)
 		}
 
-		dp, ok := p.(DashboardPlugin)
+		dp, ok := p.(Plugin)
 		if !ok {
 			continue
 		}

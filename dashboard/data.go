@@ -73,7 +73,7 @@ func fetchRolesPaginated(ctx context.Context, s store.Store, tenantID, search st
 	if err != nil {
 		return nil, 0, fmt.Errorf("dashboard: fetch roles: %w", err)
 	}
-	total, _ := s.CountRoles(ctx, &role.ListFilter{TenantID: tenantID, Search: search})
+	total, _ := s.CountRoles(ctx, &role.ListFilter{TenantID: tenantID, Search: search}) //nolint:errcheck // pagination count; 0 is acceptable on error
 	return roles, total, nil
 }
 
@@ -91,7 +91,7 @@ func fetchPermissionsPaginated(ctx context.Context, s store.Store, tenantID, sea
 	if err != nil {
 		return nil, 0, fmt.Errorf("dashboard: fetch permissions: %w", err)
 	}
-	total, _ := s.CountPermissions(ctx, &permission.ListFilter{TenantID: tenantID, Search: search, Resource: resource, Action: action})
+	total, _ := s.CountPermissions(ctx, &permission.ListFilter{TenantID: tenantID, Search: search, Resource: resource, Action: action}) //nolint:errcheck // pagination count
 	return perms, total, nil
 }
 
@@ -119,7 +119,7 @@ func fetchAssignmentsPaginated(ctx context.Context, s store.Store, tenantID, sub
 	if err != nil {
 		return nil, 0, fmt.Errorf("dashboard: fetch assignments: %w", err)
 	}
-	total, _ := s.CountAssignments(ctx, countFilter)
+	total, _ := s.CountAssignments(ctx, countFilter) //nolint:errcheck // pagination count
 	return items, total, nil
 }
 
@@ -147,7 +147,7 @@ func fetchRelationsPaginated(ctx context.Context, s store.Store, tenantID, objec
 	if err != nil {
 		return nil, 0, fmt.Errorf("dashboard: fetch relations: %w", err)
 	}
-	total, _ := s.CountRelations(ctx, countFilter)
+	total, _ := s.CountRelations(ctx, countFilter) //nolint:errcheck // pagination count
 	return items, total, nil
 }
 
@@ -173,7 +173,7 @@ func fetchPoliciesPaginated(ctx context.Context, s store.Store, tenantID, search
 	if err != nil {
 		return nil, 0, fmt.Errorf("dashboard: fetch policies: %w", err)
 	}
-	total, _ := s.CountPolicies(ctx, countFilter)
+	total, _ := s.CountPolicies(ctx, countFilter) //nolint:errcheck // pagination count
 	return items, total, nil
 }
 
@@ -189,7 +189,7 @@ func fetchResourceTypesPaginated(ctx context.Context, s store.Store, tenantID, s
 	if err != nil {
 		return nil, 0, fmt.Errorf("dashboard: fetch resource types: %w", err)
 	}
-	total, _ := s.CountResourceTypes(ctx, &resourcetype.ListFilter{TenantID: tenantID, Search: search})
+	total, _ := s.CountResourceTypes(ctx, &resourcetype.ListFilter{TenantID: tenantID, Search: search}) //nolint:errcheck // pagination count
 	return items, total, nil
 }
 
@@ -221,7 +221,7 @@ func fetchCheckLogsPaginated(ctx context.Context, s store.Store, tenantID string
 	if err != nil {
 		return nil, 0, fmt.Errorf("dashboard: fetch check logs: %w", err)
 	}
-	total, _ := s.CountCheckLogs(ctx, countFilter)
+	total, _ := s.CountCheckLogs(ctx, countFilter) //nolint:errcheck // pagination count
 	return entries, total, nil
 }
 
@@ -243,42 +243,6 @@ func fetchPermissions(ctx context.Context, s store.Store, tenantID string) ([]*p
 		return nil, fmt.Errorf("dashboard: fetch permissions: %w", err)
 	}
 	return perms, nil
-}
-
-// fetchAssignments returns all assignments for the given tenant.
-func fetchAssignments(ctx context.Context, s store.Store, tenantID string) ([]*assignment.Assignment, error) {
-	assignments, err := s.ListAssignments(ctx, &assignment.ListFilter{TenantID: tenantID})
-	if err != nil {
-		return nil, fmt.Errorf("dashboard: fetch assignments: %w", err)
-	}
-	return assignments, nil
-}
-
-// fetchRelations returns all relation tuples for the given tenant.
-func fetchRelations(ctx context.Context, s store.Store, tenantID string) ([]*relation.Tuple, error) {
-	tuples, err := s.ListRelations(ctx, &relation.ListFilter{TenantID: tenantID})
-	if err != nil {
-		return nil, fmt.Errorf("dashboard: fetch relations: %w", err)
-	}
-	return tuples, nil
-}
-
-// fetchPolicies returns all policies for the given tenant.
-func fetchPolicies(ctx context.Context, s store.Store, tenantID string) ([]*policy.Policy, error) {
-	policies, err := s.ListPolicies(ctx, &policy.ListFilter{TenantID: tenantID})
-	if err != nil {
-		return nil, fmt.Errorf("dashboard: fetch policies: %w", err)
-	}
-	return policies, nil
-}
-
-// fetchResourceTypes returns all resource types for the given tenant.
-func fetchResourceTypes(ctx context.Context, s store.Store, tenantID string) ([]*resourcetype.ResourceType, error) {
-	types, err := s.ListResourceTypes(ctx, &resourcetype.ListFilter{TenantID: tenantID})
-	if err != nil {
-		return nil, fmt.Errorf("dashboard: fetch resource types: %w", err)
-	}
-	return types, nil
 }
 
 // fetchCheckLogs returns recent check log entries for the given tenant.
@@ -318,44 +282,13 @@ type entityCounts struct {
 
 func fetchEntityCounts(ctx context.Context, s store.Store, tenantID string) entityCounts {
 	var c entityCounts
-	c.Roles, _ = s.CountRoles(ctx, &role.ListFilter{TenantID: tenantID})
-	c.Permissions, _ = s.CountPermissions(ctx, &permission.ListFilter{TenantID: tenantID})
-	c.Assignments, _ = s.CountAssignments(ctx, &assignment.ListFilter{TenantID: tenantID})
-	c.Relations, _ = s.CountRelations(ctx, &relation.ListFilter{TenantID: tenantID})
-	c.Policies, _ = s.CountPolicies(ctx, &policy.ListFilter{TenantID: tenantID})
-	c.ResourceTypes, _ = s.CountResourceTypes(ctx, &resourcetype.ListFilter{TenantID: tenantID})
+	c.Roles, _ = s.CountRoles(ctx, &role.ListFilter{TenantID: tenantID})                         //nolint:errcheck // display count
+	c.Permissions, _ = s.CountPermissions(ctx, &permission.ListFilter{TenantID: tenantID})       //nolint:errcheck // display count
+	c.Assignments, _ = s.CountAssignments(ctx, &assignment.ListFilter{TenantID: tenantID})       //nolint:errcheck // display count
+	c.Relations, _ = s.CountRelations(ctx, &relation.ListFilter{TenantID: tenantID})             //nolint:errcheck // display count
+	c.Policies, _ = s.CountPolicies(ctx, &policy.ListFilter{TenantID: tenantID})                 //nolint:errcheck // display count
+	c.ResourceTypes, _ = s.CountResourceTypes(ctx, &resourcetype.ListFilter{TenantID: tenantID}) //nolint:errcheck // display count
 	return c
-}
-
-// formatTimeAgo returns a human-readable relative time string.
-func formatTimeAgo(t time.Time) string {
-	d := time.Since(t)
-
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	case d < 30*24*time.Hour:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	case d < 365*24*time.Hour:
-		return fmt.Sprintf("%dmo ago", int(d.Hours()/(24*30)))
-	default:
-		return fmt.Sprintf("%dy ago", int(d.Hours()/(24*365)))
-	}
-}
-
-// truncateString shortens s to max characters and appends "..." if truncated.
-func truncateString(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	if max <= 3 {
-		return s[:max]
-	}
-	return s[:max-3] + "..."
 }
 
 // enrichRoleRows fetches permission counts, resolves parent role names,
@@ -406,11 +339,11 @@ func enrichRoleRows(ctx context.Context, s store.Store, roles []*role.Role) []pa
 
 		// Relation tuple count (role as object + role as subject).
 		rid := r.ID.String()
-		objCount, _ := s.CountRelations(ctx, &relation.ListFilter{
+		objCount, _ := s.CountRelations(ctx, &relation.ListFilter{ //nolint:errcheck // display count
 			ObjectType: "role",
 			ObjectID:   rid,
 		})
-		subCount, _ := s.CountRelations(ctx, &relation.ListFilter{
+		subCount, _ := s.CountRelations(ctx, &relation.ListFilter{ //nolint:errcheck // display count
 			SubjectType: "role",
 			SubjectID:   rid,
 		})

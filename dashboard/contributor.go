@@ -64,16 +64,16 @@ func (c *Contributor) RenderPage(ctx context.Context, route string, params contr
 
 // renderPageRoute dispatches to the correct page renderer based on the page route.
 func (c *Contributor) renderPageRoute(ctx context.Context, pageRoute string, s store.Store, params contributor.Params) (templ.Component, error) {
-	// Check plugin-contributed pages first (DashboardPageContributor for parameterized routes).
+	// Check plugin-contributed pages first (PageContributor for parameterized routes).
 	for _, p := range c.plugins {
-		if dpc, ok := p.(DashboardPageContributor); ok {
+		if dpc, ok := p.(PageContributor); ok {
 			if comp, err := dpc.DashboardRenderPage(ctx, pageRoute, params); err == nil && comp != nil {
 				return comp, nil
 			}
 		}
 	}
 
-	// Check plugin-contributed pages (DashboardPlugin for simple routes).
+	// Check plugin-contributed pages (Plugin for simple routes).
 	for _, dp := range c.dashboardPlugins() {
 		for _, pp := range dp.DashboardPages() {
 			if pp.Route == pageRoute {
@@ -169,7 +169,7 @@ func (c *Contributor) renderOverview(ctx context.Context, s store.Store) (templ.
 	cfg := c.engine.Config()
 
 	// Fetch roles for the create dialogs on the overview page
-	allRoles, _ := fetchRoles(ctx, s, "")
+	allRoles, _ := fetchRoles(ctx, s, "") //nolint:errcheck // display data
 
 	pluginSections := c.collectPluginSections(ctx)
 
@@ -215,11 +215,11 @@ func (c *Contributor) renderRoleDetail(ctx context.Context, s store.Store, param
 		return nil, fmt.Errorf("dashboard: resolve role: %w", err)
 	}
 
-	childRoles, _ := s.ListChildRoles(ctx, roleID)
+	childRoles, _ := s.ListChildRoles(ctx, roleID) //nolint:errcheck // display data; nil is acceptable
 
 	// Fetch all roles for parent select and all permissions for attach dialog
-	allRoles, _ := fetchRoles(ctx, s, "")
-	allPerms, _ := fetchPermissions(ctx, s, "")
+	allRoles, _ := fetchRoles(ctx, s, "")       //nolint:errcheck // display data
+	allPerms, _ := fetchPermissions(ctx, s, "") //nolint:errcheck // display data
 
 	pluginSections := c.collectRoleDetailSections(ctx, roleID)
 
@@ -259,7 +259,7 @@ func (c *Contributor) renderAssignments(ctx context.Context, s store.Store, para
 	}
 
 	// Fetch roles for the create dialog selectbox
-	allRoles, _ := fetchRoles(ctx, s, "")
+	allRoles, _ := fetchRoles(ctx, s, "") //nolint:errcheck // display data
 
 	pg := components.NewPaginationMeta(total, limit, offset)
 	return pages.AssignmentsPage(items, subjectKind, subjectID, roleIDStr, allRoles, pg), nil
@@ -432,11 +432,11 @@ func (c *Contributor) renderSettings(_ context.Context, pluginSettings []templ.C
 
 // ─── Plugin Helpers ──────────────────────────────────────────────────────────
 
-// dashboardPlugins returns all registered plugins that implement DashboardPlugin.
-func (c *Contributor) dashboardPlugins() []DashboardPlugin {
-	var dps []DashboardPlugin
+// dashboardPlugins returns all registered plugins that implement Plugin.
+func (c *Contributor) dashboardPlugins() []Plugin {
+	var dps []Plugin
 	for _, p := range c.plugins {
-		if dp, ok := p.(DashboardPlugin); ok {
+		if dp, ok := p.(Plugin); ok {
 			dps = append(dps, dp)
 		}
 	}

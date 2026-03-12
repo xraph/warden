@@ -30,9 +30,9 @@ func main() {
 
 	client, err := mongo.Connect(options.Client().ApplyURI(mongoURI))
 	if err != nil {
-		log.Fatal("connect:", err)
+		log.Fatal("connect:", err) //nolint:gocritic // exitAfterDefer is acceptable in a diagnostic script
 	}
-	defer client.Disconnect(ctx)
+	defer func() { _ = client.Disconnect(ctx) }() //nolint:errcheck // best-effort cleanup
 
 	db := client.Database(dbName)
 
@@ -43,10 +43,10 @@ func main() {
 		log.Fatal("find roles:", err)
 	}
 	var roles []bson.M
-	if err := cur.All(ctx, &roles); err != nil {
-		log.Fatal("decode roles:", err)
+	if decodeErr := cur.All(ctx, &roles); decodeErr != nil {
+		log.Fatal("decode roles:", decodeErr)
 	}
-	dump("roles", roles)
+	dump(roles)
 
 	// 2. Find assignments for user.
 	fmt.Println("\n=== ASSIGNMENTS (user) ===")
@@ -58,10 +58,10 @@ func main() {
 		log.Fatal("find assignments:", err)
 	}
 	var assigns []bson.M
-	if err := cur.All(ctx, &assigns); err != nil {
-		log.Fatal("decode assigns:", err)
+	if decodeErr := cur.All(ctx, &assigns); decodeErr != nil {
+		log.Fatal("decode assigns:", decodeErr)
 	}
-	dump("assignments", assigns)
+	dump(assigns)
 
 	// 3. For each role found, get permissions from junction table.
 	roleIDs := make([]string, 0)
@@ -85,8 +85,8 @@ func main() {
 			continue
 		}
 		var links []bson.M
-		if err := cur.All(ctx, &links); err != nil {
-			fmt.Printf("  role %s: decode error: %v\n", rid, err)
+		if decodeErr := cur.All(ctx, &links); decodeErr != nil {
+			fmt.Printf("  role %s: decode error: %v\n", rid, decodeErr)
 			continue
 		}
 		fmt.Printf("  role %s: %d permissions linked\n", rid, len(links))
@@ -96,9 +96,9 @@ func main() {
 
 			// Fetch the actual permission.
 			var perm bson.M
-			err := db.Collection("warden_permissions").FindOne(ctx, bson.M{"_id": permID}).Decode(&perm)
-			if err != nil {
-				fmt.Printf("       FETCH ERROR: %v\n", err)
+			decodeErr := db.Collection("warden_permissions").FindOne(ctx, bson.M{"_id": permID}).Decode(&perm)
+			if decodeErr != nil {
+				fmt.Printf("       FETCH ERROR: %v\n", decodeErr)
 				continue
 			}
 			fmt.Printf("       action=%v resource=%v name=%v tenant_id=%v\n",
@@ -113,14 +113,21 @@ func main() {
 		log.Fatal("find all roles:", err)
 	}
 	var allRoles []bson.M
-	if err := cur.All(ctx, &allRoles); err != nil {
-		log.Fatal("decode all roles:", err)
+	if decodeErr := cur.All(ctx, &allRoles); decodeErr != nil {
+		log.Fatal("decode all roles:", decodeErr)
 	}
 	for _, r := range allRoles {
-		rid := r["_id"].(string)
-		cur2, _ := db.Collection("warden_role_permissions").Find(ctx, bson.M{"role_id": rid})
+		rid, ok := r["_id"].(string)
+		if !ok {
+			continue
+		}
+		cur2, findErr := db.Collection("warden_role_permissions").Find(ctx, bson.M{"role_id": rid})
+		if findErr != nil {
+			fmt.Printf("  %v: error fetching permissions: %v\n", rid, findErr)
+			continue
+		}
 		var perms []bson.M
-		cur2.All(ctx, &perms)
+		_ = cur2.All(ctx, &perms) //nolint:errcheck // diagnostic script
 		fmt.Printf("  %v (slug=%v, parent_id=%v) → %d permissions\n", rid, r["slug"], r["parent_id"], len(perms))
 	}
 
@@ -136,8 +143,8 @@ func main() {
 		log.Fatal("find wildcard perms:", err)
 	}
 	var wildcardPerms []bson.M
-	if err := cur.All(ctx, &wildcardPerms); err != nil {
-		log.Fatal("decode wildcard perms:", err)
+	if decodeErr := cur.All(ctx, &wildcardPerms); decodeErr != nil {
+		log.Fatal("decode wildcard perms:", decodeErr)
 	}
 	if len(wildcardPerms) == 0 {
 		fmt.Println("  NONE FOUND - bootstrap never created wildcard permissions!")
@@ -153,21 +160,30 @@ func main() {
 	}
 }
 
-func fixData(ctx context.Context, db *mongo.Database, allRoles []bson.M, wildcardPerms []bson.M) {
+func fixData(ctx context.Context, db *mongo.Database, allRoles, wildcardPerms []bson.M) {
 	fmt.Println("\n========== FIXING DATA ==========")
 
 	// Find the wildcard permission ID.
 	if len(wildcardPerms) == 0 {
 		log.Fatal("no wildcard permission found — cannot fix")
 	}
-	wildcardPermID := wildcardPerms[0]["_id"].(string)
+	wildcardPermID, ok := wildcardPerms[0]["_id"].(string)
+	if !ok {
+		log.Fatal("wildcard permission has no string _id")
+	}
 	fmt.Printf("Using wildcard perm: %s\n", wildcardPermID)
 
 	// Build slug → roleID map.
 	slugToID := make(map[string]string)
 	for _, r := range allRoles {
-		slug := r["slug"].(string)
-		roleID := r["_id"].(string)
+		slug, ok := r["slug"].(string)
+		if !ok {
+			continue
+		}
+		roleID, ok := r["_id"].(string)
+		if !ok {
+			continue
+		}
 		slugToID[slug] = roleID
 	}
 
@@ -214,19 +230,29 @@ func fixData(ctx context.Context, db *mongo.Database, allRoles []bson.M, wildcar
 		cur, err := db.Collection("warden_role_permissions").Find(ctx, bson.M{"role_id": platformUserID})
 		if err == nil {
 			var links []bson.M
-			cur.All(ctx, &links)
+			_ = cur.All(ctx, &links) //nolint:errcheck // diagnostic script
 			for _, l := range links {
-				permID := l["permission_id"].(string)
-				count, _ := db.Collection("warden_role_permissions").CountDocuments(ctx, bson.M{
+				permID, ok := l["permission_id"].(string)
+				if !ok {
+					continue
+				}
+				count, countErr := db.Collection("warden_role_permissions").CountDocuments(ctx, bson.M{
 					"role_id":       appUserID,
 					"permission_id": permID,
 				})
+				if countErr != nil {
+					continue
+				}
 				if count == 0 {
-					db.Collection("warden_role_permissions").InsertOne(ctx, bson.M{
+					_, insertErr := db.Collection("warden_role_permissions").InsertOne(ctx, bson.M{
 						"role_id":       appUserID,
 						"permission_id": permID,
 					})
-					fmt.Printf("  FIXED user (%s): linked permission %s\n", appUserID, permID)
+					if insertErr != nil {
+						fmt.Printf("  ERROR linking user permission %s: %v\n", permID, insertErr)
+					} else {
+						fmt.Printf("  FIXED user (%s): linked permission %s\n", appUserID, permID)
+					}
 				}
 			}
 		}
@@ -280,13 +306,17 @@ func fixData(ctx context.Context, db *mongo.Database, allRoles []bson.M, wildcar
 	fmt.Println("\n========== DATA FIX COMPLETE ==========")
 }
 
-func dump(label string, docs []bson.M) {
+func dump(docs []bson.M) {
 	if len(docs) == 0 {
 		fmt.Printf("  (none found)\n")
 		return
 	}
 	for i, d := range docs {
-		b, _ := json.MarshalIndent(d, "  ", "  ")
+		b, marshalErr := json.MarshalIndent(d, "  ", "  ")
+		if marshalErr != nil {
+			fmt.Printf("  [%d] (marshal error: %v)\n", i, marshalErr)
+			continue
+		}
 		fmt.Printf("  [%d] %s\n", i, string(b))
 	}
 }
