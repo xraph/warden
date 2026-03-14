@@ -42,6 +42,7 @@ type CreateRoleRequest struct {
 
 // UpdateRoleRequest is the body for updating a role.
 type UpdateRoleRequest struct {
+	RoleID      string         `path:"roleId" description:"Role ID"`
 	Name        string         `json:"name,omitempty" description:"Role name"`
 	Description string         `json:"description,omitempty" description:"Human-readable description"`
 	MaxMembers  *int           `json:"max_members,omitempty" description:"Maximum members"`
@@ -63,7 +64,14 @@ type ListRolesRequest struct {
 
 // AttachPermissionRequest is the body for attaching a permission to a role.
 type AttachPermissionRequest struct {
+	RoleID       string `path:"roleId" description:"Role ID"`
 	PermissionID string `json:"permission_id" description:"Permission ID to attach"`
+}
+
+// DetachPermissionRequest binds the path for DELETE /roles/:roleId/permissions/:permissionId.
+type DetachPermissionRequest struct {
+	RoleID       string `path:"roleId" description:"Role ID"`
+	PermissionID string `path:"permissionId" description:"Permission ID"`
 }
 
 // ──────────────────────────────────────────────────
@@ -189,6 +197,7 @@ type ConditionInput struct {
 
 // UpdatePolicyRequest is the body for updating a policy.
 type UpdatePolicyRequest struct {
+	PolicyID    string                `path:"policyId" description:"Policy ID"`
 	Name        string                `json:"name,omitempty" description:"Policy name"`
 	Description string                `json:"description,omitempty" description:"Description"`
 	Effect      string                `json:"effect,omitempty" description:"Policy effect"`

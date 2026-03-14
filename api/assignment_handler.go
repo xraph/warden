@@ -17,7 +17,7 @@ func (a *API) registerAssignmentRoutes(router forge.Router) error {
 	if err := g.POST("/assignments", a.assignRole,
 		forge.WithSummary("Assign role"),
 		forge.WithDescription("Assigns a role to a subject."),
-		forge.WithOperationID("assignRole"),
+		forge.WithOperationID("wardenAssignRole"),
 		forge.WithRequestSchema(AssignRoleRequest{}),
 		forge.WithCreatedResponse(&assignment.Assignment{}),
 		forge.WithErrorResponses(),
@@ -28,7 +28,8 @@ func (a *API) registerAssignmentRoutes(router forge.Router) error {
 	if err := g.DELETE("/assignments/:assignmentId", a.unassignRole,
 		forge.WithSummary("Unassign role"),
 		forge.WithDescription("Removes a role assignment."),
-		forge.WithOperationID("unassignRole"),
+		forge.WithOperationID("wardenUnassignRole"),
+		forge.WithRequestSchema(GetAssignmentRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
 	); err != nil {
@@ -37,7 +38,7 @@ func (a *API) registerAssignmentRoutes(router forge.Router) error {
 
 	if err := g.GET("/assignments", a.listAssignments,
 		forge.WithSummary("List assignments"),
-		forge.WithOperationID("listAssignments"),
+		forge.WithOperationID("wardenListAssignments"),
 		forge.WithRequestSchema(ListAssignmentsRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Assignment list", []*assignment.Assignment{}),
 		forge.WithErrorResponses(),
@@ -48,7 +49,8 @@ func (a *API) registerAssignmentRoutes(router forge.Router) error {
 	return g.GET("/subjects/:subjectKind/:subjectId/roles", a.listSubjectRoles,
 		forge.WithSummary("List subject roles"),
 		forge.WithDescription("Returns roles assigned to a subject."),
-		forge.WithOperationID("listSubjectRoles"),
+		forge.WithOperationID("wardenListSubjectRoles"),
+		forge.WithRequestSchema(ListSubjectRolesRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Role IDs", []string{}),
 		forge.WithErrorResponses(),
 	)

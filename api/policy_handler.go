@@ -17,7 +17,7 @@ func (a *API) registerPolicyRoutes(router forge.Router) error {
 	if err := g.POST("/policies", a.createPolicy,
 		forge.WithSummary("Create policy"),
 		forge.WithDescription("Creates a new ABAC policy."),
-		forge.WithOperationID("createPolicy"),
+		forge.WithOperationID("wardenCreatePolicy"),
 		forge.WithRequestSchema(CreatePolicyRequest{}),
 		forge.WithCreatedResponse(&policy.Policy{}),
 		forge.WithErrorResponses(),
@@ -27,7 +27,8 @@ func (a *API) registerPolicyRoutes(router forge.Router) error {
 
 	if err := g.GET("/policies/:policyId", a.getPolicy,
 		forge.WithSummary("Get policy"),
-		forge.WithOperationID("getPolicy"),
+		forge.WithOperationID("wardenGetPolicy"),
+		forge.WithRequestSchema(GetPolicyRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Policy details", &policy.Policy{}),
 		forge.WithErrorResponses(),
 	); err != nil {
@@ -36,7 +37,7 @@ func (a *API) registerPolicyRoutes(router forge.Router) error {
 
 	if err := g.PUT("/policies/:policyId", a.updatePolicy,
 		forge.WithSummary("Update policy"),
-		forge.WithOperationID("updatePolicy"),
+		forge.WithOperationID("wardenUpdatePolicy"),
 		forge.WithRequestSchema(UpdatePolicyRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Updated policy", &policy.Policy{}),
 		forge.WithErrorResponses(),
@@ -46,7 +47,8 @@ func (a *API) registerPolicyRoutes(router forge.Router) error {
 
 	if err := g.DELETE("/policies/:policyId", a.deletePolicy,
 		forge.WithSummary("Delete policy"),
-		forge.WithOperationID("deletePolicy"),
+		forge.WithOperationID("wardenDeletePolicy"),
+		forge.WithRequestSchema(GetPolicyRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
 	); err != nil {
@@ -55,7 +57,7 @@ func (a *API) registerPolicyRoutes(router forge.Router) error {
 
 	return g.GET("/policies", a.listPolicies,
 		forge.WithSummary("List policies"),
-		forge.WithOperationID("listPolicies"),
+		forge.WithOperationID("wardenListPolicies"),
 		forge.WithRequestSchema(ListPoliciesRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Policy list", []*policy.Policy{}),
 		forge.WithErrorResponses(),
