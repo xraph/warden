@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/xraph/forge"
@@ -44,8 +45,8 @@ func (a *API) registerCheckRoutes(router forge.Router) error {
 }
 
 func (a *API) check(ctx forge.Context, req *CheckRequest) (*CheckResponse, error) {
-	if req.SubjectID == "" || req.Action == "" || req.ResourceType == "" {
-		return nil, forge.BadRequest("subject_id, action, and resource_type are required")
+	if err := validateCheckRequest(req); err != nil {
+		return nil, err
 	}
 
 	result, err := a.eng.Check(ctx.Context(), toCheckRequest(req))
@@ -58,8 +59,8 @@ func (a *API) check(ctx forge.Context, req *CheckRequest) (*CheckResponse, error
 }
 
 func (a *API) enforce(ctx forge.Context, req *CheckRequest) (*CheckResponse, error) {
-	if req.SubjectID == "" || req.Action == "" || req.ResourceType == "" {
-		return nil, forge.BadRequest("subject_id, action, and resource_type are required")
+	if err := validateCheckRequest(req); err != nil {
+		return nil, err
 	}
 
 	result, err := a.eng.Check(ctx.Context(), toCheckRequest(req))
@@ -76,7 +77,15 @@ func (a *API) enforce(ctx forge.Context, req *CheckRequest) (*CheckResponse, err
 
 func (a *API) batchCheck(ctx forge.Context, req *BatchCheckRequest) (*BatchCheckResponse, error) {
 	if len(req.Checks) == 0 {
-		return nil, forge.BadRequest("checks cannot be empty")
+		verr := forge.NewValidationErrors()
+		verr.AddWithCode("checks", "checks cannot be empty", "MIN_ITEMS", nil)
+		return nil, verr
+	}
+
+	for i := range req.Checks {
+		if err := validateCheckRequestAt(&req.Checks[i], fmt.Sprintf("checks[%d]", i)); err != nil {
+			return nil, err
+		}
 	}
 
 	results := make([]CheckResponse, len(req.Checks))
@@ -90,6 +99,33 @@ func (a *API) batchCheck(ctx forge.Context, req *BatchCheckRequest) (*BatchCheck
 
 	resp := &BatchCheckResponse{Results: results}
 	return resp, ctx.JSON(http.StatusOK, resp)
+}
+
+func validateCheckRequest(req *CheckRequest) error {
+	return validateCheckRequestAt(req, "")
+}
+
+func validateCheckRequestAt(req *CheckRequest, prefix string) error {
+	verr := forge.NewValidationErrors()
+	fieldName := func(name string) string {
+		if prefix != "" {
+			return prefix + "." + name
+		}
+		return name
+	}
+	if req.SubjectID == "" {
+		verr.AddWithCode(fieldName("subject_id"), "subject_id is required", "REQUIRED", nil)
+	}
+	if req.Action == "" {
+		verr.AddWithCode(fieldName("action"), "action is required", "REQUIRED", nil)
+	}
+	if req.ResourceType == "" {
+		verr.AddWithCode(fieldName("resource_type"), "resource_type is required", "REQUIRED", nil)
+	}
+	if verr.HasErrors() {
+		return verr
+	}
+	return nil
 }
 
 func toCheckRequest(r *CheckRequest) *warden.CheckRequest {

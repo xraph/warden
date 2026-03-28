@@ -38,3 +38,11 @@ func scopeFromContext(ctx context.Context) tenantScope {
 		tenantID: tenantIDFromContext(ctx),
 	}
 }
+
+// ScopeFromContext extracts the tenant scope from the given context.
+// Returns appID and tenantID using the standard resolution chain:
+// explicit WithTenant > forge.Scope > empty.
+func ScopeFromContext(ctx context.Context) (appID, tenantID string) {
+	s := scopeFromContext(ctx)
+	return s.appID, s.tenantID
+}

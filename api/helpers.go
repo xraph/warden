@@ -8,6 +8,12 @@ import (
 	"github.com/xraph/warden"
 )
 
+// scopeFromForgeContext extracts appID and tenantID from a forge.Context
+// using the warden scope resolution chain.
+func scopeFromForgeContext(ctx forge.Context) (appID, tenantID string) {
+	return warden.ScopeFromContext(ctx.Context())
+}
+
 // mapError maps domain errors to Forge HTTP errors.
 func mapError(err error) error {
 	if err == nil {

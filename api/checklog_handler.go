@@ -23,7 +23,9 @@ func (a *API) registerCheckLogRoutes(router forge.Router) error {
 }
 
 func (a *API) listCheckLogs(ctx forge.Context, req *ListCheckLogsRequest) (*CheckLogListResponse, error) {
+	_, tenantID := scopeFromForgeContext(ctx)
 	filter := &checklog.QueryFilter{
+		TenantID:     tenantID,
 		SubjectKind:  req.SubjectKind,
 		SubjectID:    req.SubjectID,
 		Action:       req.Action,

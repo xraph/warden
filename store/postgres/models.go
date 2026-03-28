@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/xraph/grove"
+	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/checklog"
@@ -21,22 +22,26 @@ import (
 
 type roleModel struct {
 	grove.BaseModel `grove:"table:warden_roles"`
-	ID              string         `grove:"id,pk"`
-	TenantID        string         `grove:"tenant_id,notnull"`
-	AppID           string         `grove:"app_id,notnull"`
-	Name            string         `grove:"name,notnull"`
-	Description     string         `grove:"description"`
-	Slug            string         `grove:"slug,notnull"`
-	IsSystem        bool           `grove:"is_system,notnull"`
-	IsDefault       bool           `grove:"is_default,notnull"`
-	ParentID        *string        `grove:"parent_id"`
-	MaxMembers      int            `grove:"max_members,notnull"`
-	Metadata        map[string]any `grove:"metadata,type:jsonb"`
-	CreatedAt       time.Time      `grove:"created_at,notnull"`
-	UpdatedAt       time.Time      `grove:"updated_at,notnull"`
+	ID              string           `grove:"id,pk"`
+	TenantID        string           `grove:"tenant_id,notnull"`
+	AppID           string           `grove:"app_id,notnull"`
+	Name            string           `grove:"name,notnull"`
+	Description     string           `grove:"description"`
+	Slug            string           `grove:"slug,notnull"`
+	IsSystem        bool             `grove:"is_system,notnull"`
+	IsDefault       bool             `grove:"is_default,notnull"`
+	ParentID        *string          `grove:"parent_id"`
+	MaxMembers      int              `grove:"max_members,notnull"`
+	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time        `grove:"created_at,notnull"`
+	UpdatedAt       time.Time        `grove:"updated_at,notnull"`
 }
 
 func roleToModel(r *role.Role) *roleModel {
+	md := pgdriver.JSONMap(r.Metadata)
+	if md == nil {
+		md = pgdriver.JSONMap{}
+	}
 	m := &roleModel{
 		ID:          r.ID.String(),
 		TenantID:    r.TenantID,
@@ -47,7 +52,7 @@ func roleToModel(r *role.Role) *roleModel {
 		IsSystem:    r.IsSystem,
 		IsDefault:   r.IsDefault,
 		MaxMembers:  r.MaxMembers,
-		Metadata:    r.Metadata,
+		Metadata:    md,
 		CreatedAt:   r.CreatedAt,
 		UpdatedAt:   r.UpdatedAt,
 	}
@@ -70,7 +75,7 @@ func roleFromModel(m *roleModel) *role.Role {
 		IsSystem:    m.IsSystem,
 		IsDefault:   m.IsDefault,
 		MaxMembers:  m.MaxMembers,
-		Metadata:    m.Metadata,
+		Metadata:    map[string]any(m.Metadata),
 		CreatedAt:   m.CreatedAt,
 		UpdatedAt:   m.UpdatedAt,
 	}
@@ -89,20 +94,24 @@ func roleFromModel(m *roleModel) *role.Role {
 
 type permissionModel struct {
 	grove.BaseModel `grove:"table:warden_permissions"`
-	ID              string         `grove:"id,pk"`
-	TenantID        string         `grove:"tenant_id,notnull"`
-	AppID           string         `grove:"app_id,notnull"`
-	Name            string         `grove:"name,notnull"`
-	Description     string         `grove:"description"`
-	Resource        string         `grove:"resource,notnull"`
-	Action          string         `grove:"action,notnull"`
-	IsSystem        bool           `grove:"is_system,notnull"`
-	Metadata        map[string]any `grove:"metadata,type:jsonb"`
-	CreatedAt       time.Time      `grove:"created_at,notnull"`
-	UpdatedAt       time.Time      `grove:"updated_at,notnull"`
+	ID              string           `grove:"id,pk"`
+	TenantID        string           `grove:"tenant_id,notnull"`
+	AppID           string           `grove:"app_id,notnull"`
+	Name            string           `grove:"name,notnull"`
+	Description     string           `grove:"description"`
+	Resource        string           `grove:"resource,notnull"`
+	Action          string           `grove:"action,notnull"`
+	IsSystem        bool             `grove:"is_system,notnull"`
+	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time        `grove:"created_at,notnull"`
+	UpdatedAt       time.Time        `grove:"updated_at,notnull"`
 }
 
 func permissionToModel(p *permission.Permission) *permissionModel {
+	md := pgdriver.JSONMap(p.Metadata)
+	if md == nil {
+		md = pgdriver.JSONMap{}
+	}
 	return &permissionModel{
 		ID:          p.ID.String(),
 		TenantID:    p.TenantID,
@@ -112,7 +121,7 @@ func permissionToModel(p *permission.Permission) *permissionModel {
 		Resource:    p.Resource,
 		Action:      p.Action,
 		IsSystem:    p.IsSystem,
-		Metadata:    p.Metadata,
+		Metadata:    md,
 		CreatedAt:   p.CreatedAt,
 		UpdatedAt:   p.UpdatedAt,
 	}
@@ -129,7 +138,7 @@ func permissionFromModel(m *permissionModel) *permission.Permission {
 		Resource:    m.Resource,
 		Action:      m.Action,
 		IsSystem:    m.IsSystem,
-		Metadata:    m.Metadata,
+		Metadata:    map[string]any(m.Metadata),
 		CreatedAt:   m.CreatedAt,
 		UpdatedAt:   m.UpdatedAt,
 	}
@@ -151,21 +160,25 @@ type rolePermissionModel struct {
 
 type assignmentModel struct {
 	grove.BaseModel `grove:"table:warden_assignments"`
-	ID              string         `grove:"id,pk"`
-	TenantID        string         `grove:"tenant_id,notnull"`
-	AppID           string         `grove:"app_id,notnull"`
-	RoleID          string         `grove:"role_id,notnull"`
-	SubjectKind     string         `grove:"subject_kind,notnull"`
-	SubjectID       string         `grove:"subject_id,notnull"`
-	ResourceType    string         `grove:"resource_type"`
-	ResourceID      string         `grove:"resource_id"`
-	ExpiresAt       *time.Time     `grove:"expires_at"`
-	GrantedBy       string         `grove:"granted_by"`
-	Metadata        map[string]any `grove:"metadata,type:jsonb"`
-	CreatedAt       time.Time      `grove:"created_at,notnull"`
+	ID              string           `grove:"id,pk"`
+	TenantID        string           `grove:"tenant_id,notnull"`
+	AppID           string           `grove:"app_id,notnull"`
+	RoleID          string           `grove:"role_id,notnull"`
+	SubjectKind     string           `grove:"subject_kind,notnull"`
+	SubjectID       string           `grove:"subject_id,notnull"`
+	ResourceType    string           `grove:"resource_type"`
+	ResourceID      string           `grove:"resource_id"`
+	ExpiresAt       *time.Time       `grove:"expires_at"`
+	GrantedBy       string           `grove:"granted_by"`
+	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time        `grove:"created_at,notnull"`
 }
 
 func assignmentToModel(a *assignment.Assignment) *assignmentModel {
+	md := pgdriver.JSONMap(a.Metadata)
+	if md == nil {
+		md = pgdriver.JSONMap{}
+	}
 	return &assignmentModel{
 		ID:           a.ID.String(),
 		TenantID:     a.TenantID,
@@ -177,7 +190,7 @@ func assignmentToModel(a *assignment.Assignment) *assignmentModel {
 		ResourceID:   a.ResourceID,
 		ExpiresAt:    a.ExpiresAt,
 		GrantedBy:    a.GrantedBy,
-		Metadata:     a.Metadata,
+		Metadata:     md,
 		CreatedAt:    a.CreatedAt,
 	}
 }
@@ -196,7 +209,7 @@ func assignmentFromModel(m *assignmentModel) *assignment.Assignment {
 		ResourceID:   m.ResourceID,
 		ExpiresAt:    m.ExpiresAt,
 		GrantedBy:    m.GrantedBy,
-		Metadata:     m.Metadata,
+		Metadata:     map[string]any(m.Metadata),
 		CreatedAt:    m.CreatedAt,
 	}
 }
@@ -207,20 +220,24 @@ func assignmentFromModel(m *assignmentModel) *assignment.Assignment {
 
 type relationModel struct {
 	grove.BaseModel `grove:"table:warden_relations"`
-	ID              string         `grove:"id,pk"`
-	TenantID        string         `grove:"tenant_id,notnull"`
-	AppID           string         `grove:"app_id,notnull"`
-	ObjectType      string         `grove:"object_type,notnull"`
-	ObjectID        string         `grove:"object_id,notnull"`
-	Relation        string         `grove:"relation,notnull"`
-	SubjectType     string         `grove:"subject_type,notnull"`
-	SubjectID       string         `grove:"subject_id,notnull"`
-	SubjectRelation string         `grove:"subject_relation"`
-	Metadata        map[string]any `grove:"metadata,type:jsonb"`
-	CreatedAt       time.Time      `grove:"created_at,notnull"`
+	ID              string           `grove:"id,pk"`
+	TenantID        string           `grove:"tenant_id,notnull"`
+	AppID           string           `grove:"app_id,notnull"`
+	ObjectType      string           `grove:"object_type,notnull"`
+	ObjectID        string           `grove:"object_id,notnull"`
+	Relation        string           `grove:"relation,notnull"`
+	SubjectType     string           `grove:"subject_type,notnull"`
+	SubjectID       string           `grove:"subject_id,notnull"`
+	SubjectRelation string           `grove:"subject_relation"`
+	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time        `grove:"created_at,notnull"`
 }
 
 func relationToModel(t *relation.Tuple) *relationModel {
+	md := pgdriver.JSONMap(t.Metadata)
+	if md == nil {
+		md = pgdriver.JSONMap{}
+	}
 	return &relationModel{
 		ID:              t.ID.String(),
 		TenantID:        t.TenantID,
@@ -231,7 +248,7 @@ func relationToModel(t *relation.Tuple) *relationModel {
 		SubjectType:     t.SubjectType,
 		SubjectID:       t.SubjectID,
 		SubjectRelation: t.SubjectRelation,
-		Metadata:        t.Metadata,
+		Metadata:        md,
 		CreatedAt:       t.CreatedAt,
 	}
 }
@@ -248,7 +265,7 @@ func relationFromModel(m *relationModel) *relation.Tuple {
 		SubjectType:     m.SubjectType,
 		SubjectID:       m.SubjectID,
 		SubjectRelation: m.SubjectRelation,
-		Metadata:        m.Metadata,
+		Metadata:        map[string]any(m.Metadata),
 		CreatedAt:       m.CreatedAt,
 	}
 }
@@ -259,25 +276,29 @@ func relationFromModel(m *relationModel) *relation.Tuple {
 
 type policyModel struct {
 	grove.BaseModel `grove:"table:warden_policies"`
-	ID              string                `grove:"id,pk"`
-	TenantID        string                `grove:"tenant_id,notnull"`
-	AppID           string                `grove:"app_id,notnull"`
-	Name            string                `grove:"name,notnull"`
-	Description     string                `grove:"description"`
-	Effect          string                `grove:"effect,notnull"`
-	Priority        int                   `grove:"priority,notnull"`
-	IsActive        bool                  `grove:"is_active,notnull"`
-	Version         int                   `grove:"version,notnull"`
-	Subjects        []policy.SubjectMatch `grove:"subjects,type:jsonb"`
-	Actions         []string              `grove:"actions,type:jsonb"`
-	Resources       []string              `grove:"resources,type:jsonb"`
-	Conditions      []policy.Condition    `grove:"conditions,type:jsonb"`
-	Metadata        map[string]any        `grove:"metadata,type:jsonb"`
-	CreatedAt       time.Time             `grove:"created_at,notnull"`
-	UpdatedAt       time.Time             `grove:"updated_at,notnull"`
+	ID              string                          `grove:"id,pk"`
+	TenantID        string                          `grove:"tenant_id,notnull"`
+	AppID           string                          `grove:"app_id,notnull"`
+	Name            string                          `grove:"name,notnull"`
+	Description     string                          `grove:"description"`
+	Effect          string                          `grove:"effect,notnull"`
+	Priority        int                             `grove:"priority,notnull"`
+	IsActive        bool                            `grove:"is_active,notnull"`
+	Version         int                             `grove:"version,notnull"`
+	Subjects        jsonbSlice[policy.SubjectMatch] `grove:"subjects,type:jsonb"`
+	Actions         jsonbSlice[string]              `grove:"actions,type:jsonb"`
+	Resources       jsonbSlice[string]              `grove:"resources,type:jsonb"`
+	Conditions      jsonbSlice[policy.Condition]    `grove:"conditions,type:jsonb"`
+	Metadata        pgdriver.JSONMap                `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time                       `grove:"created_at,notnull"`
+	UpdatedAt       time.Time                       `grove:"updated_at,notnull"`
 }
 
 func policyToModel(p *policy.Policy) *policyModel {
+	md := pgdriver.JSONMap(p.Metadata)
+	if md == nil {
+		md = pgdriver.JSONMap{}
+	}
 	return &policyModel{
 		ID:          p.ID.String(),
 		TenantID:    p.TenantID,
@@ -288,11 +309,11 @@ func policyToModel(p *policy.Policy) *policyModel {
 		Priority:    p.Priority,
 		IsActive:    p.IsActive,
 		Version:     p.Version,
-		Subjects:    p.Subjects,
-		Actions:     p.Actions,
-		Resources:   p.Resources,
-		Conditions:  p.Conditions,
-		Metadata:    p.Metadata,
+		Subjects:    jsonbSlice[policy.SubjectMatch](p.Subjects),
+		Actions:     jsonbSlice[string](p.Actions),
+		Resources:   jsonbSlice[string](p.Resources),
+		Conditions:  jsonbSlice[policy.Condition](p.Conditions),
+		Metadata:    md,
 		CreatedAt:   p.CreatedAt,
 		UpdatedAt:   p.UpdatedAt,
 	}
@@ -310,11 +331,11 @@ func policyFromModel(m *policyModel) *policy.Policy {
 		Priority:    m.Priority,
 		IsActive:    m.IsActive,
 		Version:     m.Version,
-		Subjects:    m.Subjects,
-		Actions:     m.Actions,
-		Resources:   m.Resources,
-		Conditions:  m.Conditions,
-		Metadata:    m.Metadata,
+		Subjects:    []policy.SubjectMatch(m.Subjects),
+		Actions:     []string(m.Actions),
+		Resources:   []string(m.Resources),
+		Conditions:  []policy.Condition(m.Conditions),
+		Metadata:    map[string]any(m.Metadata),
 		CreatedAt:   m.CreatedAt,
 		UpdatedAt:   m.UpdatedAt,
 	}
@@ -326,28 +347,32 @@ func policyFromModel(m *policyModel) *policy.Policy {
 
 type resourceTypeModel struct {
 	grove.BaseModel `grove:"table:warden_resource_types"`
-	ID              string                       `grove:"id,pk"`
-	TenantID        string                       `grove:"tenant_id,notnull"`
-	AppID           string                       `grove:"app_id,notnull"`
-	Name            string                       `grove:"name,notnull"`
-	Description     string                       `grove:"description"`
-	Relations       []resourcetype.RelationDef   `grove:"relations,type:jsonb"`
-	Permissions     []resourcetype.PermissionDef `grove:"permissions,type:jsonb"`
-	Metadata        map[string]any               `grove:"metadata,type:jsonb"`
-	CreatedAt       time.Time                    `grove:"created_at,notnull"`
-	UpdatedAt       time.Time                    `grove:"updated_at,notnull"`
+	ID              string                                 `grove:"id,pk"`
+	TenantID        string                                 `grove:"tenant_id,notnull"`
+	AppID           string                                 `grove:"app_id,notnull"`
+	Name            string                                 `grove:"name,notnull"`
+	Description     string                                 `grove:"description"`
+	Relations       jsonbSlice[resourcetype.RelationDef]   `grove:"relations,type:jsonb"`
+	Permissions     jsonbSlice[resourcetype.PermissionDef] `grove:"permissions,type:jsonb"`
+	Metadata        pgdriver.JSONMap                       `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time                              `grove:"created_at,notnull"`
+	UpdatedAt       time.Time                              `grove:"updated_at,notnull"`
 }
 
 func resourceTypeToModel(rt *resourcetype.ResourceType) *resourceTypeModel {
+	md := pgdriver.JSONMap(rt.Metadata)
+	if md == nil {
+		md = pgdriver.JSONMap{}
+	}
 	return &resourceTypeModel{
 		ID:          rt.ID.String(),
 		TenantID:    rt.TenantID,
 		AppID:       rt.AppID,
 		Name:        rt.Name,
 		Description: rt.Description,
-		Relations:   rt.Relations,
-		Permissions: rt.Permissions,
-		Metadata:    rt.Metadata,
+		Relations:   jsonbSlice[resourcetype.RelationDef](rt.Relations),
+		Permissions: jsonbSlice[resourcetype.PermissionDef](rt.Permissions),
+		Metadata:    md,
 		CreatedAt:   rt.CreatedAt,
 		UpdatedAt:   rt.UpdatedAt,
 	}
@@ -361,9 +386,9 @@ func resourceTypeFromModel(m *resourceTypeModel) *resourcetype.ResourceType {
 		AppID:       m.AppID,
 		Name:        m.Name,
 		Description: m.Description,
-		Relations:   m.Relations,
-		Permissions: m.Permissions,
-		Metadata:    m.Metadata,
+		Relations:   []resourcetype.RelationDef(m.Relations),
+		Permissions: []resourcetype.PermissionDef(m.Permissions),
+		Metadata:    map[string]any(m.Metadata),
 		CreatedAt:   m.CreatedAt,
 		UpdatedAt:   m.UpdatedAt,
 	}
@@ -375,23 +400,27 @@ func resourceTypeFromModel(m *resourceTypeModel) *resourcetype.ResourceType {
 
 type checkLogModel struct {
 	grove.BaseModel `grove:"table:warden_check_logs"`
-	ID              string         `grove:"id,pk"`
-	TenantID        string         `grove:"tenant_id,notnull"`
-	AppID           string         `grove:"app_id,notnull"`
-	SubjectKind     string         `grove:"subject_kind,notnull"`
-	SubjectID       string         `grove:"subject_id,notnull"`
-	Action          string         `grove:"action,notnull"`
-	ResourceType    string         `grove:"resource_type,notnull"`
-	ResourceID      string         `grove:"resource_id,notnull"`
-	Decision        string         `grove:"decision,notnull"`
-	Reason          string         `grove:"reason"`
-	EvalTimeNs      int64          `grove:"eval_time_ns,notnull"`
-	RequestIP       string         `grove:"request_ip"`
-	Metadata        map[string]any `grove:"metadata,type:jsonb"`
-	CreatedAt       time.Time      `grove:"created_at,notnull"`
+	ID              string           `grove:"id,pk"`
+	TenantID        string           `grove:"tenant_id,notnull"`
+	AppID           string           `grove:"app_id,notnull"`
+	SubjectKind     string           `grove:"subject_kind,notnull"`
+	SubjectID       string           `grove:"subject_id,notnull"`
+	Action          string           `grove:"action,notnull"`
+	ResourceType    string           `grove:"resource_type,notnull"`
+	ResourceID      string           `grove:"resource_id,notnull"`
+	Decision        string           `grove:"decision,notnull"`
+	Reason          string           `grove:"reason"`
+	EvalTimeNs      int64            `grove:"eval_time_ns,notnull"`
+	RequestIP       string           `grove:"request_ip"`
+	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time        `grove:"created_at,notnull"`
 }
 
 func checkLogToModel(e *checklog.Entry) *checkLogModel {
+	md := pgdriver.JSONMap(e.Metadata)
+	if md == nil {
+		md = pgdriver.JSONMap{}
+	}
 	return &checkLogModel{
 		ID:           e.ID.String(),
 		TenantID:     e.TenantID,
@@ -405,7 +434,7 @@ func checkLogToModel(e *checklog.Entry) *checkLogModel {
 		Reason:       e.Reason,
 		EvalTimeNs:   e.EvalTimeNs,
 		RequestIP:    e.RequestIP,
-		Metadata:     e.Metadata,
+		Metadata:     md,
 		CreatedAt:    e.CreatedAt,
 	}
 }
@@ -425,7 +454,7 @@ func checkLogFromModel(m *checkLogModel) *checklog.Entry {
 		Reason:       m.Reason,
 		EvalTimeNs:   m.EvalTimeNs,
 		RequestIP:    m.RequestIP,
-		Metadata:     m.Metadata,
+		Metadata:     map[string]any(m.Metadata),
 		CreatedAt:    m.CreatedAt,
 	}
 }

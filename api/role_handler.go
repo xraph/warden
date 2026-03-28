@@ -91,16 +91,25 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 }
 
 func (a *API) createRole(ctx forge.Context, req *CreateRoleRequest) (*role.Role, error) {
-	if req.Name == "" {
-		return nil, forge.BadRequest("name is required")
-	}
-	if req.Slug == "" {
-		return nil, forge.BadRequest("slug is required")
+	{
+		verr := forge.NewValidationErrors()
+		if req.Name == "" {
+			verr.AddWithCode("name", "name is required", "REQUIRED", nil)
+		}
+		if req.Slug == "" {
+			verr.AddWithCode("slug", "slug is required", "REQUIRED", nil)
+		}
+		if verr.HasErrors() {
+			return nil, verr
+		}
 	}
 
 	now := time.Now()
+	appID, tenantID := scopeFromForgeContext(ctx)
 	r := &role.Role{
 		ID:          id.NewRoleID(),
+		TenantID:    tenantID,
+		AppID:       appID,
 		Name:        req.Name,
 		Slug:        req.Slug,
 		Description: req.Description,
@@ -202,10 +211,12 @@ func (a *API) deleteRole(ctx forge.Context, _ *GetRoleRequest) (*struct{}, error
 }
 
 func (a *API) listRoles(ctx forge.Context, req *ListRolesRequest) (*RoleListResponse, error) {
+	_, tenantID := scopeFromForgeContext(ctx)
 	filter := &role.ListFilter{
-		Search: req.Search,
-		Limit:  defaultLimit(req.Limit),
-		Offset: req.Offset,
+		TenantID: tenantID,
+		Search:   req.Search,
+		Limit:    defaultLimit(req.Limit),
+		Offset:   req.Offset,
 	}
 
 	roles, err := a.eng.Store().ListRoles(ctx.Context(), filter)

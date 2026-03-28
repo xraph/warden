@@ -57,8 +57,20 @@ func (a *API) registerAssignmentRoutes(router forge.Router) error {
 }
 
 func (a *API) assignRole(ctx forge.Context, req *AssignRoleRequest) (*assignment.Assignment, error) {
-	if req.RoleID == "" || req.SubjectKind == "" || req.SubjectID == "" {
-		return nil, forge.BadRequest("role_id, subject_kind, and subject_id are required")
+	{
+		verr := forge.NewValidationErrors()
+		if req.RoleID == "" {
+			verr.AddWithCode("role_id", "role_id is required", "REQUIRED", nil)
+		}
+		if req.SubjectKind == "" {
+			verr.AddWithCode("subject_kind", "subject_kind is required", "REQUIRED", nil)
+		}
+		if req.SubjectID == "" {
+			verr.AddWithCode("subject_id", "subject_id is required", "REQUIRED", nil)
+		}
+		if verr.HasErrors() {
+			return nil, verr
+		}
 	}
 
 	roleID, err := id.ParseRoleID(req.RoleID)
@@ -66,9 +78,12 @@ func (a *API) assignRole(ctx forge.Context, req *AssignRoleRequest) (*assignment
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role_id: %v", err))
 	}
 
+	appID, tenantID := scopeFromForgeContext(ctx)
 	now := time.Now()
 	ass := &assignment.Assignment{
 		ID:           id.NewAssignmentID(),
+		TenantID:     tenantID,
+		AppID:        appID,
 		RoleID:       roleID,
 		SubjectKind:  req.SubjectKind,
 		SubjectID:    req.SubjectID,
@@ -117,7 +132,9 @@ func (a *API) unassignRole(ctx forge.Context, _ *GetAssignmentRequest) (*struct{
 }
 
 func (a *API) listAssignments(ctx forge.Context, req *ListAssignmentsRequest) (*AssignmentListResponse, error) {
+	_, tenantID := scopeFromForgeContext(ctx)
 	filter := &assignment.ListFilter{
+		TenantID:    tenantID,
 		SubjectKind: req.SubjectKind,
 		SubjectID:   req.SubjectID,
 		Limit:       defaultLimit(req.Limit),
@@ -141,10 +158,11 @@ func (a *API) listAssignments(ctx forge.Context, req *ListAssignmentsRequest) (*
 }
 
 func (a *API) listSubjectRoles(ctx forge.Context, _ *ListSubjectRolesRequest) (*SubjectRolesResponse, error) {
+	_, tenantID := scopeFromForgeContext(ctx)
 	subjectKind := ctx.Param("subjectKind")
 	subjectID := ctx.Param("subjectId")
 
-	roles, err := a.eng.Store().ListRolesForSubject(ctx.Context(), "", subjectKind, subjectID)
+	roles, err := a.eng.Store().ListRolesForSubject(ctx.Context(), tenantID, subjectKind, subjectID)
 	if err != nil {
 		return nil, mapError(err)
 	}

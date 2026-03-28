@@ -2,6 +2,7 @@ package warden
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -444,5 +445,109 @@ func TestCheckWithTenantOverride(t *testing.T) {
 	}
 	if !result.Allowed {
 		t.Fatalf("expected allowed with tenant override t2, got %s: %s", result.Decision, result.Reason)
+	}
+}
+
+func TestCheck_MissingResourceType(t *testing.T) {
+	ctx := WithTenant(context.Background(), "app1", "t1")
+	eng, _ := newTestEngine(t)
+
+	_, err := eng.Check(ctx, &CheckRequest{
+		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+		Action:   Action{Name: "read"},
+		Resource: Resource{Type: "", ID: "doc1"},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing resource type")
+	}
+	if !strings.Contains(err.Error(), "resource type is required") {
+		t.Fatalf("expected error about resource type, got: %v", err)
+	}
+}
+
+func TestCheck_MissingSubjectID(t *testing.T) {
+	ctx := WithTenant(context.Background(), "app1", "t1")
+	eng, _ := newTestEngine(t)
+
+	_, err := eng.Check(ctx, &CheckRequest{
+		Subject:  Subject{Kind: SubjectUser, ID: ""},
+		Action:   Action{Name: "read"},
+		Resource: Resource{Type: "document", ID: "doc1"},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing subject ID")
+	}
+	if !strings.Contains(err.Error(), "subject ID is required") {
+		t.Fatalf("expected error about subject ID, got: %v", err)
+	}
+}
+
+func TestCheck_MissingAction(t *testing.T) {
+	ctx := WithTenant(context.Background(), "app1", "t1")
+	eng, _ := newTestEngine(t)
+
+	_, err := eng.Check(ctx, &CheckRequest{
+		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+		Action:   Action{Name: ""},
+		Resource: Resource{Type: "document", ID: "doc1"},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing action")
+	}
+	if !strings.Contains(err.Error(), "action name is required") {
+		t.Fatalf("expected error about action, got: %v", err)
+	}
+}
+
+func TestCheck_DenyReasonIncludesContext(t *testing.T) {
+	ctx := WithTenant(context.Background(), "app1", "t1")
+	eng, s := newTestEngine(t)
+
+	// Create a role but no permission — should get "no role grants permission" with details.
+	roleID := id.NewRoleID()
+	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
+	_ = s.CreateAssignment(ctx, &assignment.Assignment{
+		ID: id.NewAssignmentID(), TenantID: "t1",
+		RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
+	})
+
+	result, err := eng.Check(ctx, &CheckRequest{
+		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+		Action:   Action{Name: "delete"},
+		Resource: Resource{Type: "document", ID: "doc1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Allowed {
+		t.Fatal("expected denied")
+	}
+	// Reason should include the permission name and subject.
+	if !strings.Contains(result.Reason, "document:delete") {
+		t.Fatalf("expected reason to include permission name, got: %s", result.Reason)
+	}
+	if !strings.Contains(result.Reason, "user:u1") {
+		t.Fatalf("expected reason to include subject, got: %s", result.Reason)
+	}
+}
+
+func TestCheck_DenyNoRolesReasonIncludesSubject(t *testing.T) {
+	ctx := WithTenant(context.Background(), "app1", "t1")
+	eng, _ := newTestEngine(t)
+
+	result, err := eng.Check(ctx, &CheckRequest{
+		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+		Action:   Action{Name: "read"},
+		Resource: Resource{Type: "document", ID: "doc1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Allowed {
+		t.Fatal("expected denied")
+	}
+	// With all models enabled, the merged result should contain informative context.
+	if result.Reason == "" {
+		t.Fatal("expected non-empty reason")
 	}
 }

@@ -53,16 +53,28 @@ func (a *API) registerPermissionRoutes(router forge.Router) error {
 }
 
 func (a *API) createPermission(ctx forge.Context, req *CreatePermissionRequest) (*permission.Permission, error) {
-	if req.Name == "" {
-		return nil, forge.BadRequest("name is required")
-	}
-	if req.Resource == "" || req.Action == "" {
-		return nil, forge.BadRequest("resource and action are required")
+	{
+		verr := forge.NewValidationErrors()
+		if req.Name == "" {
+			verr.AddWithCode("name", "name is required", "REQUIRED", nil)
+		}
+		if req.Resource == "" {
+			verr.AddWithCode("resource", "resource is required", "REQUIRED", nil)
+		}
+		if req.Action == "" {
+			verr.AddWithCode("action", "action is required", "REQUIRED", nil)
+		}
+		if verr.HasErrors() {
+			return nil, verr
+		}
 	}
 
+	appID, tenantID := scopeFromForgeContext(ctx)
 	now := time.Now()
 	p := &permission.Permission{
 		ID:          id.NewPermissionID(),
+		TenantID:    tenantID,
+		AppID:       appID,
 		Name:        req.Name,
 		Resource:    req.Resource,
 		Action:      req.Action,
@@ -116,7 +128,9 @@ func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*str
 }
 
 func (a *API) listPermissions(ctx forge.Context, req *ListPermissionsRequest) (*PermissionListResponse, error) {
+	_, tenantID := scopeFromForgeContext(ctx)
 	filter := &permission.ListFilter{
+		TenantID: tenantID,
 		Resource: req.Resource,
 		Action:   req.Action,
 		Search:   req.Search,

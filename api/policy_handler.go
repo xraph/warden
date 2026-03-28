@@ -65,16 +65,25 @@ func (a *API) registerPolicyRoutes(router forge.Router) error {
 }
 
 func (a *API) createPolicy(ctx forge.Context, req *CreatePolicyRequest) (*policy.Policy, error) {
-	if req.Name == "" {
-		return nil, forge.BadRequest("name is required")
-	}
-	if req.Effect != string(policy.EffectAllow) && req.Effect != string(policy.EffectDeny) {
-		return nil, forge.BadRequest("effect must be 'allow' or 'deny'")
+	{
+		verr := forge.NewValidationErrors()
+		if req.Name == "" {
+			verr.AddWithCode("name", "name is required", "REQUIRED", nil)
+		}
+		if req.Effect != string(policy.EffectAllow) && req.Effect != string(policy.EffectDeny) {
+			verr.AddWithCode("effect", "effect must be 'allow' or 'deny'", "ENUM", req.Effect)
+		}
+		if verr.HasErrors() {
+			return nil, verr
+		}
 	}
 
+	appID, tenantID := scopeFromForgeContext(ctx)
 	now := time.Now()
 	p := &policy.Policy{
 		ID:          id.NewPolicyID(),
+		TenantID:    tenantID,
+		AppID:       appID,
 		Name:        req.Name,
 		Description: req.Description,
 		Effect:      policy.Effect(req.Effect),
@@ -204,10 +213,12 @@ func (a *API) deletePolicy(ctx forge.Context, _ *GetPolicyRequest) (*struct{}, e
 }
 
 func (a *API) listPolicies(ctx forge.Context, req *ListPoliciesRequest) (*PolicyListResponse, error) {
+	_, tenantID := scopeFromForgeContext(ctx)
 	filter := &policy.ListFilter{
-		Search: req.Search,
-		Limit:  defaultLimit(req.Limit),
-		Offset: req.Offset,
+		TenantID: tenantID,
+		Search:   req.Search,
+		Limit:    defaultLimit(req.Limit),
+		Offset:   req.Offset,
 	}
 
 	if req.Effect != "" {

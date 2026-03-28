@@ -68,11 +68,33 @@ func (e *Engine) Start(_ context.Context) error { return nil }
 func (e *Engine) Stop(_ context.Context) error { return nil }
 
 // Check performs an authorization check. This is the hot path.
-func (e *Engine) Check(ctx context.Context, req *CheckRequest) (*CheckResult, error) {
+// Optional CallOption values override scope for this single call.
+func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOption) (*CheckResult, error) {
 	start := time.Now()
+
+	// Validate required fields.
+	if req.Subject.ID == "" {
+		return nil, fmt.Errorf("warden: subject ID is required")
+	}
+	if req.Action.Name == "" {
+		return nil, fmt.Errorf("warden: action name is required")
+	}
+	if req.Resource.Type == "" {
+		return nil, fmt.Errorf("warden: resource type is required for permission check")
+	}
+
 	scope := scopeFromContext(ctx)
 	if req.TenantID != "" {
 		scope.tenantID = req.TenantID
+	}
+
+	// Apply call-time options (highest priority).
+	co := resolveCallOptions(opts)
+	if co.tenantID != "" {
+		scope.tenantID = co.tenantID
+	}
+	if co.appID != "" {
+		scope.appID = co.appID
 	}
 
 	e.logger.Debug("warden: check",
@@ -125,7 +147,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest) (*CheckResult, er
 	}
 
 	// 5. Merge: explicit deny > allow > default deny.
-	result := e.mergeDecisions(rbacResult, rebacResult, abacResult)
+	result := e.mergeDecisions(req, rbacResult, rebacResult, abacResult)
 	result.EvalTimeNs = time.Since(start).Nanoseconds()
 
 	// 6. Cache the result.
@@ -147,8 +169,9 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest) (*CheckResult, er
 }
 
 // Enforce returns an error if the authorization check is denied.
-func (e *Engine) Enforce(ctx context.Context, req *CheckRequest) error {
-	result, err := e.Check(ctx, req)
+// Optional CallOption values override scope for this single call.
+func (e *Engine) Enforce(ctx context.Context, req *CheckRequest, opts ...CallOption) error {
+	result, err := e.Check(ctx, req, opts...)
 	if err != nil {
 		return fmt.Errorf("warden check: %w", err)
 	}
@@ -159,12 +182,13 @@ func (e *Engine) Enforce(ctx context.Context, req *CheckRequest) error {
 }
 
 // CanI is a shorthand for a simple authorization check.
-func (e *Engine) CanI(ctx context.Context, subjectKind SubjectKind, subjectID, action, resourceType, resourceID string) (bool, error) {
+// Optional CallOption values override scope for this single call.
+func (e *Engine) CanI(ctx context.Context, subjectKind SubjectKind, subjectID, action, resourceType, resourceID string, opts ...CallOption) (bool, error) {
 	result, err := e.Check(ctx, &CheckRequest{
 		Subject:  Subject{Kind: subjectKind, ID: subjectID},
 		Action:   Action{Name: action},
 		Resource: Resource{Type: resourceType, ID: resourceID},
-	})
+	}, opts...)
 	if err != nil {
 		return false, err
 	}
@@ -211,7 +235,7 @@ func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *Check
 			log.String("subject_kind", string(req.Subject.Kind)),
 			log.String("subject_id", req.Subject.ID),
 		)
-		return &CheckResult{Decision: DecisionDenyNoRoles, Reason: "subject has no roles"}, nil
+		return &CheckResult{Decision: DecisionDenyNoRoles, Reason: fmt.Sprintf("subject %s:%s has no assigned roles in tenant %q", req.Subject.Kind, req.Subject.ID, scope.tenantID)}, nil
 	}
 
 	// 2. Walk parent chain for inherited roles.
@@ -273,7 +297,7 @@ func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *Check
 		}
 	}
 
-	return &CheckResult{Decision: DecisionDenyNoPerms, Reason: "no role grants required permission"}, nil
+	return &CheckResult{Decision: DecisionDenyNoPerms, Reason: fmt.Sprintf("no role grants permission %q for subject %s:%s", permName, req.Subject.Kind, req.Subject.ID)}, nil
 }
 
 func (e *Engine) resolveInheritedRoles(ctx context.Context, roleIDs []id.RoleID) []id.RoleID {
@@ -333,7 +357,7 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 		}
 	}
 
-	return &CheckResult{Decision: DecisionDenyRelation, Reason: "no relation found"}, nil
+	return &CheckResult{Decision: DecisionDenyRelation, Reason: fmt.Sprintf("no relation grants %s:%s %s access to %s:%s", req.Subject.Kind, req.Subject.ID, req.Action.Name, req.Resource.Type, req.Resource.ID)}, nil
 }
 
 func (e *Engine) evaluateABAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, error) {
@@ -344,7 +368,7 @@ func (e *Engine) evaluateABAC(ctx context.Context, scope tenantScope, req *Check
 	return e.evaluator.Evaluate(ctx, policies, req)
 }
 
-func (e *Engine) mergeDecisions(rbac, rebac, abac *CheckResult) *CheckResult {
+func (e *Engine) mergeDecisions(req *CheckRequest, rbac, rebac, abac *CheckResult) *CheckResult {
 	// Explicit deny (from ABAC) always wins.
 	if abac != nil && abac.Decision == DecisionDenyExplicit {
 		return abac
@@ -364,5 +388,5 @@ func (e *Engine) mergeDecisions(rbac, rebac, abac *CheckResult) *CheckResult {
 		}
 	}
 
-	return &CheckResult{Decision: DecisionDenyDefault, Reason: "no matching allow rule"}
+	return &CheckResult{Decision: DecisionDenyDefault, Reason: fmt.Sprintf("no rule allows %s:%s to %s on %s:%s", req.Subject.Kind, req.Subject.ID, req.Action.Name, req.Resource.Type, req.Resource.ID)}
 }

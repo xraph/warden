@@ -53,13 +53,22 @@ func (a *API) registerResourceTypeRoutes(router forge.Router) error {
 }
 
 func (a *API) createResourceType(ctx forge.Context, req *CreateResourceTypeRequest) (*resourcetype.ResourceType, error) {
-	if req.Name == "" {
-		return nil, forge.BadRequest("name is required")
+	{
+		verr := forge.NewValidationErrors()
+		if req.Name == "" {
+			verr.AddWithCode("name", "name is required", "REQUIRED", nil)
+		}
+		if verr.HasErrors() {
+			return nil, verr
+		}
 	}
 
+	appID, tenantID := scopeFromForgeContext(ctx)
 	now := time.Now()
 	rt := &resourcetype.ResourceType{
 		ID:          id.NewResourceTypeID(),
+		TenantID:    tenantID,
+		AppID:       appID,
 		Name:        req.Name,
 		Description: req.Description,
 		Metadata:    req.Metadata,
@@ -115,10 +124,12 @@ func (a *API) deleteResourceType(ctx forge.Context, _ *GetResourceTypeRequest) (
 }
 
 func (a *API) listResourceTypes(ctx forge.Context, req *ListResourceTypesRequest) (*ResourceTypeListResponse, error) {
+	_, tenantID := scopeFromForgeContext(ctx)
 	filter := &resourcetype.ListFilter{
-		Search: req.Search,
-		Limit:  defaultLimit(req.Limit),
-		Offset: req.Offset,
+		TenantID: tenantID,
+		Search:   req.Search,
+		Limit:    defaultLimit(req.Limit),
+		Offset:   req.Offset,
 	}
 
 	rts, err := a.eng.Store().ListResourceTypes(ctx.Context(), filter)

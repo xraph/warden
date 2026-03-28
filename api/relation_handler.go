@@ -44,14 +44,40 @@ func (a *API) registerRelationRoutes(router forge.Router) error {
 	)
 }
 
+func validateRelationFields(objectType, objectID, rel, subjectType, subjectID string) error {
+	verr := forge.NewValidationErrors()
+	if objectType == "" {
+		verr.AddWithCode("object_type", "object_type is required", "REQUIRED", nil)
+	}
+	if objectID == "" {
+		verr.AddWithCode("object_id", "object_id is required", "REQUIRED", nil)
+	}
+	if rel == "" {
+		verr.AddWithCode("relation", "relation is required", "REQUIRED", nil)
+	}
+	if subjectType == "" {
+		verr.AddWithCode("subject_type", "subject_type is required", "REQUIRED", nil)
+	}
+	if subjectID == "" {
+		verr.AddWithCode("subject_id", "subject_id is required", "REQUIRED", nil)
+	}
+	if verr.HasErrors() {
+		return verr
+	}
+	return nil
+}
+
 func (a *API) writeRelation(ctx forge.Context, req *WriteRelationRequest) (*relation.Tuple, error) {
-	if req.ObjectType == "" || req.ObjectID == "" || req.Relation == "" || req.SubjectType == "" || req.SubjectID == "" {
-		return nil, forge.BadRequest("object_type, object_id, relation, subject_type, and subject_id are required")
+	if err := validateRelationFields(req.ObjectType, req.ObjectID, req.Relation, req.SubjectType, req.SubjectID); err != nil {
+		return nil, err
 	}
 
+	appID, tenantID := scopeFromForgeContext(ctx)
 	now := time.Now()
 	t := &relation.Tuple{
 		ID:              id.NewRelationID(),
+		TenantID:        tenantID,
+		AppID:           appID,
 		ObjectType:      req.ObjectType,
 		ObjectID:        req.ObjectID,
 		Relation:        req.Relation,
@@ -73,11 +99,12 @@ func (a *API) writeRelation(ctx forge.Context, req *WriteRelationRequest) (*rela
 }
 
 func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*struct{}, error) {
-	if req.ObjectType == "" || req.ObjectID == "" || req.Relation == "" || req.SubjectType == "" || req.SubjectID == "" {
-		return nil, forge.BadRequest("object_type, object_id, relation, subject_type, and subject_id are required")
+	if err := validateRelationFields(req.ObjectType, req.ObjectID, req.Relation, req.SubjectType, req.SubjectID); err != nil {
+		return nil, err
 	}
 
-	if err := a.eng.Store().DeleteRelationTuple(ctx.Context(), "", req.ObjectType, req.ObjectID, req.Relation, req.SubjectType, req.SubjectID); err != nil {
+	_, tenantID := scopeFromForgeContext(ctx)
+	if err := a.eng.Store().DeleteRelationTuple(ctx.Context(), tenantID, req.ObjectType, req.ObjectID, req.Relation, req.SubjectType, req.SubjectID); err != nil {
 		return nil, mapError(err)
 	}
 
@@ -85,7 +112,9 @@ func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*st
 }
 
 func (a *API) listRelations(ctx forge.Context, req *ListRelationsRequest) (*RelationListResponse, error) {
+	_, tenantID := scopeFromForgeContext(ctx)
 	filter := &relation.ListFilter{
+		TenantID:    tenantID,
 		ObjectType:  req.ObjectType,
 		ObjectID:    req.ObjectID,
 		Relation:    req.Relation,
