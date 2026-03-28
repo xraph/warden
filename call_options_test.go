@@ -17,7 +17,7 @@ func TestCheck_WithCallTenantID(t *testing.T) {
 	ctx := WithTenant(context.Background(), "app1", "t1")
 	eng, s := newTestEngine(t)
 
-	setupRBACData(t, s, "t2", "document", "read")
+	setupRBACData(t, s, "t2")
 
 	// Without call option — uses context tenant "t1", should deny.
 	result, err := eng.Check(ctx, &CheckRequest{
@@ -52,7 +52,7 @@ func TestCheck_CallOptionOverridesRequestTenantID(t *testing.T) {
 	ctx := WithTenant(context.Background(), "app1", "t1")
 	eng, s := newTestEngine(t)
 
-	setupRBACData(t, s, "t3", "document", "read")
+	setupRBACData(t, s, "t3")
 
 	result, err := eng.Check(ctx, &CheckRequest{
 		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
@@ -72,7 +72,7 @@ func TestEnforce_WithCallTenantID(t *testing.T) {
 	ctx := WithTenant(context.Background(), "app1", "t1")
 	eng, s := newTestEngine(t)
 
-	setupRBACData(t, s, "t2", "document", "read")
+	setupRBACData(t, s, "t2")
 
 	// Without call option — denied.
 	err := eng.Enforce(ctx, &CheckRequest{
@@ -99,7 +99,7 @@ func TestCanI_WithCallTenantID(t *testing.T) {
 	ctx := WithTenant(context.Background(), "app1", "t1")
 	eng, s := newTestEngine(t)
 
-	setupRBACData(t, s, "t2", "document", "read")
+	setupRBACData(t, s, "t2")
 
 	// Without call option — denied.
 	allowed, err := eng.CanI(ctx, SubjectUser, "u1", "read", "document", "doc1")
@@ -145,7 +145,7 @@ func TestCheck_NoCallOptions_BackwardsCompatible(t *testing.T) {
 	ctx := WithTenant(context.Background(), "app1", "t1")
 	eng, s := newTestEngine(t)
 
-	setupRBACData(t, s, "t1", "document", "read")
+	setupRBACData(t, s, "t1")
 
 	result, err := eng.Check(ctx, &CheckRequest{
 		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
@@ -161,9 +161,14 @@ func TestCheck_NoCallOptions_BackwardsCompatible(t *testing.T) {
 }
 
 // setupRBACData creates a role, permission, attachment, and assignment for testing.
-func setupRBACData(t *testing.T, s *memory.Store, tenantID, resource, action string) {
+func setupRBACData(t *testing.T, s *memory.Store, tenantID string) {
 	t.Helper()
 	ctx := context.Background()
+
+	const (
+		resource = "document"
+		action   = "read"
+	)
 
 	roleID := id.NewRoleID()
 	permID := id.NewPermissionID()
