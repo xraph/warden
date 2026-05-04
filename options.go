@@ -19,6 +19,13 @@ func WithEvaluator(ev Evaluator) Option { return func(e *Engine) { e.evaluator =
 // WithGraphWalker sets the ReBAC graph walker.
 func WithGraphWalker(gw GraphWalker) Option { return func(e *Engine) { e.graphWalker = gw } }
 
+// WithExpressionEvaluator sets the resource-type permission expression
+// evaluator. The DSL package's NewEngineEvaluator is the canonical
+// implementation. When unset, resource-type expressions are inert.
+func WithExpressionEvaluator(ev ExpressionEvaluator) Option {
+	return func(e *Engine) { e.exprEval = ev }
+}
+
 // WithCache sets the check result cache.
 func WithCache(c Cache) Option { return func(e *Engine) { e.cache = c } }
 

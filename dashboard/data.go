@@ -296,26 +296,30 @@ func fetchEntityCounts(ctx context.Context, s store.Store, tenantID string) enti
 func enrichRoleRows(ctx context.Context, s store.Store, roles []*role.Role) []pages.RoleRow {
 	rows := make([]pages.RoleRow, len(roles))
 
-	// Build name lookup from the current page of roles.
-	nameByID := make(map[string]string, len(roles))
+	// Cache parents we resolve via GetRoleBySlug, keyed by (tenant, slug).
+	type parentInfo struct {
+		id   string
+		name string
+	}
+	parentBySlug := make(map[string]parentInfo, len(roles))
+
+	// Seed the cache from this page so we don't fetch parents that are already in scope.
 	for _, r := range roles {
-		nameByID[r.ID.String()] = r.Name
+		parentBySlug[r.TenantID+"\x00"+r.Slug] = parentInfo{id: r.ID.String(), name: r.Name}
 	}
 
-	// Fetch missing parent role names not in the current page.
+	// Fetch missing parents not in the current page.
 	for _, r := range roles {
-		if r.ParentID != nil && !r.ParentID.IsNil() {
-			pid := r.ParentID.String()
-			if _, ok := nameByID[pid]; !ok {
-				parsed, err := id.ParseRoleID(pid)
-				if err != nil {
-					continue
-				}
-				parent, err := s.GetRole(ctx, parsed)
-				if err == nil && parent != nil {
-					nameByID[pid] = parent.Name
-				}
-			}
+		if r.ParentSlug == "" {
+			continue
+		}
+		key := r.TenantID + "\x00" + r.ParentSlug
+		if _, ok := parentBySlug[key]; ok {
+			continue
+		}
+		parent, err := s.GetRoleBySlug(ctx, r.TenantID, r.ParentSlug)
+		if err == nil && parent != nil {
+			parentBySlug[key] = parentInfo{id: parent.ID.String(), name: parent.Name}
 		}
 	}
 
@@ -328,12 +332,12 @@ func enrichRoleRows(ctx context.Context, s store.Store, roles []*role.Role) []pa
 			rows[i].PermissionCount = len(permIDs)
 		}
 
-		// Parent name resolution.
-		if r.ParentID != nil && !r.ParentID.IsNil() {
-			pid := r.ParentID.String()
-			rows[i].ParentID = pid
-			if name, ok := nameByID[pid]; ok {
-				rows[i].ParentName = name
+		// Parent resolution.
+		if r.ParentSlug != "" {
+			rows[i].ParentSlug = r.ParentSlug
+			if info, ok := parentBySlug[r.TenantID+"\x00"+r.ParentSlug]; ok {
+				rows[i].ParentID = info.id
+				rows[i].ParentName = info.name
 			}
 		}
 

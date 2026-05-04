@@ -142,8 +142,8 @@ func (s *Store) ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role
 		if filter.IsDefault != nil {
 			q = q.Where("is_default = ?", *filter.IsDefault)
 		}
-		if filter.ParentID != nil {
-			q = q.Where("parent_id = ?", filter.ParentID.String())
+		if filter.ParentSlug != nil {
+			q = q.Where("parent_slug = ?", *filter.ParentSlug)
 		}
 		if filter.Search != "" {
 			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
@@ -177,8 +177,8 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 		if filter.IsDefault != nil {
 			q = q.Where("is_default = ?", *filter.IsDefault)
 		}
-		if filter.ParentID != nil {
-			q = q.Where("parent_id = ?", filter.ParentID.String())
+		if filter.ParentSlug != nil {
+			q = q.Where("parent_slug = ?", *filter.ParentSlug)
 		}
 		if filter.Search != "" {
 			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
@@ -270,10 +270,11 @@ func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, permID
 	return nil
 }
 
-func (s *Store) ListChildRoles(ctx context.Context, parentID id.RoleID) ([]*role.Role, error) {
+func (s *Store) ListChildRoles(ctx context.Context, tenantID, parentSlug string) ([]*role.Role, error) {
 	var models []roleModel
 	err := s.pgdb.NewSelect(&models).
-		Where("parent_id = ?", parentID.String()).
+		Where("tenant_id = ?", tenantID).
+		Where("parent_slug = ?", parentSlug).
 		OrderExpr("created_at ASC").
 		Scan(ctx)
 	if err != nil {
@@ -569,15 +570,17 @@ func (s *Store) CountAssignments(ctx context.Context, filter *assignment.ListFil
 	return count, nil
 }
 
-func (s *Store) ListRolesForSubject(ctx context.Context, tenantID, subjectKind, subjectID string) ([]id.RoleID, error) {
+func (s *Store) ListRolesForSubject(ctx context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID string) ([]id.RoleID, error) {
 	var models []assignmentModel
-	err := s.pgdb.NewSelect(&models).
+	q := s.pgdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
 		Where("subject_kind = ?", subjectKind).
 		Where("subject_id = ?", subjectID).
-		Where("resource_type = ''").
-		Scan(ctx)
-	if err != nil {
+		Where("resource_type = ''")
+	if len(namespacePaths) > 0 {
+		q = q.Where("namespace_path IN (?)", namespacePaths)
+	}
+	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles for subject: %w", err)
 	}
 	result := make([]id.RoleID, 0, len(models))
@@ -590,16 +593,18 @@ func (s *Store) ListRolesForSubject(ctx context.Context, tenantID, subjectKind, 
 	return result, nil
 }
 
-func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID, subjectKind, subjectID, resourceType, resourceID string) ([]id.RoleID, error) {
+func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID, resourceType, resourceID string) ([]id.RoleID, error) {
 	var models []assignmentModel
-	err := s.pgdb.NewSelect(&models).
+	q := s.pgdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
 		Where("subject_kind = ?", subjectKind).
 		Where("subject_id = ?", subjectID).
 		Where("resource_type = ?", resourceType).
-		Where("resource_id = ?", resourceID).
-		Scan(ctx)
-	if err != nil {
+		Where("resource_id = ?", resourceID)
+	if len(namespacePaths) > 0 {
+		q = q.Where("namespace_path IN (?)", namespacePaths)
+	}
+	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles for subject on resource: %w", err)
 	}
 	result := make([]id.RoleID, 0, len(models))
@@ -696,9 +701,10 @@ func (s *Store) DeleteRelation(ctx context.Context, relID id.RelationID) error {
 	return nil
 }
 
-func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, objectType, objectID, rel, subjectType, subjectID string) error {
+func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) error {
 	_, err := s.pgdb.NewDelete((*relationModel)(nil)).
 		Where("tenant_id = ?", tenantID).
+		Where("namespace_path = ?", namespacePath).
 		Where("object_type = ?", objectType).
 		Where("object_id = ?", objectID).
 		Where("relation = ?", rel).
@@ -785,10 +791,11 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	return count, nil
 }
 
-func (s *Store) ListRelationSubjects(ctx context.Context, tenantID, objectType, objectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationSubjects(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel string) ([]*relation.Tuple, error) {
 	var models []relationModel
 	err := s.pgdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
+		Where("namespace_path = ?", namespacePath).
 		Where("object_type = ?", objectType).
 		Where("object_id = ?", objectID).
 		Where("relation = ?", rel).
@@ -804,10 +811,11 @@ func (s *Store) ListRelationSubjects(ctx context.Context, tenantID, objectType, 
 	return result, nil
 }
 
-func (s *Store) ListRelationObjects(ctx context.Context, tenantID, subjectType, subjectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath, subjectType, subjectID, rel string) ([]*relation.Tuple, error) {
 	var models []relationModel
 	err := s.pgdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
+		Where("namespace_path = ?", namespacePath).
 		Where("subject_type = ?", subjectType).
 		Where("subject_id = ?", subjectID).
 		Where("relation = ?", rel).
@@ -823,9 +831,10 @@ func (s *Store) ListRelationObjects(ctx context.Context, tenantID, subjectType, 
 	return result, nil
 }
 
-func (s *Store) CheckDirectRelation(ctx context.Context, tenantID, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
+func (s *Store) CheckDirectRelation(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
 	count, err := s.pgdb.NewSelect((*relationModel)(nil)).
 		Where("tenant_id = ?", tenantID).
+		Where("namespace_path = ?", namespacePath).
 		Where("object_type = ?", objectType).
 		Where("object_id = ?", objectID).
 		Where("relation = ?", rel).
@@ -989,14 +998,16 @@ func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (i
 	return count, nil
 }
 
-func (s *Store) ListActivePolicies(ctx context.Context, tenantID string) ([]*policy.Policy, error) {
+func (s *Store) ListActivePolicies(ctx context.Context, tenantID string, namespacePaths []string) ([]*policy.Policy, error) {
 	var models []policyModel
-	err := s.pgdb.NewSelect(&models).
+	q := s.pgdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
-		Where("is_active = ?", true).
-		OrderExpr("priority ASC").
-		Scan(ctx)
-	if err != nil {
+		Where("is_active = ?", true)
+	if len(namespacePaths) > 0 {
+		q = q.Where("namespace_path IN (?)", namespacePaths)
+	}
+	q = q.OrderExpr("priority ASC")
+	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list active policies: %w", err)
 	}
 	result := make([]*policy.Policy, len(models))

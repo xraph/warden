@@ -41,8 +41,9 @@ type Store interface {
 	// SetRolePermissions replaces all permissions for a role.
 	SetRolePermissions(ctx context.Context, roleID id.RoleID, permIDs []id.PermissionID) error
 
-	// ListChildRoles returns direct child roles of a parent.
-	ListChildRoles(ctx context.Context, parentID id.RoleID) ([]*Role, error)
+	// ListChildRoles returns direct child roles of a parent within a tenant.
+	// Children are inherently per-tenant since slugs are unique per tenant.
+	ListChildRoles(ctx context.Context, tenantID, parentSlug string) ([]*Role, error)
 
 	// DeleteRolesByTenant removes all roles for a tenant.
 	DeleteRolesByTenant(ctx context.Context, tenantID string) error

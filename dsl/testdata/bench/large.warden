@@ -1,0 +1,1164 @@
+warden config 1
+tenant t1
+
+permission "r0:read"  (r0 : read)
+permission "r0:write" (r0 : write)
+permission "r1:read"  (r1 : read)
+permission "r1:write" (r1 : write)
+permission "r2:read"  (r2 : read)
+permission "r2:write" (r2 : write)
+permission "r3:read"  (r3 : read)
+permission "r3:write" (r3 : write)
+permission "r4:read"  (r4 : read)
+permission "r4:write" (r4 : write)
+permission "r5:read"  (r5 : read)
+permission "r5:write" (r5 : write)
+permission "r6:read"  (r6 : read)
+permission "r6:write" (r6 : write)
+permission "r7:read"  (r7 : read)
+permission "r7:write" (r7 : write)
+permission "r8:read"  (r8 : read)
+permission "r8:write" (r8 : write)
+permission "r9:read"  (r9 : read)
+permission "r9:write" (r9 : write)
+permission "r10:read"  (r10 : read)
+permission "r10:write" (r10 : write)
+permission "r11:read"  (r11 : read)
+permission "r11:write" (r11 : write)
+permission "r12:read"  (r12 : read)
+permission "r12:write" (r12 : write)
+permission "r13:read"  (r13 : read)
+permission "r13:write" (r13 : write)
+permission "r14:read"  (r14 : read)
+permission "r14:write" (r14 : write)
+permission "r15:read"  (r15 : read)
+permission "r15:write" (r15 : write)
+permission "r16:read"  (r16 : read)
+permission "r16:write" (r16 : write)
+permission "r17:read"  (r17 : read)
+permission "r17:write" (r17 : write)
+permission "r18:read"  (r18 : read)
+permission "r18:write" (r18 : write)
+permission "r19:read"  (r19 : read)
+permission "r19:write" (r19 : write)
+permission "r20:read"  (r20 : read)
+permission "r20:write" (r20 : write)
+permission "r21:read"  (r21 : read)
+permission "r21:write" (r21 : write)
+permission "r22:read"  (r22 : read)
+permission "r22:write" (r22 : write)
+permission "r23:read"  (r23 : read)
+permission "r23:write" (r23 : write)
+permission "r24:read"  (r24 : read)
+permission "r24:write" (r24 : write)
+permission "r25:read"  (r25 : read)
+permission "r25:write" (r25 : write)
+permission "r26:read"  (r26 : read)
+permission "r26:write" (r26 : write)
+permission "r27:read"  (r27 : read)
+permission "r27:write" (r27 : write)
+permission "r28:read"  (r28 : read)
+permission "r28:write" (r28 : write)
+permission "r29:read"  (r29 : read)
+permission "r29:write" (r29 : write)
+permission "r30:read"  (r30 : read)
+permission "r30:write" (r30 : write)
+permission "r31:read"  (r31 : read)
+permission "r31:write" (r31 : write)
+permission "r32:read"  (r32 : read)
+permission "r32:write" (r32 : write)
+permission "r33:read"  (r33 : read)
+permission "r33:write" (r33 : write)
+permission "r34:read"  (r34 : read)
+permission "r34:write" (r34 : write)
+permission "r35:read"  (r35 : read)
+permission "r35:write" (r35 : write)
+permission "r36:read"  (r36 : read)
+permission "r36:write" (r36 : write)
+permission "r37:read"  (r37 : read)
+permission "r37:write" (r37 : write)
+permission "r38:read"  (r38 : read)
+permission "r38:write" (r38 : write)
+permission "r39:read"  (r39 : read)
+permission "r39:write" (r39 : write)
+permission "r40:read"  (r40 : read)
+permission "r40:write" (r40 : write)
+permission "r41:read"  (r41 : read)
+permission "r41:write" (r41 : write)
+permission "r42:read"  (r42 : read)
+permission "r42:write" (r42 : write)
+permission "r43:read"  (r43 : read)
+permission "r43:write" (r43 : write)
+permission "r44:read"  (r44 : read)
+permission "r44:write" (r44 : write)
+permission "r45:read"  (r45 : read)
+permission "r45:write" (r45 : write)
+permission "r46:read"  (r46 : read)
+permission "r46:write" (r46 : write)
+permission "r47:read"  (r47 : read)
+permission "r47:write" (r47 : write)
+permission "r48:read"  (r48 : read)
+permission "r48:write" (r48 : write)
+permission "r49:read"  (r49 : read)
+permission "r49:write" (r49 : write)
+permission "r50:read"  (r50 : read)
+permission "r50:write" (r50 : write)
+permission "r51:read"  (r51 : read)
+permission "r51:write" (r51 : write)
+permission "r52:read"  (r52 : read)
+permission "r52:write" (r52 : write)
+permission "r53:read"  (r53 : read)
+permission "r53:write" (r53 : write)
+permission "r54:read"  (r54 : read)
+permission "r54:write" (r54 : write)
+permission "r55:read"  (r55 : read)
+permission "r55:write" (r55 : write)
+permission "r56:read"  (r56 : read)
+permission "r56:write" (r56 : write)
+permission "r57:read"  (r57 : read)
+permission "r57:write" (r57 : write)
+permission "r58:read"  (r58 : read)
+permission "r58:write" (r58 : write)
+permission "r59:read"  (r59 : read)
+permission "r59:write" (r59 : write)
+permission "r60:read"  (r60 : read)
+permission "r60:write" (r60 : write)
+permission "r61:read"  (r61 : read)
+permission "r61:write" (r61 : write)
+permission "r62:read"  (r62 : read)
+permission "r62:write" (r62 : write)
+permission "r63:read"  (r63 : read)
+permission "r63:write" (r63 : write)
+permission "r64:read"  (r64 : read)
+permission "r64:write" (r64 : write)
+permission "r65:read"  (r65 : read)
+permission "r65:write" (r65 : write)
+permission "r66:read"  (r66 : read)
+permission "r66:write" (r66 : write)
+permission "r67:read"  (r67 : read)
+permission "r67:write" (r67 : write)
+permission "r68:read"  (r68 : read)
+permission "r68:write" (r68 : write)
+permission "r69:read"  (r69 : read)
+permission "r69:write" (r69 : write)
+permission "r70:read"  (r70 : read)
+permission "r70:write" (r70 : write)
+permission "r71:read"  (r71 : read)
+permission "r71:write" (r71 : write)
+permission "r72:read"  (r72 : read)
+permission "r72:write" (r72 : write)
+permission "r73:read"  (r73 : read)
+permission "r73:write" (r73 : write)
+permission "r74:read"  (r74 : read)
+permission "r74:write" (r74 : write)
+permission "r75:read"  (r75 : read)
+permission "r75:write" (r75 : write)
+permission "r76:read"  (r76 : read)
+permission "r76:write" (r76 : write)
+permission "r77:read"  (r77 : read)
+permission "r77:write" (r77 : write)
+permission "r78:read"  (r78 : read)
+permission "r78:write" (r78 : write)
+permission "r79:read"  (r79 : read)
+permission "r79:write" (r79 : write)
+permission "r80:read"  (r80 : read)
+permission "r80:write" (r80 : write)
+permission "r81:read"  (r81 : read)
+permission "r81:write" (r81 : write)
+permission "r82:read"  (r82 : read)
+permission "r82:write" (r82 : write)
+permission "r83:read"  (r83 : read)
+permission "r83:write" (r83 : write)
+permission "r84:read"  (r84 : read)
+permission "r84:write" (r84 : write)
+permission "r85:read"  (r85 : read)
+permission "r85:write" (r85 : write)
+permission "r86:read"  (r86 : read)
+permission "r86:write" (r86 : write)
+permission "r87:read"  (r87 : read)
+permission "r87:write" (r87 : write)
+permission "r88:read"  (r88 : read)
+permission "r88:write" (r88 : write)
+permission "r89:read"  (r89 : read)
+permission "r89:write" (r89 : write)
+permission "r90:read"  (r90 : read)
+permission "r90:write" (r90 : write)
+permission "r91:read"  (r91 : read)
+permission "r91:write" (r91 : write)
+permission "r92:read"  (r92 : read)
+permission "r92:write" (r92 : write)
+permission "r93:read"  (r93 : read)
+permission "r93:write" (r93 : write)
+permission "r94:read"  (r94 : read)
+permission "r94:write" (r94 : write)
+permission "r95:read"  (r95 : read)
+permission "r95:write" (r95 : write)
+permission "r96:read"  (r96 : read)
+permission "r96:write" (r96 : write)
+permission "r97:read"  (r97 : read)
+permission "r97:write" (r97 : write)
+permission "r98:read"  (r98 : read)
+permission "r98:write" (r98 : write)
+permission "r99:read"  (r99 : read)
+permission "r99:write" (r99 : write)
+
+role role-0 {
+  name = "Role 0"
+  grants = ["r0:read", "r0:write"]
+}
+
+role role-1 {
+  name = "Role 1"
+  grants = ["r1:read", "r1:write"]
+}
+
+role role-2 {
+  name = "Role 2"
+  grants = ["r2:read", "r2:write"]
+}
+
+role role-3 {
+  name = "Role 3"
+  grants = ["r3:read", "r3:write"]
+}
+
+role role-4 {
+  name = "Role 4"
+  grants = ["r4:read", "r4:write"]
+}
+
+role role-5 : role-4 {
+  name = "Role 5"
+  grants = ["r5:read", "r5:write"]
+}
+
+role role-6 {
+  name = "Role 6"
+  grants = ["r6:read", "r6:write"]
+}
+
+role role-7 {
+  name = "Role 7"
+  grants = ["r7:read", "r7:write"]
+}
+
+role role-8 {
+  name = "Role 8"
+  grants = ["r8:read", "r8:write"]
+}
+
+role role-9 {
+  name = "Role 9"
+  grants = ["r9:read", "r9:write"]
+}
+
+role role-10 : role-9 {
+  name = "Role 10"
+  grants = ["r10:read", "r10:write"]
+}
+
+role role-11 {
+  name = "Role 11"
+  grants = ["r11:read", "r11:write"]
+}
+
+role role-12 {
+  name = "Role 12"
+  grants = ["r12:read", "r12:write"]
+}
+
+role role-13 {
+  name = "Role 13"
+  grants = ["r13:read", "r13:write"]
+}
+
+role role-14 {
+  name = "Role 14"
+  grants = ["r14:read", "r14:write"]
+}
+
+role role-15 : role-14 {
+  name = "Role 15"
+  grants = ["r15:read", "r15:write"]
+}
+
+role role-16 {
+  name = "Role 16"
+  grants = ["r16:read", "r16:write"]
+}
+
+role role-17 {
+  name = "Role 17"
+  grants = ["r17:read", "r17:write"]
+}
+
+role role-18 {
+  name = "Role 18"
+  grants = ["r18:read", "r18:write"]
+}
+
+role role-19 {
+  name = "Role 19"
+  grants = ["r19:read", "r19:write"]
+}
+
+role role-20 : role-19 {
+  name = "Role 20"
+  grants = ["r20:read", "r20:write"]
+}
+
+role role-21 {
+  name = "Role 21"
+  grants = ["r21:read", "r21:write"]
+}
+
+role role-22 {
+  name = "Role 22"
+  grants = ["r22:read", "r22:write"]
+}
+
+role role-23 {
+  name = "Role 23"
+  grants = ["r23:read", "r23:write"]
+}
+
+role role-24 {
+  name = "Role 24"
+  grants = ["r24:read", "r24:write"]
+}
+
+role role-25 : role-24 {
+  name = "Role 25"
+  grants = ["r25:read", "r25:write"]
+}
+
+role role-26 {
+  name = "Role 26"
+  grants = ["r26:read", "r26:write"]
+}
+
+role role-27 {
+  name = "Role 27"
+  grants = ["r27:read", "r27:write"]
+}
+
+role role-28 {
+  name = "Role 28"
+  grants = ["r28:read", "r28:write"]
+}
+
+role role-29 {
+  name = "Role 29"
+  grants = ["r29:read", "r29:write"]
+}
+
+role role-30 : role-29 {
+  name = "Role 30"
+  grants = ["r30:read", "r30:write"]
+}
+
+role role-31 {
+  name = "Role 31"
+  grants = ["r31:read", "r31:write"]
+}
+
+role role-32 {
+  name = "Role 32"
+  grants = ["r32:read", "r32:write"]
+}
+
+role role-33 {
+  name = "Role 33"
+  grants = ["r33:read", "r33:write"]
+}
+
+role role-34 {
+  name = "Role 34"
+  grants = ["r34:read", "r34:write"]
+}
+
+role role-35 : role-34 {
+  name = "Role 35"
+  grants = ["r35:read", "r35:write"]
+}
+
+role role-36 {
+  name = "Role 36"
+  grants = ["r36:read", "r36:write"]
+}
+
+role role-37 {
+  name = "Role 37"
+  grants = ["r37:read", "r37:write"]
+}
+
+role role-38 {
+  name = "Role 38"
+  grants = ["r38:read", "r38:write"]
+}
+
+role role-39 {
+  name = "Role 39"
+  grants = ["r39:read", "r39:write"]
+}
+
+role role-40 : role-39 {
+  name = "Role 40"
+  grants = ["r40:read", "r40:write"]
+}
+
+role role-41 {
+  name = "Role 41"
+  grants = ["r41:read", "r41:write"]
+}
+
+role role-42 {
+  name = "Role 42"
+  grants = ["r42:read", "r42:write"]
+}
+
+role role-43 {
+  name = "Role 43"
+  grants = ["r43:read", "r43:write"]
+}
+
+role role-44 {
+  name = "Role 44"
+  grants = ["r44:read", "r44:write"]
+}
+
+role role-45 : role-44 {
+  name = "Role 45"
+  grants = ["r45:read", "r45:write"]
+}
+
+role role-46 {
+  name = "Role 46"
+  grants = ["r46:read", "r46:write"]
+}
+
+role role-47 {
+  name = "Role 47"
+  grants = ["r47:read", "r47:write"]
+}
+
+role role-48 {
+  name = "Role 48"
+  grants = ["r48:read", "r48:write"]
+}
+
+role role-49 {
+  name = "Role 49"
+  grants = ["r49:read", "r49:write"]
+}
+
+role role-50 : role-49 {
+  name = "Role 50"
+  grants = ["r50:read", "r50:write"]
+}
+
+role role-51 {
+  name = "Role 51"
+  grants = ["r51:read", "r51:write"]
+}
+
+role role-52 {
+  name = "Role 52"
+  grants = ["r52:read", "r52:write"]
+}
+
+role role-53 {
+  name = "Role 53"
+  grants = ["r53:read", "r53:write"]
+}
+
+role role-54 {
+  name = "Role 54"
+  grants = ["r54:read", "r54:write"]
+}
+
+role role-55 : role-54 {
+  name = "Role 55"
+  grants = ["r55:read", "r55:write"]
+}
+
+role role-56 {
+  name = "Role 56"
+  grants = ["r56:read", "r56:write"]
+}
+
+role role-57 {
+  name = "Role 57"
+  grants = ["r57:read", "r57:write"]
+}
+
+role role-58 {
+  name = "Role 58"
+  grants = ["r58:read", "r58:write"]
+}
+
+role role-59 {
+  name = "Role 59"
+  grants = ["r59:read", "r59:write"]
+}
+
+role role-60 : role-59 {
+  name = "Role 60"
+  grants = ["r60:read", "r60:write"]
+}
+
+role role-61 {
+  name = "Role 61"
+  grants = ["r61:read", "r61:write"]
+}
+
+role role-62 {
+  name = "Role 62"
+  grants = ["r62:read", "r62:write"]
+}
+
+role role-63 {
+  name = "Role 63"
+  grants = ["r63:read", "r63:write"]
+}
+
+role role-64 {
+  name = "Role 64"
+  grants = ["r64:read", "r64:write"]
+}
+
+role role-65 : role-64 {
+  name = "Role 65"
+  grants = ["r65:read", "r65:write"]
+}
+
+role role-66 {
+  name = "Role 66"
+  grants = ["r66:read", "r66:write"]
+}
+
+role role-67 {
+  name = "Role 67"
+  grants = ["r67:read", "r67:write"]
+}
+
+role role-68 {
+  name = "Role 68"
+  grants = ["r68:read", "r68:write"]
+}
+
+role role-69 {
+  name = "Role 69"
+  grants = ["r69:read", "r69:write"]
+}
+
+role role-70 : role-69 {
+  name = "Role 70"
+  grants = ["r70:read", "r70:write"]
+}
+
+role role-71 {
+  name = "Role 71"
+  grants = ["r71:read", "r71:write"]
+}
+
+role role-72 {
+  name = "Role 72"
+  grants = ["r72:read", "r72:write"]
+}
+
+role role-73 {
+  name = "Role 73"
+  grants = ["r73:read", "r73:write"]
+}
+
+role role-74 {
+  name = "Role 74"
+  grants = ["r74:read", "r74:write"]
+}
+
+role role-75 : role-74 {
+  name = "Role 75"
+  grants = ["r75:read", "r75:write"]
+}
+
+role role-76 {
+  name = "Role 76"
+  grants = ["r76:read", "r76:write"]
+}
+
+role role-77 {
+  name = "Role 77"
+  grants = ["r77:read", "r77:write"]
+}
+
+role role-78 {
+  name = "Role 78"
+  grants = ["r78:read", "r78:write"]
+}
+
+role role-79 {
+  name = "Role 79"
+  grants = ["r79:read", "r79:write"]
+}
+
+role role-80 : role-79 {
+  name = "Role 80"
+  grants = ["r80:read", "r80:write"]
+}
+
+role role-81 {
+  name = "Role 81"
+  grants = ["r81:read", "r81:write"]
+}
+
+role role-82 {
+  name = "Role 82"
+  grants = ["r82:read", "r82:write"]
+}
+
+role role-83 {
+  name = "Role 83"
+  grants = ["r83:read", "r83:write"]
+}
+
+role role-84 {
+  name = "Role 84"
+  grants = ["r84:read", "r84:write"]
+}
+
+role role-85 : role-84 {
+  name = "Role 85"
+  grants = ["r85:read", "r85:write"]
+}
+
+role role-86 {
+  name = "Role 86"
+  grants = ["r86:read", "r86:write"]
+}
+
+role role-87 {
+  name = "Role 87"
+  grants = ["r87:read", "r87:write"]
+}
+
+role role-88 {
+  name = "Role 88"
+  grants = ["r88:read", "r88:write"]
+}
+
+role role-89 {
+  name = "Role 89"
+  grants = ["r89:read", "r89:write"]
+}
+
+role role-90 : role-89 {
+  name = "Role 90"
+  grants = ["r90:read", "r90:write"]
+}
+
+role role-91 {
+  name = "Role 91"
+  grants = ["r91:read", "r91:write"]
+}
+
+role role-92 {
+  name = "Role 92"
+  grants = ["r92:read", "r92:write"]
+}
+
+role role-93 {
+  name = "Role 93"
+  grants = ["r93:read", "r93:write"]
+}
+
+role role-94 {
+  name = "Role 94"
+  grants = ["r94:read", "r94:write"]
+}
+
+role role-95 : role-94 {
+  name = "Role 95"
+  grants = ["r95:read", "r95:write"]
+}
+
+role role-96 {
+  name = "Role 96"
+  grants = ["r96:read", "r96:write"]
+}
+
+role role-97 {
+  name = "Role 97"
+  grants = ["r97:read", "r97:write"]
+}
+
+role role-98 {
+  name = "Role 98"
+  grants = ["r98:read", "r98:write"]
+}
+
+role role-99 {
+  name = "Role 99"
+  grants = ["r99:read", "r99:write"]
+}
+
+resource res_0 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_1 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_2 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_3 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_4 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_5 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_6 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_7 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_8 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_9 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_10 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_11 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_12 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_13 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_14 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_15 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_16 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_17 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_18 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+resource res_19 {
+  relation owner: user
+  relation editor: user
+  relation viewer: user
+  permission read = viewer or editor or owner
+  permission edit = editor or owner
+}
+
+policy "pol-0" {
+  effect = allow
+  priority = 0
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-0"
+  }
+}
+
+policy "pol-1" {
+  effect = allow
+  priority = 1
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-1"
+  }
+}
+
+policy "pol-2" {
+  effect = allow
+  priority = 2
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-2"
+  }
+}
+
+policy "pol-3" {
+  effect = allow
+  priority = 3
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-3"
+  }
+}
+
+policy "pol-4" {
+  effect = allow
+  priority = 4
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-4"
+  }
+}
+
+policy "pol-5" {
+  effect = allow
+  priority = 5
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-5"
+  }
+}
+
+policy "pol-6" {
+  effect = allow
+  priority = 6
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-6"
+  }
+}
+
+policy "pol-7" {
+  effect = allow
+  priority = 7
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-7"
+  }
+}
+
+policy "pol-8" {
+  effect = allow
+  priority = 8
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-8"
+  }
+}
+
+policy "pol-9" {
+  effect = allow
+  priority = 9
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-9"
+  }
+}
+
+policy "pol-10" {
+  effect = allow
+  priority = 10
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-10"
+  }
+}
+
+policy "pol-11" {
+  effect = allow
+  priority = 11
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-11"
+  }
+}
+
+policy "pol-12" {
+  effect = allow
+  priority = 12
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-12"
+  }
+}
+
+policy "pol-13" {
+  effect = allow
+  priority = 13
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-13"
+  }
+}
+
+policy "pol-14" {
+  effect = allow
+  priority = 14
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-14"
+  }
+}
+
+policy "pol-15" {
+  effect = allow
+  priority = 15
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-15"
+  }
+}
+
+policy "pol-16" {
+  effect = allow
+  priority = 16
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-16"
+  }
+}
+
+policy "pol-17" {
+  effect = allow
+  priority = 17
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-17"
+  }
+}
+
+policy "pol-18" {
+  effect = allow
+  priority = 18
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-18"
+  }
+}
+
+policy "pol-19" {
+  effect = allow
+  priority = 19
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-19"
+  }
+}
+
+policy "pol-20" {
+  effect = allow
+  priority = 20
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-20"
+  }
+}
+
+policy "pol-21" {
+  effect = allow
+  priority = 21
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-21"
+  }
+}
+
+policy "pol-22" {
+  effect = allow
+  priority = 22
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-22"
+  }
+}
+
+policy "pol-23" {
+  effect = allow
+  priority = 23
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-23"
+  }
+}
+
+policy "pol-24" {
+  effect = allow
+  priority = 24
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-24"
+  }
+}
+
+policy "pol-25" {
+  effect = allow
+  priority = 25
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-25"
+  }
+}
+
+policy "pol-26" {
+  effect = allow
+  priority = 26
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-26"
+  }
+}
+
+policy "pol-27" {
+  effect = allow
+  priority = 27
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-27"
+  }
+}
+
+policy "pol-28" {
+  effect = allow
+  priority = 28
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-28"
+  }
+}
+
+policy "pol-29" {
+  effect = allow
+  priority = 29
+  active = true
+  actions = ["read"]
+  when {
+    context.tenant == "t-29"
+  }
+}
+

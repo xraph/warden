@@ -15,7 +15,7 @@ type Store interface {
 	DeleteRelation(ctx context.Context, relID id.RelationID) error
 
 	// DeleteRelationTuple removes a specific relation tuple by its composite key.
-	DeleteRelationTuple(ctx context.Context, tenantID, objectType, objectID, relation, subjectType, subjectID string) error
+	DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, relation, subjectType, subjectID string) error
 
 	// ListRelations returns relation tuples matching the filter.
 	ListRelations(ctx context.Context, filter *ListFilter) ([]*Tuple, error)
@@ -23,14 +23,17 @@ type Store interface {
 	// CountRelations returns the number of tuples matching the filter.
 	CountRelations(ctx context.Context, filter *ListFilter) (int64, error)
 
-	// ListRelationSubjects returns tuples where the given object has the specified relation.
-	ListRelationSubjects(ctx context.Context, tenantID, objectType, objectID, relation string) ([]*Tuple, error)
+	// ListRelationSubjects returns tuples where the given object has the
+	// specified relation in the given namespace.
+	ListRelationSubjects(ctx context.Context, tenantID, namespacePath, objectType, objectID, relation string) ([]*Tuple, error)
 
-	// ListRelationObjects returns tuples where the given subject has the specified relation.
-	ListRelationObjects(ctx context.Context, tenantID, subjectType, subjectID, relation string) ([]*Tuple, error)
+	// ListRelationObjects returns tuples where the given subject has the
+	// specified relation in the given namespace.
+	ListRelationObjects(ctx context.Context, tenantID, namespacePath, subjectType, subjectID, relation string) ([]*Tuple, error)
 
-	// CheckDirectRelation checks if a direct relation exists between subject and object.
-	CheckDirectRelation(ctx context.Context, tenantID, objectType, objectID, relation, subjectType, subjectID string) (bool, error)
+	// CheckDirectRelation checks if a direct relation exists between subject
+	// and object in the given namespace.
+	CheckDirectRelation(ctx context.Context, tenantID, namespacePath, objectType, objectID, relation, subjectType, subjectID string) (bool, error)
 
 	// DeleteRelationsByObject removes all relation tuples for an object.
 	DeleteRelationsByObject(ctx context.Context, tenantID, objectType, objectID string) error

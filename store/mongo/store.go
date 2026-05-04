@@ -100,7 +100,7 @@ func migrationIndexes() map[string][]mongod.IndexModel {
 				Options: options.Index().SetUnique(true),
 			},
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}}},
-			{Keys: bson.D{{Key: "parent_id", Value: 1}}},
+			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "parent_slug", Value: 1}}},
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "is_system", Value: 1}}},
 		},
 		colPermissions: {
@@ -258,8 +258,8 @@ func (s *Store) ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role
 		if filter.IsDefault != nil {
 			f["is_default"] = *filter.IsDefault
 		}
-		if filter.ParentID != nil {
-			f["parent_id"] = filter.ParentID.String()
+		if filter.ParentSlug != nil {
+			f["parent_slug"] = *filter.ParentSlug
 		}
 		if filter.Search != "" {
 			f["name"] = bson.M{"$regex": filter.Search, "$options": "i"}
@@ -298,8 +298,8 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 		if filter.IsDefault != nil {
 			f["is_default"] = *filter.IsDefault
 		}
-		if filter.ParentID != nil {
-			f["parent_id"] = filter.ParentID.String()
+		if filter.ParentSlug != nil {
+			f["parent_slug"] = *filter.ParentSlug
 		}
 		if filter.Search != "" {
 			f["name"] = bson.M{"$regex": filter.Search, "$options": "i"}
@@ -382,10 +382,10 @@ func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, permID
 	return nil
 }
 
-func (s *Store) ListChildRoles(ctx context.Context, parentID id.RoleID) ([]*role.Role, error) {
+func (s *Store) ListChildRoles(ctx context.Context, tenantID, parentSlug string) ([]*role.Role, error) {
 	var models []roleModel
 	if err := s.mdb.NewFind(&models).
-		Filter(bson.M{"parent_id": parentID.String()}).
+		Filter(bson.M{"tenant_id": tenantID, "parent_slug": parentSlug}).
 		Sort(bson.D{{Key: "created_at", Value: 1}}).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list child roles: %w", err)
@@ -754,16 +754,18 @@ func (s *Store) CountAssignments(ctx context.Context, filter *assignment.ListFil
 	return count, nil
 }
 
-func (s *Store) ListRolesForSubject(ctx context.Context, tenantID, subjectKind, subjectID string) ([]id.RoleID, error) {
+func (s *Store) ListRolesForSubject(ctx context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID string) ([]id.RoleID, error) {
 	var models []assignmentModel
-	if err := s.mdb.NewFind(&models).
-		Filter(bson.M{
-			"tenant_id":     tenantID,
-			"subject_kind":  subjectKind,
-			"subject_id":    subjectID,
-			"resource_type": "",
-		}).
-		Scan(ctx); err != nil {
+	filter := bson.M{
+		"tenant_id":     tenantID,
+		"subject_kind":  subjectKind,
+		"subject_id":    subjectID,
+		"resource_type": "",
+	}
+	if len(namespacePaths) > 0 {
+		filter["namespace_path"] = bson.M{"$in": namespacePaths}
+	}
+	if err := s.mdb.NewFind(&models).Filter(filter).Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles for subject: %w", err)
 	}
 	result := make([]id.RoleID, 0, len(models))
@@ -776,17 +778,19 @@ func (s *Store) ListRolesForSubject(ctx context.Context, tenantID, subjectKind, 
 	return result, nil
 }
 
-func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID, subjectKind, subjectID, resourceType, resourceID string) ([]id.RoleID, error) {
+func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID, resourceType, resourceID string) ([]id.RoleID, error) {
 	var models []assignmentModel
-	if err := s.mdb.NewFind(&models).
-		Filter(bson.M{
-			"tenant_id":     tenantID,
-			"subject_kind":  subjectKind,
-			"subject_id":    subjectID,
-			"resource_type": resourceType,
-			"resource_id":   resourceID,
-		}).
-		Scan(ctx); err != nil {
+	filter := bson.M{
+		"tenant_id":     tenantID,
+		"subject_kind":  subjectKind,
+		"subject_id":    subjectID,
+		"resource_type": resourceType,
+		"resource_id":   resourceID,
+	}
+	if len(namespacePaths) > 0 {
+		filter["namespace_path"] = bson.M{"$in": namespacePaths}
+	}
+	if err := s.mdb.NewFind(&models).Filter(filter).Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles for subject on resource: %w", err)
 	}
 	result := make([]id.RoleID, 0, len(models))
@@ -890,16 +894,17 @@ func (s *Store) DeleteRelation(ctx context.Context, relID id.RelationID) error {
 	return nil
 }
 
-func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, objectType, objectID, rel, subjectType, subjectID string) error {
+func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) error {
 	_, err := s.mdb.NewDelete((*relationModel)(nil)).
 		Many().
 		Filter(bson.M{
-			"tenant_id":    tenantID,
-			"object_type":  objectType,
-			"object_id":    objectID,
-			"relation":     rel,
-			"subject_type": subjectType,
-			"subject_id":   subjectID,
+			"tenant_id":      tenantID,
+			"namespace_path": namespacePath,
+			"object_type":    objectType,
+			"object_id":      objectID,
+			"relation":       rel,
+			"subject_type":   subjectType,
+			"subject_id":     subjectID,
 		}).
 		Exec(ctx)
 	if err != nil {
@@ -989,14 +994,15 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	return count, nil
 }
 
-func (s *Store) ListRelationSubjects(ctx context.Context, tenantID, objectType, objectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationSubjects(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel string) ([]*relation.Tuple, error) {
 	var models []relationModel
 	if err := s.mdb.NewFind(&models).
 		Filter(bson.M{
-			"tenant_id":   tenantID,
-			"object_type": objectType,
-			"object_id":   objectID,
-			"relation":    rel,
+			"tenant_id":      tenantID,
+			"namespace_path": namespacePath,
+			"object_type":    objectType,
+			"object_id":      objectID,
+			"relation":       rel,
 		}).
 		Sort(bson.D{{Key: "created_at", Value: 1}}).
 		Scan(ctx); err != nil {
@@ -1009,14 +1015,15 @@ func (s *Store) ListRelationSubjects(ctx context.Context, tenantID, objectType, 
 	return result, nil
 }
 
-func (s *Store) ListRelationObjects(ctx context.Context, tenantID, subjectType, subjectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath, subjectType, subjectID, rel string) ([]*relation.Tuple, error) {
 	var models []relationModel
 	if err := s.mdb.NewFind(&models).
 		Filter(bson.M{
-			"tenant_id":    tenantID,
-			"subject_type": subjectType,
-			"subject_id":   subjectID,
-			"relation":     rel,
+			"tenant_id":      tenantID,
+			"namespace_path": namespacePath,
+			"subject_type":   subjectType,
+			"subject_id":     subjectID,
+			"relation":       rel,
 		}).
 		Sort(bson.D{{Key: "created_at", Value: 1}}).
 		Scan(ctx); err != nil {
@@ -1029,15 +1036,16 @@ func (s *Store) ListRelationObjects(ctx context.Context, tenantID, subjectType, 
 	return result, nil
 }
 
-func (s *Store) CheckDirectRelation(ctx context.Context, tenantID, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
+func (s *Store) CheckDirectRelation(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
 	count, err := s.mdb.NewFind((*relationModel)(nil)).
 		Filter(bson.M{
-			"tenant_id":    tenantID,
-			"object_type":  objectType,
-			"object_id":    objectID,
-			"relation":     rel,
-			"subject_type": subjectType,
-			"subject_id":   subjectID,
+			"tenant_id":      tenantID,
+			"namespace_path": namespacePath,
+			"object_type":    objectType,
+			"object_id":      objectID,
+			"relation":       rel,
+			"subject_type":   subjectType,
+			"subject_id":     subjectID,
 		}).
 		Count(ctx)
 	if err != nil {
@@ -1218,13 +1226,17 @@ func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (i
 	return count, nil
 }
 
-func (s *Store) ListActivePolicies(ctx context.Context, tenantID string) ([]*policy.Policy, error) {
+func (s *Store) ListActivePolicies(ctx context.Context, tenantID string, namespacePaths []string) ([]*policy.Policy, error) {
 	var models []policyModel
+	filter := bson.M{
+		"tenant_id": tenantID,
+		"is_active": true,
+	}
+	if len(namespacePaths) > 0 {
+		filter["namespace_path"] = bson.M{"$in": namespacePaths}
+	}
 	if err := s.mdb.NewFind(&models).
-		Filter(bson.M{
-			"tenant_id": tenantID,
-			"is_active": true,
-		}).
+		Filter(filter).
 		Sort(bson.D{{Key: "priority", Value: 1}}).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list active policies: %w", err)

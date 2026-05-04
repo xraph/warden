@@ -104,7 +104,7 @@ func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*st
 	}
 
 	_, tenantID := scopeFromForgeContext(ctx)
-	if err := a.eng.Store().DeleteRelationTuple(ctx.Context(), tenantID, req.ObjectType, req.ObjectID, req.Relation, req.SubjectType, req.SubjectID); err != nil {
+	if err := a.eng.Store().DeleteRelationTuple(ctx.Context(), tenantID, req.NamespacePath, req.ObjectType, req.ObjectID, req.Relation, req.SubjectType, req.SubjectID); err != nil {
 		return nil, mapError(err)
 	}
 

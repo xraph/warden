@@ -74,9 +74,9 @@ templ RoleDetailPage(r *role.Role, perms []*permission.Permission, childRoles []
 					<dd class="font-mono text-xs">{ r.ID.String() }</dd>
 					<dt class="text-muted-foreground">Slug</dt>
 					<dd><code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ r.Slug }</code></dd>
-					if r.ParentID != nil {
+					if r.ParentSlug != "" {
 						<dt class="text-muted-foreground">Parent Role</dt>
-						<dd class="font-mono text-xs">{ r.ParentID.String() }</dd>
+						<dd><code class="text-xs bg-muted px-1.5 py-0.5 rounded">{ r.ParentSlug }</code></dd>
 					}
 					if r.MaxMembers > 0 {
 						<dt class="text-muted-foreground">Max Members</dt>

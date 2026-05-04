@@ -7,8 +7,9 @@ import (
 )
 
 type tenantScope struct {
-	appID    string
-	tenantID string
+	appID         string
+	tenantID      string
+	namespacePath string
 }
 
 // scopeFromContext extracts tenant scope from context. Explicit WithTenant
@@ -19,23 +20,26 @@ func scopeFromContext(ctx context.Context) tenantScope {
 	// 1. Check for explicit WithTenant values first — these take priority.
 	if tid := tenantIDFromContext(ctx); tid != "" {
 		return tenantScope{
-			appID:    appIDFromContext(ctx),
-			tenantID: tid,
+			appID:         appIDFromContext(ctx),
+			tenantID:      tid,
+			namespacePath: namespacePathFromContext(ctx),
 		}
 	}
 
 	// 2. Fall back to forge.Scope.
 	if s, ok := forge.ScopeFrom(ctx); ok {
 		return tenantScope{
-			appID:    s.AppID(),
-			tenantID: s.OrgID(),
+			appID:         s.AppID(),
+			tenantID:      s.OrgID(),
+			namespacePath: namespacePathFromContext(ctx),
 		}
 	}
 
 	// 3. Standalone mode with no tenant set.
 	return tenantScope{
-		appID:    appIDFromContext(ctx),
-		tenantID: tenantIDFromContext(ctx),
+		appID:         appIDFromContext(ctx),
+		tenantID:      tenantIDFromContext(ctx),
+		namespacePath: namespacePathFromContext(ctx),
 	}
 }
 
@@ -45,4 +49,10 @@ func scopeFromContext(ctx context.Context) tenantScope {
 func ScopeFromContext(ctx context.Context) (appID, tenantID string) {
 	s := scopeFromContext(ctx)
 	return s.appID, s.tenantID
+}
+
+// NamespaceFromContext extracts the namespace path from the given context.
+// Returns the empty string (tenant root) if not set.
+func NamespaceFromContext(ctx context.Context) string {
+	return scopeFromContext(ctx).namespacePath
 }

@@ -9,8 +9,12 @@ import (
 )
 
 // GraphWalker traverses the relation graph for ReBAC evaluation.
+//
+// Walk is invoked with the namespace path of the request — relation tuples
+// are partitioned by namespace, so the walker only follows tuples that live
+// in that namespace.
 type GraphWalker interface {
-	Walk(ctx context.Context, relStore relation.Store, tenantID string, req *CheckRequest) (allowed bool, path string, err error)
+	Walk(ctx context.Context, relStore relation.Store, tenantID, namespacePath string, req *CheckRequest) (allowed bool, path string, err error)
 }
 
 // DefaultGraphWalker returns a BFS graph walker with the given max depth.
@@ -33,7 +37,7 @@ type walkNode struct {
 	path       []string
 }
 
-func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tenantID string, req *CheckRequest) (allowed bool, path string, err error) {
+func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tenantID, namespacePath string, req *CheckRequest) (allowed bool, path string, err error) {
 	targetSubjectType := string(req.Subject.Kind)
 	targetSubjectID := req.Subject.ID
 
@@ -62,7 +66,7 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		}
 		visited[visitKey] = struct{}{}
 
-		tuples, err := relStore.ListRelationSubjects(ctx, tenantID, node.objectType, node.objectID, node.relation)
+		tuples, err := relStore.ListRelationSubjects(ctx, tenantID, namespacePath, node.objectType, node.objectID, node.relation)
 		if err != nil {
 			return false, "", fmt.Errorf("list subjects for %s: %w", visitKey, err)
 		}

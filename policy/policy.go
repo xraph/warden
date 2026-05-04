@@ -19,23 +19,27 @@ const (
 )
 
 // Policy defines an attribute-based access control rule.
+//
+// NamespacePath locates the policy within the tenant's namespace tree. A
+// policy at namespace N applies to checks in N and all descendants.
 type Policy struct {
-	ID          id.PolicyID    `json:"id" db:"id"`
-	TenantID    string         `json:"tenant_id" db:"tenant_id"`
-	AppID       string         `json:"app_id" db:"app_id"`
-	Name        string         `json:"name" db:"name"`
-	Description string         `json:"description,omitempty" db:"description"`
-	Effect      Effect         `json:"effect" db:"effect"`
-	Priority    int            `json:"priority" db:"priority"`
-	IsActive    bool           `json:"is_active" db:"is_active"`
-	Version     int            `json:"version" db:"version"`
-	Subjects    []SubjectMatch `json:"subjects" db:"-"`
-	Actions     []string       `json:"actions" db:"-"`
-	Resources   []string       `json:"resources" db:"-"`
-	Conditions  []Condition    `json:"conditions,omitempty" db:"-"`
-	Metadata    map[string]any `json:"metadata,omitempty" db:"metadata"`
-	CreatedAt   time.Time      `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at" db:"updated_at"`
+	ID            id.PolicyID    `json:"id" db:"id"`
+	TenantID      string         `json:"tenant_id" db:"tenant_id"`
+	NamespacePath string         `json:"namespace_path,omitempty" db:"namespace_path"`
+	AppID         string         `json:"app_id" db:"app_id"`
+	Name          string         `json:"name" db:"name"`
+	Description   string         `json:"description,omitempty" db:"description"`
+	Effect        Effect         `json:"effect" db:"effect"`
+	Priority      int            `json:"priority" db:"priority"`
+	IsActive      bool           `json:"is_active" db:"is_active"`
+	Version       int            `json:"version" db:"version"`
+	Subjects      []SubjectMatch `json:"subjects" db:"-"`
+	Actions       []string       `json:"actions" db:"-"`
+	Resources     []string       `json:"resources" db:"-"`
+	Conditions    []Condition    `json:"conditions,omitempty" db:"-"`
+	Metadata      map[string]any `json:"metadata,omitempty" db:"metadata"`
+	CreatedAt     time.Time      `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at" db:"updated_at"`
 }
 
 // SubjectMatch defines which subjects a policy applies to.
@@ -112,10 +116,12 @@ const (
 
 // ListFilter contains filters for listing policies.
 type ListFilter struct {
-	TenantID string `json:"tenant_id,omitempty"`
-	Effect   Effect `json:"effect,omitempty"`
-	IsActive *bool  `json:"is_active,omitempty"`
-	Search   string `json:"search,omitempty"`
-	Limit    int    `json:"limit,omitempty"`
-	Offset   int    `json:"offset,omitempty"`
+	TenantID        string  `json:"tenant_id,omitempty"`
+	NamespacePath   *string `json:"namespace_path,omitempty"`
+	NamespacePrefix string  `json:"namespace_prefix,omitempty"`
+	Effect          Effect  `json:"effect,omitempty"`
+	IsActive        *bool   `json:"is_active,omitempty"`
+	Search          string  `json:"search,omitempty"`
+	Limit           int     `json:"limit,omitempty"`
+	Offset          int     `json:"offset,omitempty"`
 }

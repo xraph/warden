@@ -30,21 +30,27 @@ type BatchCheckRequest struct {
 
 // CreateRoleRequest is the body for creating a role.
 type CreateRoleRequest struct {
-	Name        string         `json:"name" description:"Role name"`
-	Slug        string         `json:"slug" description:"URL-safe slug"`
-	Description string         `json:"description,omitempty" description:"Human-readable description"`
-	ParentID    string         `json:"parent_id,omitempty" description:"Parent role ID for inheritance"`
-	MaxMembers  int            `json:"max_members,omitempty" description:"Maximum members (0 = unlimited)"`
-	IsSystem    bool           `json:"is_system,omitempty" description:"System role flag"`
-	IsDefault   bool           `json:"is_default,omitempty" description:"Default role flag"`
-	Metadata    map[string]any `json:"metadata,omitempty" description:"Custom metadata"`
+	Name          string         `json:"name" description:"Role name"`
+	Slug          string         `json:"slug" description:"URL-safe slug, unique per (tenant, namespace)"`
+	NamespacePath string         `json:"namespace_path,omitempty" description:"Namespace path (e.g. \"engineering/platform\"); empty = tenant root"`
+	Description   string         `json:"description,omitempty" description:"Human-readable description"`
+	ParentSlug    string         `json:"parent_slug,omitempty" description:"Parent role slug for inheritance (must exist in same tenant + namespace, or in an ancestor namespace)"`
+	MaxMembers    int            `json:"max_members,omitempty" description:"Maximum members (0 = unlimited)"`
+	IsSystem      bool           `json:"is_system,omitempty" description:"System role flag"`
+	IsDefault     bool           `json:"is_default,omitempty" description:"Default role flag"`
+	Metadata      map[string]any `json:"metadata,omitempty" description:"Custom metadata"`
 }
 
 // UpdateRoleRequest is the body for updating a role.
+//
+// ParentSlug uses three-state semantics: nil pointer means "leave unchanged",
+// pointer to empty string means "clear the parent", and pointer to a non-empty
+// slug means "set this parent".
 type UpdateRoleRequest struct {
 	RoleID      string         `path:"roleId" description:"Role ID"`
 	Name        string         `json:"name,omitempty" description:"Role name"`
 	Description string         `json:"description,omitempty" description:"Human-readable description"`
+	ParentSlug  *string        `json:"parent_slug,omitempty" description:"Parent role slug; empty string clears, omit to leave unchanged"`
 	MaxMembers  *int           `json:"max_members,omitempty" description:"Maximum members"`
 	IsDefault   *bool          `json:"is_default,omitempty" description:"Default role flag"`
 	Metadata    map[string]any `json:"metadata,omitempty" description:"Custom metadata"`
@@ -152,11 +158,12 @@ type WriteRelationRequest struct {
 
 // DeleteRelationRequest is the body for deleting a relation tuple.
 type DeleteRelationRequest struct {
-	ObjectType  string `json:"object_type" description:"Object resource type"`
-	ObjectID    string `json:"object_id" description:"Object identifier"`
-	Relation    string `json:"relation" description:"Relation name"`
-	SubjectType string `json:"subject_type" description:"Subject resource type"`
-	SubjectID   string `json:"subject_id" description:"Subject identifier"`
+	NamespacePath string `json:"namespace_path,omitempty" description:"Namespace path (defaults to context-derived namespace)"`
+	ObjectType    string `json:"object_type" description:"Object resource type"`
+	ObjectID      string `json:"object_id" description:"Object identifier"`
+	Relation      string `json:"relation" description:"Relation name"`
+	SubjectType   string `json:"subject_type" description:"Subject resource type"`
+	SubjectID     string `json:"subject_id" description:"Subject identifier"`
 }
 
 // ListRelationsRequest holds query parameters.

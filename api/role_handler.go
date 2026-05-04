@@ -7,6 +7,7 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/role"
 )
@@ -104,29 +105,34 @@ func (a *API) createRole(ctx forge.Context, req *CreateRoleRequest) (*role.Role,
 		}
 	}
 
+	if err := warden.ValidateNamespacePath(req.NamespacePath, 0); err != nil {
+		return nil, forge.BadRequest(err.Error())
+	}
+
 	now := time.Now()
 	appID, tenantID := scopeFromForgeContext(ctx)
 	r := &role.Role{
-		ID:          id.NewRoleID(),
-		TenantID:    tenantID,
-		AppID:       appID,
-		Name:        req.Name,
-		Slug:        req.Slug,
-		Description: req.Description,
-		IsSystem:    req.IsSystem,
-		IsDefault:   req.IsDefault,
-		MaxMembers:  req.MaxMembers,
-		Metadata:    req.Metadata,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:            id.NewRoleID(),
+		TenantID:      tenantID,
+		NamespacePath: req.NamespacePath,
+		AppID:         appID,
+		Name:          req.Name,
+		Slug:          req.Slug,
+		Description:   req.Description,
+		IsSystem:      req.IsSystem,
+		IsDefault:     req.IsDefault,
+		MaxMembers:    req.MaxMembers,
+		Metadata:      req.Metadata,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
-	if req.ParentID != "" {
-		pid, err := id.ParseRoleID(req.ParentID)
-		if err != nil {
-			return nil, forge.BadRequest(fmt.Sprintf("invalid parent_id: %v", err))
+	if req.ParentSlug != "" {
+		// Pre-validate the parent exists for a friendlier error than an FK violation.
+		if _, err := a.eng.Store().GetRoleBySlug(ctx.Context(), tenantID, req.ParentSlug); err != nil {
+			return nil, forge.BadRequest(fmt.Sprintf("parent role %q not found in tenant %q", req.ParentSlug, tenantID))
 		}
-		r.ParentID = &pid
+		r.ParentSlug = req.ParentSlug
 	}
 
 	if err := a.eng.Store().CreateRole(ctx.Context(), r); err != nil {
@@ -176,6 +182,15 @@ func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role,
 	}
 	if req.IsDefault != nil {
 		r.IsDefault = *req.IsDefault
+	}
+	if req.ParentSlug != nil {
+		newParent := *req.ParentSlug
+		if newParent != "" && newParent != r.ParentSlug {
+			if _, err := a.eng.Store().GetRoleBySlug(ctx.Context(), r.TenantID, newParent); err != nil {
+				return nil, forge.BadRequest(fmt.Sprintf("parent role %q not found in tenant %q", newParent, r.TenantID))
+			}
+		}
+		r.ParentSlug = newParent
 	}
 	if req.Metadata != nil {
 		r.Metadata = req.Metadata

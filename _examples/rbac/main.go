@@ -30,7 +30,7 @@ func main() {
 	writePerm := id.NewPermissionID()
 
 	_ = s.CreateRole(ctx, &role.Role{ID: viewerID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
-	_ = s.CreateRole(ctx, &role.Role{ID: editorID, TenantID: "t1", Name: "editor", Slug: "editor", ParentID: &viewerID})
+	_ = s.CreateRole(ctx, &role.Role{ID: editorID, TenantID: "t1", Name: "editor", Slug: "editor", ParentSlug: "viewer"})
 
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: readPerm, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: writePerm, TenantID: "t1", Name: "doc:write", Resource: "doc", Action: "write"})

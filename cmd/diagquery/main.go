@@ -128,7 +128,7 @@ func main() {
 		}
 		var perms []bson.M
 		_ = cur2.All(ctx, &perms) //nolint:errcheck // diagnostic script
-		fmt.Printf("  %v (slug=%v, parent_id=%v) → %d permissions\n", rid, r["slug"], r["parent_id"], len(perms))
+		fmt.Printf("  %v (slug=%v, parent_slug=%v) → %d permissions\n", rid, r["slug"], r["parent_slug"], len(perms))
 	}
 
 	// 5. Check if wildcard permissions exist anywhere.

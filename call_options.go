@@ -2,8 +2,10 @@ package warden
 
 // callOptions holds per-call overrides resolved from CallOption values.
 type callOptions struct {
-	tenantID string
-	appID    string
+	tenantID         string
+	appID            string
+	namespacePath    string
+	namespacePathSet bool // distinguishes "explicitly set to empty" from "not set"
 }
 
 // CallOption is a functional option applied per-call on Check, Enforce, and CanI.
@@ -22,6 +24,15 @@ func WithCallTenantID(tenantID string) CallOption {
 func WithCallAppID(appID string) CallOption {
 	return func(o *callOptions) {
 		o.appID = appID
+	}
+}
+
+// WithCallNamespacePath overrides the namespace path for this single call.
+// Pass empty string to scope the call to the tenant root.
+func WithCallNamespacePath(namespacePath string) CallOption {
+	return func(o *callOptions) {
+		o.namespacePath = namespacePath
+		o.namespacePathSet = true
 	}
 }
 

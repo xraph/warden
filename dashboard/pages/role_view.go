@@ -7,8 +7,9 @@ import "github.com/xraph/warden/role"
 type RoleRow struct {
 	Role            *role.Role
 	PermissionCount int
+	ParentSlug      string // copy of Role.ParentSlug; empty if no parent
 	ParentName      string // resolved display name; empty if no parent
-	ParentID        string // stringified parent ID for link building; empty if no parent
+	ParentID        string // stringified parent typeid for link building; empty if no parent
 	RelationCount   int64
 }
 

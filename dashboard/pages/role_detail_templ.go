@@ -5,19 +5,19 @@ package pages
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
+import "github.com/a-h/templ"
+import templruntime "github.com/a-h/templ/runtime"
+
 import (
 	"fmt"
 	"strconv"
 
-	"github.com/a-h/templ"
-	templruntime "github.com/a-h/templ/runtime"
 	"github.com/xraph/forgeui/components/badge"
 	"github.com/xraph/forgeui/components/button"
 	"github.com/xraph/forgeui/components/card"
 	"github.com/xraph/forgeui/components/separator"
 	"github.com/xraph/forgeui/components/table"
 	"github.com/xraph/forgeui/icons"
-
 	"github.com/xraph/warden/dashboard/components"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/role"
@@ -306,21 +306,21 @@ func RoleDetailPage(r *role.Role, perms []*permission.Permission, childRoles []*
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				if r.ParentID != nil {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<dt class=\"text-muted-foreground\">Parent Role</dt><dd class=\"font-mono text-xs\">")
+				if r.ParentSlug != "" {
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<dt class=\"text-muted-foreground\">Parent Role</dt><dd><code class=\"text-xs bg-muted px-1.5 py-0.5 rounded\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var14 string
-					templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(r.ParentID.String())
+					templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(r.ParentSlug)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/role_detail.templ`, Line: 79, Col: 57}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/role_detail.templ`, Line: 79, Col: 77}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "</dd>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "</code></dd>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}

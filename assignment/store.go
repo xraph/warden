@@ -24,12 +24,14 @@ type Store interface {
 	// CountAssignments returns the number of assignments matching the filter.
 	CountAssignments(ctx context.Context, filter *ListFilter) (int64, error)
 
-	// ListRolesForSubject returns role IDs assigned to a subject (global).
-	ListRolesForSubject(ctx context.Context, tenantID, subjectKind, subjectID string) ([]id.RoleID, error)
+	// ListRolesForSubject returns role IDs assigned to a subject (global)
+	// across the given namespace paths. Pass nil or an empty slice to match
+	// any namespace (legacy/unscoped behavior).
+	ListRolesForSubject(ctx context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID string) ([]id.RoleID, error)
 
 	// ListRolesForSubjectOnResource returns role IDs assigned to a subject
-	// scoped to a specific resource.
-	ListRolesForSubjectOnResource(ctx context.Context, tenantID, subjectKind, subjectID, resourceType, resourceID string) ([]id.RoleID, error)
+	// scoped to a specific resource, across the given namespace paths.
+	ListRolesForSubjectOnResource(ctx context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID, resourceType, resourceID string) ([]id.RoleID, error)
 
 	// ListSubjectsForRole returns all assignments for a given role.
 	ListSubjectsForRole(ctx context.Context, roleID id.RoleID) ([]*Assignment, error)

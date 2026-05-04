@@ -162,7 +162,8 @@ func (a *API) listSubjectRoles(ctx forge.Context, _ *ListSubjectRolesRequest) (*
 	subjectKind := ctx.Param("subjectKind")
 	subjectID := ctx.Param("subjectId")
 
-	roles, err := a.eng.Store().ListRolesForSubject(ctx.Context(), tenantID, subjectKind, subjectID)
+	// Pass nil to match assignments at any namespace within the tenant.
+	roles, err := a.eng.Store().ListRolesForSubject(ctx.Context(), tenantID, nil, subjectKind, subjectID)
 	if err != nil {
 		return nil, mapError(err)
 	}

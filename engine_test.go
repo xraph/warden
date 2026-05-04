@@ -93,7 +93,7 @@ func TestRBACRoleInheritance(t *testing.T) {
 	permID := id.NewPermissionID()
 
 	_ = s.CreateRole(ctx, &role.Role{ID: parentID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
-	_ = s.CreateRole(ctx, &role.Role{ID: childID, TenantID: "t1", Name: "editor", Slug: "editor", ParentID: &parentID})
+	_ = s.CreateRole(ctx, &role.Role{ID: childID, TenantID: "t1", Name: "editor", Slug: "editor", ParentSlug: "viewer"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"})
 	_ = s.AttachPermission(ctx, parentID, permID)
 
@@ -113,6 +113,128 @@ func TestRBACRoleInheritance(t *testing.T) {
 	}
 	if !result.Allowed {
 		t.Fatalf("expected allowed via inheritance, got %s: %s", result.Decision, result.Reason)
+	}
+}
+
+// TestRBACRoleInheritance_MultiLevel verifies the walker traverses a chain of
+// three roles (viewer ← editor ← admin) and that admin inherits permissions
+// granted at every ancestor level.
+func TestRBACRoleInheritance_MultiLevel(t *testing.T) {
+	ctx := WithTenant(context.Background(), "app1", "t1")
+	eng, s := newTestEngine(t)
+
+	viewerID := id.NewRoleID()
+	editorID := id.NewRoleID()
+	adminID := id.NewRoleID()
+	readPerm := id.NewPermissionID()
+	writePerm := id.NewPermissionID()
+	deletePerm := id.NewPermissionID()
+
+	_ = s.CreateRole(ctx, &role.Role{ID: viewerID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
+	_ = s.CreateRole(ctx, &role.Role{ID: editorID, TenantID: "t1", Name: "editor", Slug: "editor", ParentSlug: "viewer"})
+	_ = s.CreateRole(ctx, &role.Role{ID: adminID, TenantID: "t1", Name: "admin", Slug: "admin", ParentSlug: "editor"})
+
+	_ = s.CreatePermission(ctx, &permission.Permission{ID: readPerm, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
+	_ = s.CreatePermission(ctx, &permission.Permission{ID: writePerm, TenantID: "t1", Name: "doc:write", Resource: "doc", Action: "write"})
+	_ = s.CreatePermission(ctx, &permission.Permission{ID: deletePerm, TenantID: "t1", Name: "doc:delete", Resource: "doc", Action: "delete"})
+
+	_ = s.AttachPermission(ctx, viewerID, readPerm)
+	_ = s.AttachPermission(ctx, editorID, writePerm)
+	_ = s.AttachPermission(ctx, adminID, deletePerm)
+
+	_ = s.CreateAssignment(ctx, &assignment.Assignment{
+		ID: id.NewAssignmentID(), TenantID: "t1", RoleID: adminID, SubjectKind: "user", SubjectID: "u1",
+	})
+
+	for _, action := range []string{"read", "write", "delete"} {
+		result, err := eng.Check(ctx, &CheckRequest{
+			Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+			Action:   Action{Name: action},
+			Resource: Resource{Type: "doc", ID: "d1"},
+		})
+		if err != nil {
+			t.Fatalf("Check(%s): %v", action, err)
+		}
+		if !result.Allowed {
+			t.Fatalf("admin should inherit %q via chain, got %s: %s", action, result.Decision, result.Reason)
+		}
+	}
+}
+
+// TestRBACRoleInheritance_CircularSlug verifies that a cycle in parent_slug
+// (A → B → A) terminates safely via the seen-set guard rather than recursing
+// forever or duplicating roles. Even with a cycle, the engine still returns a
+// correct Check result based on the cycle members' permissions.
+func TestRBACRoleInheritance_CircularSlug(t *testing.T) {
+	ctx := WithTenant(context.Background(), "app1", "t1")
+	eng, s := newTestEngine(t)
+
+	aID := id.NewRoleID()
+	bID := id.NewRoleID()
+	permID := id.NewPermissionID()
+
+	_ = s.CreateRole(ctx, &role.Role{ID: aID, TenantID: "t1", Name: "A", Slug: "role-a", ParentSlug: "role-b"})
+	_ = s.CreateRole(ctx, &role.Role{ID: bID, TenantID: "t1", Name: "B", Slug: "role-b", ParentSlug: "role-a"})
+	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
+	_ = s.AttachPermission(ctx, bID, permID)
+
+	_ = s.CreateAssignment(ctx, &assignment.Assignment{
+		ID: id.NewAssignmentID(), TenantID: "t1", RoleID: aID, SubjectKind: "user", SubjectID: "u1",
+	})
+
+	done := make(chan struct{})
+	var result *CheckResult
+	var err error
+	go func() {
+		result, err = eng.Check(ctx, &CheckRequest{
+			Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+			Action:   Action{Name: "read"},
+			Resource: Resource{Type: "doc", ID: "d1"},
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Check did not terminate on circular inheritance — walker did not bound itself")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Allowed {
+		t.Fatalf("expected allow via cycle member B's permission, got %s: %s", result.Decision, result.Reason)
+	}
+}
+
+// TestRBACRoleInheritance_DanglingParentSlug verifies that a role pointing at
+// a non-existent parent slug terminates the walk cleanly and returns the
+// permissions granted to the role itself (no panic, no error).
+func TestRBACRoleInheritance_DanglingParentSlug(t *testing.T) {
+	ctx := WithTenant(context.Background(), "app1", "t1")
+	eng, s := newTestEngine(t)
+
+	roleID := id.NewRoleID()
+	permID := id.NewPermissionID()
+
+	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "orphan", Slug: "orphan", ParentSlug: "ghost"})
+	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
+	_ = s.AttachPermission(ctx, roleID, permID)
+
+	_ = s.CreateAssignment(ctx, &assignment.Assignment{
+		ID: id.NewAssignmentID(), TenantID: "t1", RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
+	})
+
+	result, err := eng.Check(ctx, &CheckRequest{
+		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+		Action:   Action{Name: "read"},
+		Resource: Resource{Type: "doc", ID: "d1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Allowed {
+		t.Fatalf("expected allow via own permission despite dangling parent, got %s: %s", result.Decision, result.Reason)
 	}
 }
 

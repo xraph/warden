@@ -1,0 +1,11 @@
+warden config 1
+
+role viewer {
+    name = "Viewer"
+    grants = ["document:read"]
+}
+
+role editor : viewer {
+    name = "Editor"
+    grants += ["document:write"]
+}

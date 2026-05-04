@@ -23,6 +23,7 @@ import (
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/api"
 	wardendash "github.com/xraph/warden/dashboard"
+	"github.com/xraph/warden/dsl"
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/store"
 	mongostore "github.com/xraph/warden/store/mongo"
@@ -151,6 +152,16 @@ func (e *Extension) init(fapp forge.App) error {
 	if err != nil {
 		return fmt.Errorf("warden: create engine: %w", err)
 	}
+
+	// Wire the DSL expression evaluator into the engine so resource-type
+	// permission expressions (`permission read = viewer or parent->view`)
+	// are evaluated at Check time. The evaluator is a thin wrapper around
+	// the engine's store; it has no internal state besides a per-instance
+	// AST cache.
+	if s := eng.Store(); s != nil {
+		eng.SetExpressionEvaluator(dsl.NewEngineEvaluator(s))
+	}
+
 	e.eng = eng
 
 	// Create API handler.
@@ -183,6 +194,20 @@ func (e *Extension) Start(ctx context.Context) error {
 			if err := s.Migrate(ctx); err != nil {
 				return fmt.Errorf("warden: migration failed: %w", err)
 			}
+		}
+	}
+
+	// Auto-apply declarative DSL config, if configured. Runs after
+	// migrations so the schema is in place; before the engine starts so
+	// inbound Check calls see the freshly-applied state.
+	if e.config.DeclarativeOnStart {
+		if err := e.applyDeclarative(ctx); err != nil {
+			if e.config.DeclarativeStrict {
+				return fmt.Errorf("warden: declarative apply failed: %w", err)
+			}
+			e.Logger().Warn("warden: declarative apply error (non-strict, continuing)",
+				forge.F("err", err.Error()),
+			)
 		}
 	}
 
@@ -362,6 +387,73 @@ func (e *Extension) resolveGroveDB(fapp forge.App) (*grove.DB, error) {
 
 // buildStoreFromGroveDB constructs the appropriate store backend
 // based on the grove driver type (pg, sqlite, mongo).
+// applyDeclarative loads .warden source(s) from the configured paths and
+// applies them to the engine. Called from Start when DeclarativeOnStart
+// is set.
+func (e *Extension) applyDeclarative(ctx context.Context) error {
+	paths := append([]string{}, e.config.DeclarativePaths...)
+	if e.config.DeclarativePath != "" {
+		paths = append(paths, e.config.DeclarativePath)
+	}
+	if len(paths) == 0 {
+		return errors.New("warden: declarative_on_start set but no declarative_path/paths configured")
+	}
+
+	merged := &dsl.Program{}
+	var allDiags []*dsl.Diagnostic
+	for _, p := range paths {
+		prog, diags, err := dsl.Load(p)
+		if err != nil {
+			return fmt.Errorf("warden: load %s: %w", p, err)
+		}
+		allDiags = append(allDiags, diags...)
+		mergeDeclProgram(merged, prog)
+	}
+	allDiags = append(allDiags, dsl.Resolve(merged)...)
+	if len(allDiags) > 0 {
+		for _, d := range allDiags {
+			e.Logger().Warn("warden: declarative diagnostic", forge.F("msg", d.String()))
+		}
+		// On any diagnostic the apply still tries to proceed; Apply will
+		// re-run Resolve and bail if there are real errors.
+	}
+
+	result, err := dsl.Apply(ctx, e.eng, merged, dsl.ApplyOptions{
+		TenantID: e.config.DeclarativeTenantID,
+		Prune:    e.config.DeclarativePrune,
+	})
+	if err != nil {
+		return err
+	}
+	e.Logger().Info("warden: declarative apply complete",
+		forge.F("created", len(result.Created)),
+		forge.F("updated", len(result.Updated)),
+		forge.F("deleted", len(result.Deleted)),
+		forge.F("noops", result.NoOps),
+	)
+	return nil
+}
+
+// mergeDeclProgram folds two parsed Programs together. Later wins on
+// scope-collision, but the resolver will catch genuine conflicts on
+// duplicate slugs/names within the merged result.
+func mergeDeclProgram(dst, src *dsl.Program) {
+	if dst.Version == 0 {
+		dst.Version = src.Version
+	}
+	if dst.Tenant == "" {
+		dst.Tenant = src.Tenant
+	}
+	if dst.App == "" {
+		dst.App = src.App
+	}
+	dst.ResourceTypes = append(dst.ResourceTypes, src.ResourceTypes...)
+	dst.Permissions = append(dst.Permissions, src.Permissions...)
+	dst.Roles = append(dst.Roles, src.Roles...)
+	dst.Policies = append(dst.Policies, src.Policies...)
+	dst.Relations = append(dst.Relations, src.Relations...)
+}
+
 func (e *Extension) buildStoreFromGroveDB(db *grove.DB) (store.Store, error) {
 	driverName := db.Driver().Name()
 	switch driverName {

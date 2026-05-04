@@ -53,11 +53,12 @@ type Action struct {
 
 // CheckRequest is the input to an authorization check.
 type CheckRequest struct {
-	Subject  Subject        `json:"subject"`
-	Action   Action         `json:"action"`
-	Resource Resource       `json:"resource"`
-	Context  map[string]any `json:"context,omitempty"`
-	TenantID string         `json:"tenant_id,omitempty"` // Optional: overrides context-derived tenant.
+	Subject       Subject        `json:"subject"`
+	Action        Action         `json:"action"`
+	Resource      Resource       `json:"resource"`
+	Context       map[string]any `json:"context,omitempty"`
+	TenantID      string         `json:"tenant_id,omitempty"`      // Optional: overrides context-derived tenant.
+	NamespacePath string         `json:"namespace_path,omitempty"` // Optional: overrides context-derived namespace.
 }
 
 // CheckResult is the outcome of an authorization check.

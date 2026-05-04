@@ -215,7 +215,7 @@ func (c *Contributor) renderRoleDetail(ctx context.Context, s store.Store, param
 		return nil, fmt.Errorf("dashboard: resolve role: %w", err)
 	}
 
-	childRoles, _ := s.ListChildRoles(ctx, roleID) //nolint:errcheck // display data; nil is acceptable
+	childRoles, _ := s.ListChildRoles(ctx, r.TenantID, r.Slug) //nolint:errcheck // display data; nil is acceptable
 
 	// Fetch all roles for parent select and all permissions for attach dialog
 	allRoles, _ := fetchRoles(ctx, s, "")       //nolint:errcheck // display data

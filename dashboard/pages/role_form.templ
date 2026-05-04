@@ -49,12 +49,12 @@ templ RoleCreateDialog(roles []*role.Role) {
 					@form.Label(form.LabelProps{For: "role-parent"}) { Parent Role }
 					<select
 						id="role-parent"
-						name="parent_id"
+						name="parent_slug"
 						class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						<option value="">None</option>
 						for _, r := range roles {
-							<option value={ r.ID.String() }>{ r.Name }</option>
+							<option value={ r.Slug }>{ r.Name }</option>
 						}
 					</select>
 				}
@@ -105,6 +105,21 @@ templ RoleEditDialog(r *role.Role, roles []*role.Role) {
 				@form.Item() {
 					@form.Label(form.LabelProps{For: "edit-role-desc"}) { Description }
 					@textarea.Textarea(textarea.Props{ID: "edit-role-desc", Name: "description", Value: r.Description, Rows: 3})
+				}
+				@form.Item() {
+					@form.Label(form.LabelProps{For: "edit-role-parent"}) { Parent Role }
+					<select
+						id="edit-role-parent"
+						name="parent_slug"
+						class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					>
+						<option value="" selected?={ r.ParentSlug == "" }>None</option>
+						for _, p := range roles {
+							if p.Slug != r.Slug {
+								<option value={ p.Slug } selected?={ p.Slug == r.ParentSlug }>{ p.Name }</option>
+							}
+						}
+					</select>
 				}
 				@form.Item() {
 					@form.Label(form.LabelProps{For: "edit-role-max"}) { Max Members }

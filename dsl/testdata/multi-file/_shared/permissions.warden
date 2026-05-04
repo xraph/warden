@@ -1,0 +1,4 @@
+warden config 1
+
+permission "document:read"  (document : read)
+permission "document:write" (document : write)

@@ -29,8 +29,11 @@ type Store interface {
 	// CountPolicies returns the number of policies matching the filter.
 	CountPolicies(ctx context.Context, filter *ListFilter) (int64, error)
 
-	// ListActivePolicies returns all active policies for a tenant.
-	ListActivePolicies(ctx context.Context, tenantID string) ([]*Policy, error)
+	// ListActivePolicies returns all active policies for a tenant across the
+	// given namespace paths. Pass nil or an empty slice to match any namespace
+	// (legacy/unscoped behavior). Policies are merged across paths at the
+	// engine layer; ordering is by priority within the union.
+	ListActivePolicies(ctx context.Context, tenantID string, namespacePaths []string) ([]*Policy, error)
 
 	// SetPolicyVersion updates a policy's version number.
 	SetPolicyVersion(ctx context.Context, polID id.PolicyID, version int) error

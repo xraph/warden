@@ -201,7 +201,7 @@ func TestAssignmentCRUD(t *testing.T) {
 		t.Fatal("mismatch")
 	}
 
-	roles, _ := s.ListRolesForSubject(ctx, "t1", "user", "u1")
+	roles, _ := s.ListRolesForSubject(ctx, "t1", nil, "user", "u1")
 	if len(roles) != 1 {
 		t.Fatalf("expected 1 role, got %d", len(roles))
 	}
@@ -234,26 +234,26 @@ func TestRelationCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// CheckDirectRelation
-	ok, _ := s.CheckDirectRelation(ctx, "t1", "document", "doc1", "viewer", "user", "u1")
+	// CheckDirectRelation (tenant root namespace)
+	ok, _ := s.CheckDirectRelation(ctx, "t1", "", "document", "doc1", "viewer", "user", "u1")
 	if !ok {
 		t.Fatal("expected direct relation")
 	}
 
-	ok, _ = s.CheckDirectRelation(ctx, "t1", "document", "doc1", "editor", "user", "u1")
+	ok, _ = s.CheckDirectRelation(ctx, "t1", "", "document", "doc1", "editor", "user", "u1")
 	if ok {
 		t.Fatal("expected no relation for editor")
 	}
 
 	// ListRelationSubjects
-	subs, _ := s.ListRelationSubjects(ctx, "t1", "document", "doc1", "viewer")
+	subs, _ := s.ListRelationSubjects(ctx, "t1", "", "document", "doc1", "viewer")
 	if len(subs) != 1 {
 		t.Fatalf("expected 1 subject, got %d", len(subs))
 	}
 
 	// DeleteRelationTuple
-	_ = s.DeleteRelationTuple(ctx, "t1", "document", "doc1", "viewer", "user", "u1")
-	ok, _ = s.CheckDirectRelation(ctx, "t1", "document", "doc1", "viewer", "user", "u1")
+	_ = s.DeleteRelationTuple(ctx, "t1", "", "document", "doc1", "viewer", "user", "u1")
+	ok, _ = s.CheckDirectRelation(ctx, "t1", "", "document", "doc1", "viewer", "user", "u1")
 	if ok {
 		t.Fatal("expected relation deleted")
 	}
@@ -287,8 +287,8 @@ func TestPolicyCRUD(t *testing.T) {
 		t.Fatal("mismatch")
 	}
 
-	// ListActivePolicies
-	active, _ := s.ListActivePolicies(ctx, "t1")
+	// ListActivePolicies (any namespace)
+	active, _ := s.ListActivePolicies(ctx, "t1", nil)
 	if len(active) != 1 {
 		t.Fatalf("expected 1 active policy, got %d", len(active))
 	}

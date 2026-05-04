@@ -5,10 +5,8 @@ package components
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
-import (
-	"github.com/a-h/templ"
-	templruntime "github.com/a-h/templ/runtime"
-)
+import "github.com/a-h/templ"
+import templruntime "github.com/a-h/templ/runtime"
 
 // PathRewriter adds an HTMX configRequest interceptor that rewrites bare page paths
 // (e.g. "/roles/detail") to fully-qualified dashboard extension paths

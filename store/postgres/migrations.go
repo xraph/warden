@@ -233,6 +233,95 @@ CREATE INDEX IF NOT EXISTS idx_warden_rtypes_tenant ON warden_resource_types (te
 			},
 		},
 		&migrate.Migration{
+			Name:    "namespaces",
+			Version: "20260101000002",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_roles            ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_permissions      ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_policies         ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_resource_types   ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_assignments      ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_relations        ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_check_logs       ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_warden_roles_ns         ON warden_roles         (tenant_id, namespace_path);
+CREATE INDEX IF NOT EXISTS idx_warden_perms_ns         ON warden_permissions   (tenant_id, namespace_path);
+CREATE INDEX IF NOT EXISTS idx_warden_policies_ns      ON warden_policies      (tenant_id, namespace_path);
+CREATE INDEX IF NOT EXISTS idx_warden_rtypes_ns        ON warden_resource_types(tenant_id, namespace_path);
+CREATE INDEX IF NOT EXISTS idx_warden_assign_ns        ON warden_assignments   (tenant_id, namespace_path, subject_kind, subject_id);
+CREATE INDEX IF NOT EXISTS idx_warden_rel_ns           ON warden_relations     (tenant_id, namespace_path, object_type, object_id);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_warden_roles_ns;
+DROP INDEX IF EXISTS idx_warden_perms_ns;
+DROP INDEX IF EXISTS idx_warden_policies_ns;
+DROP INDEX IF EXISTS idx_warden_rtypes_ns;
+DROP INDEX IF EXISTS idx_warden_assign_ns;
+DROP INDEX IF EXISTS idx_warden_rel_ns;
+
+ALTER TABLE warden_roles            DROP COLUMN IF EXISTS namespace_path;
+ALTER TABLE warden_permissions      DROP COLUMN IF EXISTS namespace_path;
+ALTER TABLE warden_policies         DROP COLUMN IF EXISTS namespace_path;
+ALTER TABLE warden_resource_types   DROP COLUMN IF EXISTS namespace_path;
+ALTER TABLE warden_assignments      DROP COLUMN IF EXISTS namespace_path;
+ALTER TABLE warden_relations        DROP COLUMN IF EXISTS namespace_path;
+ALTER TABLE warden_check_logs       DROP COLUMN IF EXISTS namespace_path;
+`)
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "role_parent_slug",
+			Version: "20260101000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_roles ADD COLUMN parent_slug TEXT;
+
+UPDATE warden_roles c
+SET parent_slug = p.slug
+FROM warden_roles p
+WHERE c.parent_id = p.id AND c.tenant_id = p.tenant_id;
+
+ALTER TABLE warden_roles DROP COLUMN parent_id;
+
+ALTER TABLE warden_roles
+    ADD CONSTRAINT warden_roles_parent_fk
+    FOREIGN KEY (tenant_id, parent_slug)
+    REFERENCES warden_roles(tenant_id, slug)
+    ON DELETE SET NULL
+    ON UPDATE CASCADE
+    DEFERRABLE INITIALLY DEFERRED;
+
+DROP INDEX IF EXISTS idx_warden_roles_parent;
+CREATE INDEX IF NOT EXISTS idx_warden_roles_parent_slug ON warden_roles (tenant_id, parent_slug)
+    WHERE parent_slug IS NOT NULL;
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_roles DROP CONSTRAINT IF EXISTS warden_roles_parent_fk;
+DROP INDEX IF EXISTS idx_warden_roles_parent_slug;
+
+ALTER TABLE warden_roles ADD COLUMN parent_id TEXT;
+
+UPDATE warden_roles c
+SET parent_id = p.id
+FROM warden_roles p
+WHERE c.parent_slug = p.slug AND c.tenant_id = p.tenant_id;
+
+ALTER TABLE warden_roles DROP COLUMN parent_slug;
+
+CREATE INDEX IF NOT EXISTS idx_warden_roles_parent ON warden_roles (parent_id);
+`)
+				return err
+			},
+		},
+		&migrate.Migration{
 			Name:    "create_check_logs",
 			Version: "20240101000008",
 			Up: func(ctx context.Context, exec migrate.Executor) error {

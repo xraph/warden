@@ -20,10 +20,22 @@ type Engine struct {
 	store       store.Store
 	evaluator   Evaluator
 	graphWalker GraphWalker
+	exprEval    ExpressionEvaluator
 	cache       Cache
 	plugins     *plugin.Registry
 	logger      log.Logger
 	config      Config
+}
+
+// ExpressionEvaluator is an optional engine hook that evaluates resource-type
+// permission expressions (the SpiceDB-style `viewer or editor or parent->read`
+// expressions stored on ResourceType.Permissions[].Expression).
+//
+// The DSL package implements this; wire it via WithExpressionEvaluator. When
+// nil, resource-type expressions are inert (the relation graph walker still
+// handles direct + transitive relations).
+type ExpressionEvaluator interface {
+	EvalPermission(ctx context.Context, tenantID, namespacePath, resourceType, permName, subjectKind, subjectID, resourceID string) (matched bool, err error)
 }
 
 // NewEngine creates a new Warden engine with the given options.
@@ -49,6 +61,11 @@ func NewEngine(opts ...Option) (*Engine, error) {
 
 // Store returns the underlying composite store.
 func (e *Engine) Store() store.Store { return e.store }
+
+// SetExpressionEvaluator overrides the resource-type expression evaluator
+// at runtime. Used by the extension to wire dsl.NewEngineEvaluator after
+// engine construction, since the evaluator depends on the engine's store.
+func (e *Engine) SetExpressionEvaluator(ev ExpressionEvaluator) { e.exprEval = ev }
 
 // Config returns the engine configuration.
 func (e *Engine) Config() Config { return e.config }
@@ -87,6 +104,9 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	if req.TenantID != "" {
 		scope.tenantID = req.TenantID
 	}
+	if req.NamespacePath != "" {
+		scope.namespacePath = req.NamespacePath
+	}
 
 	// Apply call-time options (highest priority).
 	co := resolveCallOptions(opts)
@@ -95,6 +115,9 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	}
 	if co.appID != "" {
 		scope.appID = co.appID
+	}
+	if co.namespacePathSet {
+		scope.namespacePath = co.namespacePath
 	}
 
 	e.logger.Debug("warden: check",
@@ -216,12 +239,16 @@ func (e *Engine) writeCheckLog(ctx context.Context, scope tenantScope, req *Chec
 }
 
 func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, error) {
+	// Cascading scope: resolve roles assigned at the request's namespace and
+	// every ancestor up to the tenant root.
+	namespaces := AncestorNamespaces(scope.namespacePath)
+
 	// 1. Get roles assigned to subject (global + resource-scoped).
-	globalRoles, err := e.store.ListRolesForSubject(ctx, scope.tenantID, string(req.Subject.Kind), req.Subject.ID)
+	globalRoles, err := e.store.ListRolesForSubject(ctx, scope.tenantID, namespaces, string(req.Subject.Kind), req.Subject.ID)
 	if err != nil {
 		return nil, err
 	}
-	resourceRoles, err := e.store.ListRolesForSubjectOnResource(ctx, scope.tenantID, string(req.Subject.Kind), req.Subject.ID, req.Resource.Type, req.Resource.ID)
+	resourceRoles, err := e.store.ListRolesForSubjectOnResource(ctx, scope.tenantID, namespaces, string(req.Subject.Kind), req.Subject.ID, req.Resource.Type, req.Resource.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -322,15 +349,20 @@ func (e *Engine) walkRoleParents(ctx context.Context, roleID id.RoleID, seen map
 	*result = append(*result, roleID)
 
 	r, err := e.store.GetRole(ctx, roleID)
-	if err != nil || r == nil || r.ParentID == nil {
+	if err != nil || r == nil || r.ParentSlug == "" {
 		return
 	}
-	e.walkRoleParents(ctx, *r.ParentID, seen, result, depth+1)
+	parent, err := e.store.GetRoleBySlug(ctx, r.TenantID, r.ParentSlug)
+	if err != nil || parent == nil {
+		return
+	}
+	e.walkRoleParents(ctx, parent.ID, seen, result, depth+1)
 }
 
 func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, error) {
-	// Direct relation check.
-	direct, err := e.store.CheckDirectRelation(ctx, scope.tenantID, req.Resource.Type, req.Resource.ID, req.Action.Name, string(req.Subject.Kind), req.Subject.ID)
+	// Direct relation check. Tuples partition the relation space by namespace,
+	// so we only check the request's namespace (no ancestor cascading for ReBAC).
+	direct, err := e.store.CheckDirectRelation(ctx, scope.tenantID, scope.namespacePath, req.Resource.Type, req.Resource.ID, req.Action.Name, string(req.Subject.Kind), req.Subject.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -342,9 +374,27 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 		}, nil
 	}
 
+	// Resource-type expression: if the request's resource type defines the
+	// permission as an expression (`read = viewer or editor or parent->read`),
+	// evaluate it.
+	if e.exprEval != nil {
+		matched, err := e.exprEval.EvalPermission(ctx, scope.tenantID, scope.namespacePath,
+			req.Resource.Type, req.Action.Name,
+			string(req.Subject.Kind), req.Subject.ID, req.Resource.ID)
+		if err != nil {
+			e.logger.Warn("warden: rebac expression eval error", log.Error(err))
+		} else if matched {
+			return &CheckResult{
+				Allowed:   true,
+				Decision:  DecisionAllow,
+				MatchedBy: []MatchInfo{{Source: "rebac", Detail: "expression: " + req.Action.Name}},
+			}, nil
+		}
+	}
+
 	// Walk graph for transitive permissions.
 	if e.graphWalker != nil {
-		allowed, path, err := e.graphWalker.Walk(ctx, e.store, scope.tenantID, req)
+		allowed, path, err := e.graphWalker.Walk(ctx, e.store, scope.tenantID, scope.namespacePath, req)
 		if err != nil && !errors.Is(err, ErrGraphDepthExceeded) {
 			return nil, err
 		}
@@ -361,7 +411,9 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 }
 
 func (e *Engine) evaluateABAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, error) {
-	policies, err := e.store.ListActivePolicies(ctx, scope.tenantID)
+	// Policies cascade: include policies at the request's namespace and every ancestor.
+	namespaces := AncestorNamespaces(scope.namespacePath)
+	policies, err := e.store.ListActivePolicies(ctx, scope.tenantID, namespaces)
 	if err != nil {
 		return nil, err
 	}

@@ -25,17 +25,18 @@ type roleModel struct {
 	grove.BaseModel `grove:"table:warden_roles"`
 	ID              string    `grove:"id,pk"`
 	TenantID        string    `grove:"tenant_id,notnull"`
+	NamespacePath   string    `grove:"namespace_path,notnull"`
 	AppID           string    `grove:"app_id,notnull"`
 	Name            string    `grove:"name,notnull"`
 	Description     string    `grove:"description"`
 	Slug            string    `grove:"slug,notnull"`
 	IsSystem        bool      `grove:"is_system,notnull"`
 	IsDefault       bool      `grove:"is_default,notnull"`
-	ParentID        *string   `grove:"parent_id"`
+	ParentSlug      *string   `grove:"parent_slug"`
 	MaxMembers      int       `grove:"max_members,notnull"`
 	Metadata        string    `grove:"metadata"` // JSON text
-	CreatedAt       time.Time `grove:"created_at,notnull"`
-	UpdatedAt       time.Time `grove:"updated_at,notnull"`
+	CreatedAt       sqliteTime `grove:"created_at,notnull"`
+	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
 
 func roleToModel(r *role.Role) (*roleModel, error) {
@@ -44,22 +45,23 @@ func roleToModel(r *role.Role) (*roleModel, error) {
 		return nil, fmt.Errorf("marshal role metadata: %w", err)
 	}
 	m := &roleModel{
-		ID:          r.ID.String(),
-		TenantID:    r.TenantID,
-		AppID:       r.AppID,
-		Name:        r.Name,
-		Description: r.Description,
-		Slug:        r.Slug,
-		IsSystem:    r.IsSystem,
-		IsDefault:   r.IsDefault,
-		MaxMembers:  r.MaxMembers,
-		Metadata:    string(metadata),
-		CreatedAt:   r.CreatedAt,
-		UpdatedAt:   r.UpdatedAt,
+		ID:            r.ID.String(),
+		TenantID:      r.TenantID,
+		NamespacePath: r.NamespacePath,
+		AppID:         r.AppID,
+		Name:          r.Name,
+		Description:   r.Description,
+		Slug:          r.Slug,
+		IsSystem:      r.IsSystem,
+		IsDefault:     r.IsDefault,
+		MaxMembers:    r.MaxMembers,
+		Metadata:      string(metadata),
+		CreatedAt:     sqliteTime(r.CreatedAt),
+		UpdatedAt:     sqliteTime(r.UpdatedAt),
 	}
-	if r.ParentID != nil {
-		s := r.ParentID.String()
-		m.ParentID = &s
+	if r.ParentSlug != "" {
+		s := r.ParentSlug
+		m.ParentSlug = &s
 	}
 	return m, nil
 }
@@ -73,24 +75,22 @@ func roleFromModel(m *roleModel) (*role.Role, error) {
 		}
 	}
 	r := &role.Role{
-		ID:          rid,
-		TenantID:    m.TenantID,
-		AppID:       m.AppID,
-		Name:        m.Name,
-		Description: m.Description,
-		Slug:        m.Slug,
-		IsSystem:    m.IsSystem,
-		IsDefault:   m.IsDefault,
-		MaxMembers:  m.MaxMembers,
-		Metadata:    metadata,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
+		ID:            rid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		Name:          m.Name,
+		Description:   m.Description,
+		Slug:          m.Slug,
+		IsSystem:      m.IsSystem,
+		IsDefault:     m.IsDefault,
+		MaxMembers:    m.MaxMembers,
+		Metadata:      metadata,
+		CreatedAt:     time.Time(m.CreatedAt),
+		UpdatedAt:     time.Time(m.UpdatedAt),
 	}
-	if m.ParentID != nil {
-		pid, err := id.ParseRoleID(*m.ParentID)
-		if err == nil {
-			r.ParentID = &pid
-		}
+	if m.ParentSlug != nil {
+		r.ParentSlug = *m.ParentSlug
 	}
 	return r, nil
 }
@@ -103,6 +103,7 @@ type permissionModel struct {
 	grove.BaseModel `grove:"table:warden_permissions"`
 	ID              string    `grove:"id,pk"`
 	TenantID        string    `grove:"tenant_id,notnull"`
+	NamespacePath   string    `grove:"namespace_path,notnull"`
 	AppID           string    `grove:"app_id,notnull"`
 	Name            string    `grove:"name,notnull"`
 	Description     string    `grove:"description"`
@@ -110,8 +111,8 @@ type permissionModel struct {
 	Action          string    `grove:"action,notnull"`
 	IsSystem        bool      `grove:"is_system,notnull"`
 	Metadata        string    `grove:"metadata"` // JSON text
-	CreatedAt       time.Time `grove:"created_at,notnull"`
-	UpdatedAt       time.Time `grove:"updated_at,notnull"`
+	CreatedAt       sqliteTime `grove:"created_at,notnull"`
+	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
 
 func permissionToModel(p *permission.Permission) (*permissionModel, error) {
@@ -120,17 +121,18 @@ func permissionToModel(p *permission.Permission) (*permissionModel, error) {
 		return nil, fmt.Errorf("marshal permission metadata: %w", err)
 	}
 	return &permissionModel{
-		ID:          p.ID.String(),
-		TenantID:    p.TenantID,
-		AppID:       p.AppID,
-		Name:        p.Name,
-		Description: p.Description,
-		Resource:    p.Resource,
-		Action:      p.Action,
-		IsSystem:    p.IsSystem,
-		Metadata:    string(metadata),
-		CreatedAt:   p.CreatedAt,
-		UpdatedAt:   p.UpdatedAt,
+		ID:            p.ID.String(),
+		TenantID:      p.TenantID,
+		NamespacePath: p.NamespacePath,
+		AppID:         p.AppID,
+		Name:          p.Name,
+		Description:   p.Description,
+		Resource:      p.Resource,
+		Action:        p.Action,
+		IsSystem:      p.IsSystem,
+		Metadata:      string(metadata),
+		CreatedAt:     sqliteTime(p.CreatedAt),
+		UpdatedAt:     sqliteTime(p.UpdatedAt),
 	}, nil
 }
 
@@ -143,17 +145,18 @@ func permissionFromModel(m *permissionModel) (*permission.Permission, error) {
 		}
 	}
 	return &permission.Permission{
-		ID:          pid,
-		TenantID:    m.TenantID,
-		AppID:       m.AppID,
-		Name:        m.Name,
-		Description: m.Description,
-		Resource:    m.Resource,
-		Action:      m.Action,
-		IsSystem:    m.IsSystem,
-		Metadata:    metadata,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
+		ID:            pid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		Name:          m.Name,
+		Description:   m.Description,
+		Resource:      m.Resource,
+		Action:        m.Action,
+		IsSystem:      m.IsSystem,
+		Metadata:      metadata,
+		CreatedAt:     time.Time(m.CreatedAt),
+		UpdatedAt:     time.Time(m.UpdatedAt),
 	}, nil
 }
 
@@ -175,16 +178,17 @@ type assignmentModel struct {
 	grove.BaseModel `grove:"table:warden_assignments"`
 	ID              string     `grove:"id,pk"`
 	TenantID        string     `grove:"tenant_id,notnull"`
+	NamespacePath   string     `grove:"namespace_path,notnull"`
 	AppID           string     `grove:"app_id,notnull"`
 	RoleID          string     `grove:"role_id,notnull"`
 	SubjectKind     string     `grove:"subject_kind,notnull"`
 	SubjectID       string     `grove:"subject_id,notnull"`
 	ResourceType    string     `grove:"resource_type"`
 	ResourceID      string     `grove:"resource_id"`
-	ExpiresAt       *time.Time `grove:"expires_at"`
-	GrantedBy       string     `grove:"granted_by"`
-	Metadata        string     `grove:"metadata"` // JSON text
-	CreatedAt       time.Time  `grove:"created_at,notnull"`
+	ExpiresAt       *sqliteTime `grove:"expires_at"`
+	GrantedBy       string      `grove:"granted_by"`
+	Metadata        string      `grove:"metadata"` // JSON text
+	CreatedAt       sqliteTime  `grove:"created_at,notnull"`
 }
 
 func assignmentToModel(a *assignment.Assignment) (*assignmentModel, error) {
@@ -192,20 +196,25 @@ func assignmentToModel(a *assignment.Assignment) (*assignmentModel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal assignment metadata: %w", err)
 	}
-	return &assignmentModel{
-		ID:           a.ID.String(),
-		TenantID:     a.TenantID,
-		AppID:        a.AppID,
-		RoleID:       a.RoleID.String(),
-		SubjectKind:  a.SubjectKind,
-		SubjectID:    a.SubjectID,
-		ResourceType: a.ResourceType,
-		ResourceID:   a.ResourceID,
-		ExpiresAt:    a.ExpiresAt,
-		GrantedBy:    a.GrantedBy,
-		Metadata:     string(metadata),
-		CreatedAt:    a.CreatedAt,
-	}, nil
+	m := &assignmentModel{
+		ID:            a.ID.String(),
+		TenantID:      a.TenantID,
+		NamespacePath: a.NamespacePath,
+		AppID:         a.AppID,
+		RoleID:        a.RoleID.String(),
+		SubjectKind:   a.SubjectKind,
+		SubjectID:     a.SubjectID,
+		ResourceType:  a.ResourceType,
+		ResourceID:    a.ResourceID,
+		GrantedBy:     a.GrantedBy,
+		Metadata:      string(metadata),
+		CreatedAt:     sqliteTime(a.CreatedAt),
+	}
+	if a.ExpiresAt != nil {
+		v := sqliteTime(*a.ExpiresAt)
+		m.ExpiresAt = &v
+	}
+	return m, nil
 }
 
 func assignmentFromModel(m *assignmentModel) (*assignment.Assignment, error) {
@@ -217,20 +226,25 @@ func assignmentFromModel(m *assignmentModel) (*assignment.Assignment, error) {
 			return nil, fmt.Errorf("unmarshal assignment metadata: %w", err)
 		}
 	}
-	return &assignment.Assignment{
-		ID:           aid,
-		TenantID:     m.TenantID,
-		AppID:        m.AppID,
-		RoleID:       rid,
-		SubjectKind:  m.SubjectKind,
-		SubjectID:    m.SubjectID,
-		ResourceType: m.ResourceType,
-		ResourceID:   m.ResourceID,
-		ExpiresAt:    m.ExpiresAt,
-		GrantedBy:    m.GrantedBy,
-		Metadata:     metadata,
-		CreatedAt:    m.CreatedAt,
-	}, nil
+	a := &assignment.Assignment{
+		ID:            aid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		RoleID:        rid,
+		SubjectKind:   m.SubjectKind,
+		SubjectID:     m.SubjectID,
+		ResourceType:  m.ResourceType,
+		ResourceID:    m.ResourceID,
+		GrantedBy:     m.GrantedBy,
+		Metadata:      metadata,
+		CreatedAt:     time.Time(m.CreatedAt),
+	}
+	if m.ExpiresAt != nil {
+		v := time.Time(*m.ExpiresAt)
+		a.ExpiresAt = &v
+	}
+	return a, nil
 }
 
 // ──────────────────────────────────────────────────
@@ -241,6 +255,7 @@ type relationModel struct {
 	grove.BaseModel `grove:"table:warden_relations"`
 	ID              string    `grove:"id,pk"`
 	TenantID        string    `grove:"tenant_id,notnull"`
+	NamespacePath   string    `grove:"namespace_path,notnull"`
 	AppID           string    `grove:"app_id,notnull"`
 	ObjectType      string    `grove:"object_type,notnull"`
 	ObjectID        string    `grove:"object_id,notnull"`
@@ -249,7 +264,7 @@ type relationModel struct {
 	SubjectID       string    `grove:"subject_id,notnull"`
 	SubjectRelation string    `grove:"subject_relation"`
 	Metadata        string    `grove:"metadata"` // JSON text
-	CreatedAt       time.Time `grove:"created_at,notnull"`
+	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 }
 
 func relationToModel(t *relation.Tuple) (*relationModel, error) {
@@ -260,6 +275,7 @@ func relationToModel(t *relation.Tuple) (*relationModel, error) {
 	return &relationModel{
 		ID:              t.ID.String(),
 		TenantID:        t.TenantID,
+		NamespacePath:   t.NamespacePath,
 		AppID:           t.AppID,
 		ObjectType:      t.ObjectType,
 		ObjectID:        t.ObjectID,
@@ -268,7 +284,7 @@ func relationToModel(t *relation.Tuple) (*relationModel, error) {
 		SubjectID:       t.SubjectID,
 		SubjectRelation: t.SubjectRelation,
 		Metadata:        string(metadata),
-		CreatedAt:       t.CreatedAt,
+		CreatedAt:       sqliteTime(t.CreatedAt),
 	}, nil
 }
 
@@ -283,6 +299,7 @@ func relationFromModel(m *relationModel) (*relation.Tuple, error) {
 	return &relation.Tuple{
 		ID:              rid,
 		TenantID:        m.TenantID,
+		NamespacePath:   m.NamespacePath,
 		AppID:           m.AppID,
 		ObjectType:      m.ObjectType,
 		ObjectID:        m.ObjectID,
@@ -291,7 +308,7 @@ func relationFromModel(m *relationModel) (*relation.Tuple, error) {
 		SubjectID:       m.SubjectID,
 		SubjectRelation: m.SubjectRelation,
 		Metadata:        metadata,
-		CreatedAt:       m.CreatedAt,
+		CreatedAt:       time.Time(m.CreatedAt),
 	}, nil
 }
 
@@ -303,6 +320,7 @@ type policyModel struct {
 	grove.BaseModel `grove:"table:warden_policies"`
 	ID              string    `grove:"id,pk"`
 	TenantID        string    `grove:"tenant_id,notnull"`
+	NamespacePath   string    `grove:"namespace_path,notnull"`
 	AppID           string    `grove:"app_id,notnull"`
 	Name            string    `grove:"name,notnull"`
 	Description     string    `grove:"description"`
@@ -315,8 +333,8 @@ type policyModel struct {
 	Resources       string    `grove:"resources"`  // JSON text
 	Conditions      string    `grove:"conditions"` // JSON text
 	Metadata        string    `grove:"metadata"`   // JSON text
-	CreatedAt       time.Time `grove:"created_at,notnull"`
-	UpdatedAt       time.Time `grove:"updated_at,notnull"`
+	CreatedAt       sqliteTime `grove:"created_at,notnull"`
+	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
 
 func policyToModel(p *policy.Policy) (*policyModel, error) {
@@ -341,10 +359,11 @@ func policyToModel(p *policy.Policy) (*policyModel, error) {
 		return nil, fmt.Errorf("marshal policy metadata: %w", err)
 	}
 	return &policyModel{
-		ID:          p.ID.String(),
-		TenantID:    p.TenantID,
-		AppID:       p.AppID,
-		Name:        p.Name,
+		ID:            p.ID.String(),
+		TenantID:      p.TenantID,
+		NamespacePath: p.NamespacePath,
+		AppID:         p.AppID,
+		Name:          p.Name,
 		Description: p.Description,
 		Effect:      string(p.Effect),
 		Priority:    p.Priority,
@@ -355,8 +374,8 @@ func policyToModel(p *policy.Policy) (*policyModel, error) {
 		Resources:   string(resources),
 		Conditions:  string(conditions),
 		Metadata:    string(metadata),
-		CreatedAt:   p.CreatedAt,
-		UpdatedAt:   p.UpdatedAt,
+		CreatedAt:   sqliteTime(p.CreatedAt),
+		UpdatedAt:   sqliteTime(p.UpdatedAt),
 	}, nil
 }
 
@@ -394,10 +413,11 @@ func policyFromModel(m *policyModel) (*policy.Policy, error) {
 		}
 	}
 	return &policy.Policy{
-		ID:          pid,
-		TenantID:    m.TenantID,
-		AppID:       m.AppID,
-		Name:        m.Name,
+		ID:            pid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		Name:          m.Name,
 		Description: m.Description,
 		Effect:      policy.Effect(m.Effect),
 		Priority:    m.Priority,
@@ -408,8 +428,8 @@ func policyFromModel(m *policyModel) (*policy.Policy, error) {
 		Resources:   resources,
 		Conditions:  conditions,
 		Metadata:    metadata,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
+		CreatedAt:   time.Time(m.CreatedAt),
+		UpdatedAt:   time.Time(m.UpdatedAt),
 	}, nil
 }
 
@@ -421,14 +441,15 @@ type resourceTypeModel struct {
 	grove.BaseModel `grove:"table:warden_resource_types"`
 	ID              string    `grove:"id,pk"`
 	TenantID        string    `grove:"tenant_id,notnull"`
+	NamespacePath   string    `grove:"namespace_path,notnull"`
 	AppID           string    `grove:"app_id,notnull"`
 	Name            string    `grove:"name,notnull"`
 	Description     string    `grove:"description"`
 	Relations       string    `grove:"relations"`   // JSON text
 	Permissions     string    `grove:"permissions"` // JSON text
 	Metadata        string    `grove:"metadata"`    // JSON text
-	CreatedAt       time.Time `grove:"created_at,notnull"`
-	UpdatedAt       time.Time `grove:"updated_at,notnull"`
+	CreatedAt       sqliteTime `grove:"created_at,notnull"`
+	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
 
 func resourceTypeToModel(rt *resourcetype.ResourceType) (*resourceTypeModel, error) {
@@ -445,16 +466,17 @@ func resourceTypeToModel(rt *resourcetype.ResourceType) (*resourceTypeModel, err
 		return nil, fmt.Errorf("marshal resource type metadata: %w", err)
 	}
 	return &resourceTypeModel{
-		ID:          rt.ID.String(),
-		TenantID:    rt.TenantID,
-		AppID:       rt.AppID,
-		Name:        rt.Name,
+		ID:            rt.ID.String(),
+		TenantID:      rt.TenantID,
+		NamespacePath: rt.NamespacePath,
+		AppID:         rt.AppID,
+		Name:          rt.Name,
 		Description: rt.Description,
 		Relations:   string(relations),
 		Permissions: string(permissions),
 		Metadata:    string(metadata),
-		CreatedAt:   rt.CreatedAt,
-		UpdatedAt:   rt.UpdatedAt,
+		CreatedAt:   sqliteTime(rt.CreatedAt),
+		UpdatedAt:   sqliteTime(rt.UpdatedAt),
 	}, nil
 }
 
@@ -480,16 +502,17 @@ func resourceTypeFromModel(m *resourceTypeModel) (*resourcetype.ResourceType, er
 		}
 	}
 	return &resourcetype.ResourceType{
-		ID:          rtid,
-		TenantID:    m.TenantID,
-		AppID:       m.AppID,
-		Name:        m.Name,
+		ID:            rtid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		Name:          m.Name,
 		Description: m.Description,
 		Relations:   relations,
 		Permissions: permissions,
 		Metadata:    metadata,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
+		CreatedAt:   time.Time(m.CreatedAt),
+		UpdatedAt:   time.Time(m.UpdatedAt),
 	}, nil
 }
 
@@ -501,6 +524,7 @@ type checkLogModel struct {
 	grove.BaseModel `grove:"table:warden_check_logs"`
 	ID              string    `grove:"id,pk"`
 	TenantID        string    `grove:"tenant_id,notnull"`
+	NamespacePath   string    `grove:"namespace_path,notnull"`
 	AppID           string    `grove:"app_id,notnull"`
 	SubjectKind     string    `grove:"subject_kind,notnull"`
 	SubjectID       string    `grove:"subject_id,notnull"`
@@ -512,7 +536,7 @@ type checkLogModel struct {
 	EvalTimeNs      int64     `grove:"eval_time_ns,notnull"`
 	RequestIP       string    `grove:"request_ip"`
 	Metadata        string    `grove:"metadata"` // JSON text
-	CreatedAt       time.Time `grove:"created_at,notnull"`
+	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 }
 
 func checkLogToModel(e *checklog.Entry) (*checkLogModel, error) {
@@ -521,10 +545,11 @@ func checkLogToModel(e *checklog.Entry) (*checkLogModel, error) {
 		return nil, fmt.Errorf("marshal check log metadata: %w", err)
 	}
 	return &checkLogModel{
-		ID:           e.ID.String(),
-		TenantID:     e.TenantID,
-		AppID:        e.AppID,
-		SubjectKind:  e.SubjectKind,
+		ID:            e.ID.String(),
+		TenantID:      e.TenantID,
+		NamespacePath: e.NamespacePath,
+		AppID:         e.AppID,
+		SubjectKind:   e.SubjectKind,
 		SubjectID:    e.SubjectID,
 		Action:       e.Action,
 		ResourceType: e.ResourceType,
@@ -534,7 +559,7 @@ func checkLogToModel(e *checklog.Entry) (*checkLogModel, error) {
 		EvalTimeNs:   e.EvalTimeNs,
 		RequestIP:    e.RequestIP,
 		Metadata:     string(metadata),
-		CreatedAt:    e.CreatedAt,
+		CreatedAt:    sqliteTime(e.CreatedAt),
 	}, nil
 }
 
@@ -547,10 +572,11 @@ func checkLogFromModel(m *checkLogModel) (*checklog.Entry, error) {
 		}
 	}
 	return &checklog.Entry{
-		ID:           clid,
-		TenantID:     m.TenantID,
-		AppID:        m.AppID,
-		SubjectKind:  m.SubjectKind,
+		ID:            clid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		SubjectKind:   m.SubjectKind,
 		SubjectID:    m.SubjectID,
 		Action:       m.Action,
 		ResourceType: m.ResourceType,
@@ -560,6 +586,6 @@ func checkLogFromModel(m *checkLogModel) (*checklog.Entry, error) {
 		EvalTimeNs:   m.EvalTimeNs,
 		RequestIP:    m.RequestIP,
 		Metadata:     metadata,
-		CreatedAt:    m.CreatedAt,
+		CreatedAt:    time.Time(m.CreatedAt),
 	}, nil
 }

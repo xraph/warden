@@ -24,13 +24,14 @@ type roleModel struct {
 	grove.BaseModel `grove:"table:warden_roles"`
 	ID              string           `grove:"id,pk"`
 	TenantID        string           `grove:"tenant_id,notnull"`
+	NamespacePath   string           `grove:"namespace_path,notnull"`
 	AppID           string           `grove:"app_id,notnull"`
 	Name            string           `grove:"name,notnull"`
 	Description     string           `grove:"description"`
 	Slug            string           `grove:"slug,notnull"`
 	IsSystem        bool             `grove:"is_system,notnull"`
 	IsDefault       bool             `grove:"is_default,notnull"`
-	ParentID        *string          `grove:"parent_id"`
+	ParentSlug      *string          `grove:"parent_slug"`
 	MaxMembers      int              `grove:"max_members,notnull"`
 	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
 	CreatedAt       time.Time        `grove:"created_at,notnull"`
@@ -43,22 +44,23 @@ func roleToModel(r *role.Role) *roleModel {
 		md = pgdriver.JSONMap{}
 	}
 	m := &roleModel{
-		ID:          r.ID.String(),
-		TenantID:    r.TenantID,
-		AppID:       r.AppID,
-		Name:        r.Name,
-		Description: r.Description,
-		Slug:        r.Slug,
-		IsSystem:    r.IsSystem,
-		IsDefault:   r.IsDefault,
-		MaxMembers:  r.MaxMembers,
-		Metadata:    md,
-		CreatedAt:   r.CreatedAt,
-		UpdatedAt:   r.UpdatedAt,
+		ID:            r.ID.String(),
+		TenantID:      r.TenantID,
+		NamespacePath: r.NamespacePath,
+		AppID:         r.AppID,
+		Name:          r.Name,
+		Description:   r.Description,
+		Slug:          r.Slug,
+		IsSystem:      r.IsSystem,
+		IsDefault:     r.IsDefault,
+		MaxMembers:    r.MaxMembers,
+		Metadata:      md,
+		CreatedAt:     r.CreatedAt,
+		UpdatedAt:     r.UpdatedAt,
 	}
-	if r.ParentID != nil {
-		s := r.ParentID.String()
-		m.ParentID = &s
+	if r.ParentSlug != "" {
+		s := r.ParentSlug
+		m.ParentSlug = &s
 	}
 	return m
 }
@@ -66,24 +68,22 @@ func roleToModel(r *role.Role) *roleModel {
 func roleFromModel(m *roleModel) *role.Role {
 	rid, _ := id.ParseRoleID(m.ID) //nolint:errcheck // stored IDs are always valid
 	r := &role.Role{
-		ID:          rid,
-		TenantID:    m.TenantID,
-		AppID:       m.AppID,
-		Name:        m.Name,
-		Description: m.Description,
-		Slug:        m.Slug,
-		IsSystem:    m.IsSystem,
-		IsDefault:   m.IsDefault,
-		MaxMembers:  m.MaxMembers,
-		Metadata:    map[string]any(m.Metadata),
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
+		ID:            rid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		Name:          m.Name,
+		Description:   m.Description,
+		Slug:          m.Slug,
+		IsSystem:      m.IsSystem,
+		IsDefault:     m.IsDefault,
+		MaxMembers:    m.MaxMembers,
+		Metadata:      map[string]any(m.Metadata),
+		CreatedAt:     m.CreatedAt,
+		UpdatedAt:     m.UpdatedAt,
 	}
-	if m.ParentID != nil {
-		pid, err := id.ParseRoleID(*m.ParentID)
-		if err == nil {
-			r.ParentID = &pid
-		}
+	if m.ParentSlug != nil {
+		r.ParentSlug = *m.ParentSlug
 	}
 	return r
 }
@@ -96,6 +96,7 @@ type permissionModel struct {
 	grove.BaseModel `grove:"table:warden_permissions"`
 	ID              string           `grove:"id,pk"`
 	TenantID        string           `grove:"tenant_id,notnull"`
+	NamespacePath   string           `grove:"namespace_path,notnull"`
 	AppID           string           `grove:"app_id,notnull"`
 	Name            string           `grove:"name,notnull"`
 	Description     string           `grove:"description"`
@@ -113,34 +114,36 @@ func permissionToModel(p *permission.Permission) *permissionModel {
 		md = pgdriver.JSONMap{}
 	}
 	return &permissionModel{
-		ID:          p.ID.String(),
-		TenantID:    p.TenantID,
-		AppID:       p.AppID,
-		Name:        p.Name,
-		Description: p.Description,
-		Resource:    p.Resource,
-		Action:      p.Action,
-		IsSystem:    p.IsSystem,
-		Metadata:    md,
-		CreatedAt:   p.CreatedAt,
-		UpdatedAt:   p.UpdatedAt,
+		ID:            p.ID.String(),
+		TenantID:      p.TenantID,
+		NamespacePath: p.NamespacePath,
+		AppID:         p.AppID,
+		Name:          p.Name,
+		Description:   p.Description,
+		Resource:      p.Resource,
+		Action:        p.Action,
+		IsSystem:      p.IsSystem,
+		Metadata:      md,
+		CreatedAt:     p.CreatedAt,
+		UpdatedAt:     p.UpdatedAt,
 	}
 }
 
 func permissionFromModel(m *permissionModel) *permission.Permission {
 	pid, _ := id.ParsePermissionID(m.ID) //nolint:errcheck // stored IDs are always valid
 	return &permission.Permission{
-		ID:          pid,
-		TenantID:    m.TenantID,
-		AppID:       m.AppID,
-		Name:        m.Name,
-		Description: m.Description,
-		Resource:    m.Resource,
-		Action:      m.Action,
-		IsSystem:    m.IsSystem,
-		Metadata:    map[string]any(m.Metadata),
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
+		ID:            pid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		Name:          m.Name,
+		Description:   m.Description,
+		Resource:      m.Resource,
+		Action:        m.Action,
+		IsSystem:      m.IsSystem,
+		Metadata:      map[string]any(m.Metadata),
+		CreatedAt:     m.CreatedAt,
+		UpdatedAt:     m.UpdatedAt,
 	}
 }
 
@@ -162,6 +165,7 @@ type assignmentModel struct {
 	grove.BaseModel `grove:"table:warden_assignments"`
 	ID              string           `grove:"id,pk"`
 	TenantID        string           `grove:"tenant_id,notnull"`
+	NamespacePath   string           `grove:"namespace_path,notnull"`
 	AppID           string           `grove:"app_id,notnull"`
 	RoleID          string           `grove:"role_id,notnull"`
 	SubjectKind     string           `grove:"subject_kind,notnull"`
@@ -180,10 +184,11 @@ func assignmentToModel(a *assignment.Assignment) *assignmentModel {
 		md = pgdriver.JSONMap{}
 	}
 	return &assignmentModel{
-		ID:           a.ID.String(),
-		TenantID:     a.TenantID,
-		AppID:        a.AppID,
-		RoleID:       a.RoleID.String(),
+		ID:            a.ID.String(),
+		TenantID:      a.TenantID,
+		NamespacePath: a.NamespacePath,
+		AppID:         a.AppID,
+		RoleID:        a.RoleID.String(),
 		SubjectKind:  a.SubjectKind,
 		SubjectID:    a.SubjectID,
 		ResourceType: a.ResourceType,
@@ -199,10 +204,11 @@ func assignmentFromModel(m *assignmentModel) *assignment.Assignment {
 	aid, _ := id.ParseAssignmentID(m.ID) //nolint:errcheck // stored IDs are always valid
 	rid, _ := id.ParseRoleID(m.RoleID)   //nolint:errcheck // stored IDs are always valid
 	return &assignment.Assignment{
-		ID:           aid,
-		TenantID:     m.TenantID,
-		AppID:        m.AppID,
-		RoleID:       rid,
+		ID:            aid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		RoleID:        rid,
 		SubjectKind:  m.SubjectKind,
 		SubjectID:    m.SubjectID,
 		ResourceType: m.ResourceType,
@@ -222,6 +228,7 @@ type relationModel struct {
 	grove.BaseModel `grove:"table:warden_relations"`
 	ID              string           `grove:"id,pk"`
 	TenantID        string           `grove:"tenant_id,notnull"`
+	NamespacePath   string           `grove:"namespace_path,notnull"`
 	AppID           string           `grove:"app_id,notnull"`
 	ObjectType      string           `grove:"object_type,notnull"`
 	ObjectID        string           `grove:"object_id,notnull"`
@@ -241,6 +248,7 @@ func relationToModel(t *relation.Tuple) *relationModel {
 	return &relationModel{
 		ID:              t.ID.String(),
 		TenantID:        t.TenantID,
+		NamespacePath:   t.NamespacePath,
 		AppID:           t.AppID,
 		ObjectType:      t.ObjectType,
 		ObjectID:        t.ObjectID,
@@ -258,6 +266,7 @@ func relationFromModel(m *relationModel) *relation.Tuple {
 	return &relation.Tuple{
 		ID:              rid,
 		TenantID:        m.TenantID,
+		NamespacePath:   m.NamespacePath,
 		AppID:           m.AppID,
 		ObjectType:      m.ObjectType,
 		ObjectID:        m.ObjectID,
@@ -278,6 +287,7 @@ type policyModel struct {
 	grove.BaseModel `grove:"table:warden_policies"`
 	ID              string                          `grove:"id,pk"`
 	TenantID        string                          `grove:"tenant_id,notnull"`
+	NamespacePath   string                          `grove:"namespace_path,notnull"`
 	AppID           string                          `grove:"app_id,notnull"`
 	Name            string                          `grove:"name,notnull"`
 	Description     string                          `grove:"description"`
@@ -300,10 +310,11 @@ func policyToModel(p *policy.Policy) *policyModel {
 		md = pgdriver.JSONMap{}
 	}
 	return &policyModel{
-		ID:          p.ID.String(),
-		TenantID:    p.TenantID,
-		AppID:       p.AppID,
-		Name:        p.Name,
+		ID:            p.ID.String(),
+		TenantID:      p.TenantID,
+		NamespacePath: p.NamespacePath,
+		AppID:         p.AppID,
+		Name:          p.Name,
 		Description: p.Description,
 		Effect:      string(p.Effect),
 		Priority:    p.Priority,
@@ -322,10 +333,11 @@ func policyToModel(p *policy.Policy) *policyModel {
 func policyFromModel(m *policyModel) *policy.Policy {
 	pid, _ := id.ParsePolicyID(m.ID) //nolint:errcheck // stored IDs are always valid
 	return &policy.Policy{
-		ID:          pid,
-		TenantID:    m.TenantID,
-		AppID:       m.AppID,
-		Name:        m.Name,
+		ID:            pid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		Name:          m.Name,
 		Description: m.Description,
 		Effect:      policy.Effect(m.Effect),
 		Priority:    m.Priority,
@@ -349,6 +361,7 @@ type resourceTypeModel struct {
 	grove.BaseModel `grove:"table:warden_resource_types"`
 	ID              string                                 `grove:"id,pk"`
 	TenantID        string                                 `grove:"tenant_id,notnull"`
+	NamespacePath   string                                 `grove:"namespace_path,notnull"`
 	AppID           string                                 `grove:"app_id,notnull"`
 	Name            string                                 `grove:"name,notnull"`
 	Description     string                                 `grove:"description"`
@@ -365,10 +378,11 @@ func resourceTypeToModel(rt *resourcetype.ResourceType) *resourceTypeModel {
 		md = pgdriver.JSONMap{}
 	}
 	return &resourceTypeModel{
-		ID:          rt.ID.String(),
-		TenantID:    rt.TenantID,
-		AppID:       rt.AppID,
-		Name:        rt.Name,
+		ID:            rt.ID.String(),
+		TenantID:      rt.TenantID,
+		NamespacePath: rt.NamespacePath,
+		AppID:         rt.AppID,
+		Name:          rt.Name,
 		Description: rt.Description,
 		Relations:   jsonbSlice[resourcetype.RelationDef](rt.Relations),
 		Permissions: jsonbSlice[resourcetype.PermissionDef](rt.Permissions),
@@ -381,10 +395,11 @@ func resourceTypeToModel(rt *resourcetype.ResourceType) *resourceTypeModel {
 func resourceTypeFromModel(m *resourceTypeModel) *resourcetype.ResourceType {
 	rtid, _ := id.ParseResourceTypeID(m.ID) //nolint:errcheck // stored IDs are always valid
 	return &resourcetype.ResourceType{
-		ID:          rtid,
-		TenantID:    m.TenantID,
-		AppID:       m.AppID,
-		Name:        m.Name,
+		ID:            rtid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		Name:          m.Name,
 		Description: m.Description,
 		Relations:   []resourcetype.RelationDef(m.Relations),
 		Permissions: []resourcetype.PermissionDef(m.Permissions),
@@ -402,6 +417,7 @@ type checkLogModel struct {
 	grove.BaseModel `grove:"table:warden_check_logs"`
 	ID              string           `grove:"id,pk"`
 	TenantID        string           `grove:"tenant_id,notnull"`
+	NamespacePath   string           `grove:"namespace_path,notnull"`
 	AppID           string           `grove:"app_id,notnull"`
 	SubjectKind     string           `grove:"subject_kind,notnull"`
 	SubjectID       string           `grove:"subject_id,notnull"`
@@ -422,10 +438,11 @@ func checkLogToModel(e *checklog.Entry) *checkLogModel {
 		md = pgdriver.JSONMap{}
 	}
 	return &checkLogModel{
-		ID:           e.ID.String(),
-		TenantID:     e.TenantID,
-		AppID:        e.AppID,
-		SubjectKind:  e.SubjectKind,
+		ID:            e.ID.String(),
+		TenantID:      e.TenantID,
+		NamespacePath: e.NamespacePath,
+		AppID:         e.AppID,
+		SubjectKind:   e.SubjectKind,
 		SubjectID:    e.SubjectID,
 		Action:       e.Action,
 		ResourceType: e.ResourceType,
@@ -442,10 +459,11 @@ func checkLogToModel(e *checklog.Entry) *checkLogModel {
 func checkLogFromModel(m *checkLogModel) *checklog.Entry {
 	clid, _ := id.ParseCheckLogID(m.ID) //nolint:errcheck // stored IDs are always valid
 	return &checklog.Entry{
-		ID:           clid,
-		TenantID:     m.TenantID,
-		AppID:        m.AppID,
-		SubjectKind:  m.SubjectKind,
+		ID:            clid,
+		TenantID:      m.TenantID,
+		NamespacePath: m.NamespacePath,
+		AppID:         m.AppID,
+		SubjectKind:   m.SubjectKind,
 		SubjectID:    m.SubjectID,
 		Action:       m.Action,
 		ResourceType: m.ResourceType,

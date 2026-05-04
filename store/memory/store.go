@@ -126,10 +126,19 @@ func (s *Store) ListRoles(_ context.Context, filter *role.ListFilter) ([]*role.R
 			if filter.TenantID != "" && r.TenantID != filter.TenantID {
 				continue
 			}
+			if filter.NamespacePath != nil && r.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(r.NamespacePath, filter.NamespacePrefix) {
+				continue
+			}
 			if filter.IsSystem != nil && r.IsSystem != *filter.IsSystem {
 				continue
 			}
 			if filter.IsDefault != nil && r.IsDefault != *filter.IsDefault {
+				continue
+			}
+			if filter.ParentSlug != nil && r.ParentSlug != *filter.ParentSlug {
 				continue
 			}
 			if filter.Search != "" && !strings.Contains(strings.ToLower(r.Name), strings.ToLower(filter.Search)) {
@@ -197,13 +206,12 @@ func (s *Store) SetRolePermissions(_ context.Context, roleID id.RoleID, permIDs 
 	return nil
 }
 
-func (s *Store) ListChildRoles(_ context.Context, parentID id.RoleID) ([]*role.Role, error) {
+func (s *Store) ListChildRoles(_ context.Context, tenantID, parentSlug string) ([]*role.Role, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var result []*role.Role
-	pid := parentID.String()
 	for _, r := range s.roles {
-		if r.ParentID != nil && r.ParentID.String() == pid {
+		if r.TenantID == tenantID && r.ParentSlug != "" && r.ParentSlug == parentSlug {
 			result = append(result, copyRole(r))
 		}
 	}
@@ -430,26 +438,39 @@ func (s *Store) CountAssignments(ctx context.Context, filter *assignment.ListFil
 	return int64(len(list)), nil
 }
 
-func (s *Store) ListRolesForSubject(_ context.Context, tenantID, subjectKind, subjectID string) ([]id.RoleID, error) {
+func (s *Store) ListRolesForSubject(_ context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID string) ([]id.RoleID, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	nsSet := namespacePathSet(namespacePaths)
 	var result []id.RoleID
 	for _, a := range s.assignments {
-		if a.TenantID == tenantID && a.SubjectKind == subjectKind && a.SubjectID == subjectID && a.ResourceType == "" {
-			result = append(result, a.RoleID)
+		if a.TenantID != tenantID || a.SubjectKind != subjectKind || a.SubjectID != subjectID || a.ResourceType != "" {
+			continue
 		}
+		if !nsSet.matches(a.NamespacePath) {
+			continue
+		}
+		result = append(result, a.RoleID)
 	}
 	return result, nil
 }
 
-func (s *Store) ListRolesForSubjectOnResource(_ context.Context, tenantID, subjectKind, subjectID, resourceType, resourceID string) ([]id.RoleID, error) {
+func (s *Store) ListRolesForSubjectOnResource(_ context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID, resourceType, resourceID string) ([]id.RoleID, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	nsSet := namespacePathSet(namespacePaths)
 	var result []id.RoleID
 	for _, a := range s.assignments {
-		if a.TenantID == tenantID && a.SubjectKind == subjectKind && a.SubjectID == subjectID && a.ResourceType == resourceType && a.ResourceID == resourceID {
-			result = append(result, a.RoleID)
+		if a.TenantID != tenantID || a.SubjectKind != subjectKind || a.SubjectID != subjectID {
+			continue
 		}
+		if a.ResourceType != resourceType || a.ResourceID != resourceID {
+			continue
+		}
+		if !nsSet.matches(a.NamespacePath) {
+			continue
+		}
+		result = append(result, a.RoleID)
 	}
 	return result, nil
 }
@@ -532,11 +553,11 @@ func (s *Store) DeleteRelation(_ context.Context, relID id.RelationID) error {
 	return nil
 }
 
-func (s *Store) DeleteRelationTuple(_ context.Context, tenantID, objectType, objectID, rel, subjectType, subjectID string) error {
+func (s *Store) DeleteRelationTuple(_ context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for k, t := range s.relations {
-		if t.TenantID == tenantID && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel && t.SubjectType == subjectType && t.SubjectID == subjectID {
+		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel && t.SubjectType == subjectType && t.SubjectID == subjectID {
 			delete(s.relations, k)
 			return nil
 		}
@@ -582,35 +603,35 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	return int64(len(list)), nil
 }
 
-func (s *Store) ListRelationSubjects(_ context.Context, tenantID, objectType, objectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationSubjects(_ context.Context, tenantID, namespacePath, objectType, objectID, rel string) ([]*relation.Tuple, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var result []*relation.Tuple
 	for _, t := range s.relations {
-		if t.TenantID == tenantID && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel {
+		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel {
 			result = append(result, copyTuple(t))
 		}
 	}
 	return result, nil
 }
 
-func (s *Store) ListRelationObjects(_ context.Context, tenantID, subjectType, subjectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationObjects(_ context.Context, tenantID, namespacePath, subjectType, subjectID, rel string) ([]*relation.Tuple, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var result []*relation.Tuple
 	for _, t := range s.relations {
-		if t.TenantID == tenantID && t.SubjectType == subjectType && t.SubjectID == subjectID && t.Relation == rel {
+		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.SubjectType == subjectType && t.SubjectID == subjectID && t.Relation == rel {
 			result = append(result, copyTuple(t))
 		}
 	}
 	return result, nil
 }
 
-func (s *Store) CheckDirectRelation(_ context.Context, tenantID, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
+func (s *Store) CheckDirectRelation(_ context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, t := range s.relations {
-		if t.TenantID == tenantID && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel && t.SubjectType == subjectType && t.SubjectID == subjectID {
+		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel && t.SubjectType == subjectType && t.SubjectID == subjectID {
 			return true, nil
 		}
 	}
@@ -731,14 +752,19 @@ func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (i
 	return int64(len(list)), nil
 }
 
-func (s *Store) ListActivePolicies(_ context.Context, tenantID string) ([]*policy.Policy, error) {
+func (s *Store) ListActivePolicies(_ context.Context, tenantID string, namespacePaths []string) ([]*policy.Policy, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	nsSet := namespacePathSet(namespacePaths)
 	var result []*policy.Policy
 	for _, p := range s.policies {
-		if p.TenantID == tenantID && p.IsActive {
-			result = append(result, copyPolicy(p))
+		if p.TenantID != tenantID || !p.IsActive {
+			continue
 		}
+		if !nsSet.matches(p.NamespacePath) {
+			continue
+		}
+		result = append(result, copyPolicy(p))
 	}
 	return result, nil
 }
@@ -945,6 +971,44 @@ func (s *Store) DeleteCheckLogsByTenant(_ context.Context, tenantID string) erro
 // ──────────────────────────────────────────────────
 
 var errNotFound = fmt.Errorf("not found")
+
+// nsHasPrefix reports whether path is namespace prefix or one of its descendants.
+// "" matches anything; "eng" matches "eng" and "eng/...".
+func nsHasPrefix(path, prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	if path == prefix {
+		return true
+	}
+	return strings.HasPrefix(path, prefix+"/")
+}
+
+// nsMatcher matches entity namespace_path values against a set of paths.
+// A nil/empty matcher matches any namespace (legacy/unscoped behavior).
+type nsMatcher struct {
+	paths    map[string]struct{}
+	matchAny bool
+}
+
+func namespacePathSet(paths []string) nsMatcher {
+	if len(paths) == 0 {
+		return nsMatcher{matchAny: true}
+	}
+	m := nsMatcher{paths: make(map[string]struct{}, len(paths))}
+	for _, p := range paths {
+		m.paths[p] = struct{}{}
+	}
+	return m
+}
+
+func (m nsMatcher) matches(path string) bool {
+	if m.matchAny {
+		return true
+	}
+	_, ok := m.paths[path]
+	return ok
+}
 
 func copyRole(r *role.Role) *role.Role {
 	c := *r
