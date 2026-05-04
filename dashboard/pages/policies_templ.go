@@ -5,13 +5,12 @@ package pages
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
-import "github.com/a-h/templ"
-import templruntime "github.com/a-h/templ/runtime"
-
 import (
 	"fmt"
 	"strconv"
 
+	"github.com/a-h/templ"
+	templruntime "github.com/a-h/templ/runtime"
 	"github.com/xraph/forgeui/components/badge"
 	"github.com/xraph/forgeui/components/button"
 	"github.com/xraph/forgeui/components/card"
@@ -19,6 +18,7 @@ import (
 	"github.com/xraph/forgeui/components/input"
 	"github.com/xraph/forgeui/components/table"
 	"github.com/xraph/forgeui/icons"
+
 	"github.com/xraph/warden/dashboard/components"
 	"github.com/xraph/warden/policy"
 )

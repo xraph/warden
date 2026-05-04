@@ -27,6 +27,17 @@ type Permission struct {
 	UpdatedAt     time.Time       `json:"updated_at" db:"updated_at"`
 }
 
+// Ref is a natural-key reference to a permission within a tenant.
+//
+// Used by the role-permission junction (after Phase A.5) and the natural-key
+// store API. NamespacePath locates the permission in the namespace tree;
+// Name is the `<resource>:<action>` string that's unique per
+// (tenant_id, namespace_path).
+type Ref struct {
+	NamespacePath string
+	Name          string
+}
+
 // ListFilter contains filters for listing permissions.
 type ListFilter struct {
 	TenantID        string  `json:"tenant_id,omitempty"`

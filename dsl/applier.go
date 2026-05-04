@@ -81,9 +81,9 @@ func firstNonEmpty(a, b string) string {
 }
 
 type applier struct {
-	ctx      context.Context
-	eng      *warden.Engine
-	store    interface {
+	ctx   context.Context
+	eng   *warden.Engine
+	store interface {
 		// Roles
 		CreateRole(ctx context.Context, r *role.Role) error
 		GetRoleBySlug(ctx context.Context, tenantID, slug string) (*role.Role, error)

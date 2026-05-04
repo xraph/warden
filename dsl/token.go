@@ -75,47 +75,47 @@ const (
 	SLASH    // /  (used for absolute namespace paths in role parent refs)
 
 	// Operators.
-	ASSIGN  // =
-	APPEND  // +=
-	ARROW   // ->
-	EQ      // ==
-	NE      // !=
-	LT      // <
-	GT      // >
-	LE      // <=
-	GE      // >=
-	PLUS    // +  (also used as union operator on expressions)
-	MINUS   // -  (also unary negation)
-	AMP     // &  (also intersection on expressions)
-	REGEX   // =~
+	ASSIGN // =
+	APPEND // +=
+	ARROW  // ->
+	EQ     // ==
+	NE     // !=
+	LT     // <
+	GT     // >
+	LE     // <=
+	GE     // >=
+	PLUS   // +  (also used as union operator on expressions)
+	MINUS  // -  (also unary negation)
+	AMP    // &  (also intersection on expressions)
+	REGEX  // =~
 
 	// Keywords. Lexer picks these out of the IDENT stream.
-	WARDEN     // warden
-	CONFIG     // config
-	TENANT     // tenant
-	APP        // app
-	NAMESPACE  // namespace
-	IMPORT     // import
-	RESOURCE   // resource
-	RELATION   // relation
-	PERMISSION // permission
-	ROLE       // role
-	POLICY     // policy
-	EFFECT     // effect
-	ALLOW      // allow
-	DENY       // deny
-	ACTIONS    // actions
-	RESOURCES  // resources
-	SUBJECTS   // subjects
-	WHEN       // when
-	NEGATE     // negate
-	GRANTS     // grants
-	NAME       // name
+	WARDEN      // warden
+	CONFIG      // config
+	TENANT      // tenant
+	APP         // app
+	NAMESPACE   // namespace
+	IMPORT      // import
+	RESOURCE    // resource
+	RELATION    // relation
+	PERMISSION  // permission
+	ROLE        // role
+	POLICY      // policy
+	EFFECT      // effect
+	ALLOW       // allow
+	DENY        // deny
+	ACTIONS     // actions
+	RESOURCES   // resources
+	SUBJECTS    // subjects
+	WHEN        // when
+	NEGATE      // negate
+	GRANTS      // grants
+	NAME        // name
 	DESCRIPTION // description
-	PRIORITY   // priority
-	ACTIVE     // active
-	IS_SYSTEM  // is_system
-	IS_DEFAULT // is_default
+	PRIORITY    // priority
+	ACTIVE      // active
+	IS_SYSTEM   // is_system
+	IS_DEFAULT  // is_default
 	MAX_MEMBERS // max_members
 	METADATA    // metadata
 	OR          // or

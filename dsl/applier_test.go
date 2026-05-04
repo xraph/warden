@@ -277,4 +277,3 @@ role editor : ghost {
 		t.Errorf("got %v", err)
 	}
 }
-

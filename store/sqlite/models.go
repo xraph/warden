@@ -23,18 +23,18 @@ import (
 
 type roleModel struct {
 	grove.BaseModel `grove:"table:warden_roles"`
-	ID              string    `grove:"id,pk"`
-	TenantID        string    `grove:"tenant_id,notnull"`
-	NamespacePath   string    `grove:"namespace_path,notnull"`
-	AppID           string    `grove:"app_id,notnull"`
-	Name            string    `grove:"name,notnull"`
-	Description     string    `grove:"description"`
-	Slug            string    `grove:"slug,notnull"`
-	IsSystem        bool      `grove:"is_system,notnull"`
-	IsDefault       bool      `grove:"is_default,notnull"`
-	ParentSlug      *string   `grove:"parent_slug"`
-	MaxMembers      int       `grove:"max_members,notnull"`
-	Metadata        string    `grove:"metadata"` // JSON text
+	ID              string     `grove:"id,pk"`
+	TenantID        string     `grove:"tenant_id,notnull"`
+	NamespacePath   string     `grove:"namespace_path,notnull"`
+	AppID           string     `grove:"app_id,notnull"`
+	Name            string     `grove:"name,notnull"`
+	Description     string     `grove:"description"`
+	Slug            string     `grove:"slug,notnull"`
+	IsSystem        bool       `grove:"is_system,notnull"`
+	IsDefault       bool       `grove:"is_default,notnull"`
+	ParentSlug      *string    `grove:"parent_slug"`
+	MaxMembers      int        `grove:"max_members,notnull"`
+	Metadata        string     `grove:"metadata"` // JSON text
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
@@ -101,16 +101,16 @@ func roleFromModel(m *roleModel) (*role.Role, error) {
 
 type permissionModel struct {
 	grove.BaseModel `grove:"table:warden_permissions"`
-	ID              string    `grove:"id,pk"`
-	TenantID        string    `grove:"tenant_id,notnull"`
-	NamespacePath   string    `grove:"namespace_path,notnull"`
-	AppID           string    `grove:"app_id,notnull"`
-	Name            string    `grove:"name,notnull"`
-	Description     string    `grove:"description"`
-	Resource        string    `grove:"resource,notnull"`
-	Action          string    `grove:"action,notnull"`
-	IsSystem        bool      `grove:"is_system,notnull"`
-	Metadata        string    `grove:"metadata"` // JSON text
+	ID              string     `grove:"id,pk"`
+	TenantID        string     `grove:"tenant_id,notnull"`
+	NamespacePath   string     `grove:"namespace_path,notnull"`
+	AppID           string     `grove:"app_id,notnull"`
+	Name            string     `grove:"name,notnull"`
+	Description     string     `grove:"description"`
+	Resource        string     `grove:"resource,notnull"`
+	Action          string     `grove:"action,notnull"`
+	IsSystem        bool       `grove:"is_system,notnull"`
+	Metadata        string     `grove:"metadata"` // JSON text
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
@@ -176,15 +176,15 @@ type rolePermissionModel struct {
 
 type assignmentModel struct {
 	grove.BaseModel `grove:"table:warden_assignments"`
-	ID              string     `grove:"id,pk"`
-	TenantID        string     `grove:"tenant_id,notnull"`
-	NamespacePath   string     `grove:"namespace_path,notnull"`
-	AppID           string     `grove:"app_id,notnull"`
-	RoleID          string     `grove:"role_id,notnull"`
-	SubjectKind     string     `grove:"subject_kind,notnull"`
-	SubjectID       string     `grove:"subject_id,notnull"`
-	ResourceType    string     `grove:"resource_type"`
-	ResourceID      string     `grove:"resource_id"`
+	ID              string      `grove:"id,pk"`
+	TenantID        string      `grove:"tenant_id,notnull"`
+	NamespacePath   string      `grove:"namespace_path,notnull"`
+	AppID           string      `grove:"app_id,notnull"`
+	RoleID          string      `grove:"role_id,notnull"`
+	SubjectKind     string      `grove:"subject_kind,notnull"`
+	SubjectID       string      `grove:"subject_id,notnull"`
+	ResourceType    string      `grove:"resource_type"`
+	ResourceID      string      `grove:"resource_id"`
 	ExpiresAt       *sqliteTime `grove:"expires_at"`
 	GrantedBy       string      `grove:"granted_by"`
 	Metadata        string      `grove:"metadata"` // JSON text
@@ -253,17 +253,17 @@ func assignmentFromModel(m *assignmentModel) (*assignment.Assignment, error) {
 
 type relationModel struct {
 	grove.BaseModel `grove:"table:warden_relations"`
-	ID              string    `grove:"id,pk"`
-	TenantID        string    `grove:"tenant_id,notnull"`
-	NamespacePath   string    `grove:"namespace_path,notnull"`
-	AppID           string    `grove:"app_id,notnull"`
-	ObjectType      string    `grove:"object_type,notnull"`
-	ObjectID        string    `grove:"object_id,notnull"`
-	Relation        string    `grove:"relation,notnull"`
-	SubjectType     string    `grove:"subject_type,notnull"`
-	SubjectID       string    `grove:"subject_id,notnull"`
-	SubjectRelation string    `grove:"subject_relation"`
-	Metadata        string    `grove:"metadata"` // JSON text
+	ID              string     `grove:"id,pk"`
+	TenantID        string     `grove:"tenant_id,notnull"`
+	NamespacePath   string     `grove:"namespace_path,notnull"`
+	AppID           string     `grove:"app_id,notnull"`
+	ObjectType      string     `grove:"object_type,notnull"`
+	ObjectID        string     `grove:"object_id,notnull"`
+	Relation        string     `grove:"relation,notnull"`
+	SubjectType     string     `grove:"subject_type,notnull"`
+	SubjectID       string     `grove:"subject_id,notnull"`
+	SubjectRelation string     `grove:"subject_relation"`
+	Metadata        string     `grove:"metadata"` // JSON text
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 }
 
@@ -318,21 +318,21 @@ func relationFromModel(m *relationModel) (*relation.Tuple, error) {
 
 type policyModel struct {
 	grove.BaseModel `grove:"table:warden_policies"`
-	ID              string    `grove:"id,pk"`
-	TenantID        string    `grove:"tenant_id,notnull"`
-	NamespacePath   string    `grove:"namespace_path,notnull"`
-	AppID           string    `grove:"app_id,notnull"`
-	Name            string    `grove:"name,notnull"`
-	Description     string    `grove:"description"`
-	Effect          string    `grove:"effect,notnull"`
-	Priority        int       `grove:"priority,notnull"`
-	IsActive        bool      `grove:"is_active,notnull"`
-	Version         int       `grove:"version,notnull"`
-	Subjects        string    `grove:"subjects"`   // JSON text
-	Actions         string    `grove:"actions"`    // JSON text
-	Resources       string    `grove:"resources"`  // JSON text
-	Conditions      string    `grove:"conditions"` // JSON text
-	Metadata        string    `grove:"metadata"`   // JSON text
+	ID              string     `grove:"id,pk"`
+	TenantID        string     `grove:"tenant_id,notnull"`
+	NamespacePath   string     `grove:"namespace_path,notnull"`
+	AppID           string     `grove:"app_id,notnull"`
+	Name            string     `grove:"name,notnull"`
+	Description     string     `grove:"description"`
+	Effect          string     `grove:"effect,notnull"`
+	Priority        int        `grove:"priority,notnull"`
+	IsActive        bool       `grove:"is_active,notnull"`
+	Version         int        `grove:"version,notnull"`
+	Subjects        string     `grove:"subjects"`   // JSON text
+	Actions         string     `grove:"actions"`    // JSON text
+	Resources       string     `grove:"resources"`  // JSON text
+	Conditions      string     `grove:"conditions"` // JSON text
+	Metadata        string     `grove:"metadata"`   // JSON text
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
@@ -364,18 +364,18 @@ func policyToModel(p *policy.Policy) (*policyModel, error) {
 		NamespacePath: p.NamespacePath,
 		AppID:         p.AppID,
 		Name:          p.Name,
-		Description: p.Description,
-		Effect:      string(p.Effect),
-		Priority:    p.Priority,
-		IsActive:    p.IsActive,
-		Version:     p.Version,
-		Subjects:    string(subjects),
-		Actions:     string(actions),
-		Resources:   string(resources),
-		Conditions:  string(conditions),
-		Metadata:    string(metadata),
-		CreatedAt:   sqliteTime(p.CreatedAt),
-		UpdatedAt:   sqliteTime(p.UpdatedAt),
+		Description:   p.Description,
+		Effect:        string(p.Effect),
+		Priority:      p.Priority,
+		IsActive:      p.IsActive,
+		Version:       p.Version,
+		Subjects:      string(subjects),
+		Actions:       string(actions),
+		Resources:     string(resources),
+		Conditions:    string(conditions),
+		Metadata:      string(metadata),
+		CreatedAt:     sqliteTime(p.CreatedAt),
+		UpdatedAt:     sqliteTime(p.UpdatedAt),
 	}, nil
 }
 
@@ -418,18 +418,18 @@ func policyFromModel(m *policyModel) (*policy.Policy, error) {
 		NamespacePath: m.NamespacePath,
 		AppID:         m.AppID,
 		Name:          m.Name,
-		Description: m.Description,
-		Effect:      policy.Effect(m.Effect),
-		Priority:    m.Priority,
-		IsActive:    m.IsActive,
-		Version:     m.Version,
-		Subjects:    subjects,
-		Actions:     actions,
-		Resources:   resources,
-		Conditions:  conditions,
-		Metadata:    metadata,
-		CreatedAt:   time.Time(m.CreatedAt),
-		UpdatedAt:   time.Time(m.UpdatedAt),
+		Description:   m.Description,
+		Effect:        policy.Effect(m.Effect),
+		Priority:      m.Priority,
+		IsActive:      m.IsActive,
+		Version:       m.Version,
+		Subjects:      subjects,
+		Actions:       actions,
+		Resources:     resources,
+		Conditions:    conditions,
+		Metadata:      metadata,
+		CreatedAt:     time.Time(m.CreatedAt),
+		UpdatedAt:     time.Time(m.UpdatedAt),
 	}, nil
 }
 
@@ -439,15 +439,15 @@ func policyFromModel(m *policyModel) (*policy.Policy, error) {
 
 type resourceTypeModel struct {
 	grove.BaseModel `grove:"table:warden_resource_types"`
-	ID              string    `grove:"id,pk"`
-	TenantID        string    `grove:"tenant_id,notnull"`
-	NamespacePath   string    `grove:"namespace_path,notnull"`
-	AppID           string    `grove:"app_id,notnull"`
-	Name            string    `grove:"name,notnull"`
-	Description     string    `grove:"description"`
-	Relations       string    `grove:"relations"`   // JSON text
-	Permissions     string    `grove:"permissions"` // JSON text
-	Metadata        string    `grove:"metadata"`    // JSON text
+	ID              string     `grove:"id,pk"`
+	TenantID        string     `grove:"tenant_id,notnull"`
+	NamespacePath   string     `grove:"namespace_path,notnull"`
+	AppID           string     `grove:"app_id,notnull"`
+	Name            string     `grove:"name,notnull"`
+	Description     string     `grove:"description"`
+	Relations       string     `grove:"relations"`   // JSON text
+	Permissions     string     `grove:"permissions"` // JSON text
+	Metadata        string     `grove:"metadata"`    // JSON text
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
@@ -471,12 +471,12 @@ func resourceTypeToModel(rt *resourcetype.ResourceType) (*resourceTypeModel, err
 		NamespacePath: rt.NamespacePath,
 		AppID:         rt.AppID,
 		Name:          rt.Name,
-		Description: rt.Description,
-		Relations:   string(relations),
-		Permissions: string(permissions),
-		Metadata:    string(metadata),
-		CreatedAt:   sqliteTime(rt.CreatedAt),
-		UpdatedAt:   sqliteTime(rt.UpdatedAt),
+		Description:   rt.Description,
+		Relations:     string(relations),
+		Permissions:   string(permissions),
+		Metadata:      string(metadata),
+		CreatedAt:     sqliteTime(rt.CreatedAt),
+		UpdatedAt:     sqliteTime(rt.UpdatedAt),
 	}, nil
 }
 
@@ -507,12 +507,12 @@ func resourceTypeFromModel(m *resourceTypeModel) (*resourcetype.ResourceType, er
 		NamespacePath: m.NamespacePath,
 		AppID:         m.AppID,
 		Name:          m.Name,
-		Description: m.Description,
-		Relations:   relations,
-		Permissions: permissions,
-		Metadata:    metadata,
-		CreatedAt:   time.Time(m.CreatedAt),
-		UpdatedAt:   time.Time(m.UpdatedAt),
+		Description:   m.Description,
+		Relations:     relations,
+		Permissions:   permissions,
+		Metadata:      metadata,
+		CreatedAt:     time.Time(m.CreatedAt),
+		UpdatedAt:     time.Time(m.UpdatedAt),
 	}, nil
 }
 
@@ -522,20 +522,20 @@ func resourceTypeFromModel(m *resourceTypeModel) (*resourcetype.ResourceType, er
 
 type checkLogModel struct {
 	grove.BaseModel `grove:"table:warden_check_logs"`
-	ID              string    `grove:"id,pk"`
-	TenantID        string    `grove:"tenant_id,notnull"`
-	NamespacePath   string    `grove:"namespace_path,notnull"`
-	AppID           string    `grove:"app_id,notnull"`
-	SubjectKind     string    `grove:"subject_kind,notnull"`
-	SubjectID       string    `grove:"subject_id,notnull"`
-	Action          string    `grove:"action,notnull"`
-	ResourceType    string    `grove:"resource_type,notnull"`
-	ResourceID      string    `grove:"resource_id,notnull"`
-	Decision        string    `grove:"decision,notnull"`
-	Reason          string    `grove:"reason"`
-	EvalTimeNs      int64     `grove:"eval_time_ns,notnull"`
-	RequestIP       string    `grove:"request_ip"`
-	Metadata        string    `grove:"metadata"` // JSON text
+	ID              string     `grove:"id,pk"`
+	TenantID        string     `grove:"tenant_id,notnull"`
+	NamespacePath   string     `grove:"namespace_path,notnull"`
+	AppID           string     `grove:"app_id,notnull"`
+	SubjectKind     string     `grove:"subject_kind,notnull"`
+	SubjectID       string     `grove:"subject_id,notnull"`
+	Action          string     `grove:"action,notnull"`
+	ResourceType    string     `grove:"resource_type,notnull"`
+	ResourceID      string     `grove:"resource_id,notnull"`
+	Decision        string     `grove:"decision,notnull"`
+	Reason          string     `grove:"reason"`
+	EvalTimeNs      int64      `grove:"eval_time_ns,notnull"`
+	RequestIP       string     `grove:"request_ip"`
+	Metadata        string     `grove:"metadata"` // JSON text
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 }
 
@@ -550,16 +550,16 @@ func checkLogToModel(e *checklog.Entry) (*checkLogModel, error) {
 		NamespacePath: e.NamespacePath,
 		AppID:         e.AppID,
 		SubjectKind:   e.SubjectKind,
-		SubjectID:    e.SubjectID,
-		Action:       e.Action,
-		ResourceType: e.ResourceType,
-		ResourceID:   e.ResourceID,
-		Decision:     e.Decision,
-		Reason:       e.Reason,
-		EvalTimeNs:   e.EvalTimeNs,
-		RequestIP:    e.RequestIP,
-		Metadata:     string(metadata),
-		CreatedAt:    sqliteTime(e.CreatedAt),
+		SubjectID:     e.SubjectID,
+		Action:        e.Action,
+		ResourceType:  e.ResourceType,
+		ResourceID:    e.ResourceID,
+		Decision:      e.Decision,
+		Reason:        e.Reason,
+		EvalTimeNs:    e.EvalTimeNs,
+		RequestIP:     e.RequestIP,
+		Metadata:      string(metadata),
+		CreatedAt:     sqliteTime(e.CreatedAt),
 	}, nil
 }
 
@@ -577,15 +577,15 @@ func checkLogFromModel(m *checkLogModel) (*checklog.Entry, error) {
 		NamespacePath: m.NamespacePath,
 		AppID:         m.AppID,
 		SubjectKind:   m.SubjectKind,
-		SubjectID:    m.SubjectID,
-		Action:       m.Action,
-		ResourceType: m.ResourceType,
-		ResourceID:   m.ResourceID,
-		Decision:     m.Decision,
-		Reason:       m.Reason,
-		EvalTimeNs:   m.EvalTimeNs,
-		RequestIP:    m.RequestIP,
-		Metadata:     metadata,
-		CreatedAt:    time.Time(m.CreatedAt),
+		SubjectID:     m.SubjectID,
+		Action:        m.Action,
+		ResourceType:  m.ResourceType,
+		ResourceID:    m.ResourceID,
+		Decision:      m.Decision,
+		Reason:        m.Reason,
+		EvalTimeNs:    m.EvalTimeNs,
+		RequestIP:     m.RequestIP,
+		Metadata:      metadata,
+		CreatedAt:     time.Time(m.CreatedAt),
 	}, nil
 }
