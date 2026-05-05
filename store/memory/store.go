@@ -17,6 +17,7 @@ import (
 	"github.com/xraph/warden/relation"
 	"github.com/xraph/warden/resourcetype"
 	"github.com/xraph/warden/role"
+	"github.com/xraph/warden/wardenerr"
 )
 
 // Compile-time interface checks.
@@ -74,6 +75,14 @@ func (s *Store) Close() error { return nil }
 func (s *Store) CreateRole(_ context.Context, r *role.Role) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.roles {
+		if existing.TenantID == r.TenantID &&
+			existing.NamespacePath == r.NamespacePath &&
+			existing.Slug == r.Slug {
+			return fmt.Errorf("role %q in tenant %q ns %q: %w",
+				r.Slug, r.TenantID, r.NamespacePath, wardenerr.ErrDuplicateRole)
+		}
+	}
 	s.roles[r.ID.String()] = copyRole(r)
 	return nil
 }
