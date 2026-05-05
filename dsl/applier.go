@@ -2,6 +2,7 @@ package dsl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -170,7 +171,7 @@ func (a *applier) applyResourceTypes(prog *Program) error {
 			// ID is auto-assigned by the store on CreateResourceType.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ resource_type/%s/%s", rt.NamespacePath, rt.Name))
 			if !a.dryRun {
-				if err := a.store.CreateResourceType(a.ctx, desired); err != nil {
+				if err := a.store.CreateResourceType(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create resource type %s: %w", rt.Name, err)
 				}
 			}
@@ -291,7 +292,7 @@ func (a *applier) applyPermissions(prog *Program) error {
 			// ID is auto-assigned by the store on CreatePermission.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ permission/%s/%s", p.NamespacePath, p.Name))
 			if !a.dryRun {
-				if err := a.store.CreatePermission(a.ctx, desired); err != nil {
+				if err := a.store.CreatePermission(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create permission %s: %w", p.Name, err)
 				}
 			}
@@ -365,7 +366,7 @@ func (a *applier) applyRoles(prog *Program) error {
 			// ID is auto-assigned by the store on CreateRole.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ role/%s/%s", r.NamespacePath, r.Slug))
 			if !a.dryRun {
-				if err := a.store.CreateRole(a.ctx, desired); err != nil {
+				if err := a.store.CreateRole(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create role %s: %w", r.Slug, err)
 				}
 			}
@@ -533,7 +534,7 @@ func (a *applier) applyPolicies(prog *Program) error {
 			// ID is auto-assigned by the store on CreatePolicy.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ policy/%s/%s", p.NamespacePath, p.Name))
 			if !a.dryRun {
-				if err := a.store.CreatePolicy(a.ctx, desired); err != nil {
+				if err := a.store.CreatePolicy(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create policy %s: %w", p.Name, err)
 				}
 			}
