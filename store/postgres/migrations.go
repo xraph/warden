@@ -356,5 +356,72 @@ CREATE INDEX IF NOT EXISTS idx_warden_clogs_created ON warden_check_logs (create
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "namespace_scoped_uniqueness",
+			Version: "20260201000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+-- warden_roles: drop (tenant_id, slug); add (tenant_id, namespace_path, slug).
+-- The old constraint was created without an explicit name, so its auto-name
+-- follows Postgres's default <table>_<col>_..._<col>_key pattern.
+ALTER TABLE warden_roles
+    DROP CONSTRAINT IF EXISTS warden_roles_tenant_id_slug_key;
+ALTER TABLE warden_roles
+    ADD CONSTRAINT warden_roles_scope_slug_key
+    UNIQUE (tenant_id, namespace_path, slug);
+
+-- warden_permissions: drop (tenant_id, name); add (tenant_id, namespace_path, name).
+ALTER TABLE warden_permissions
+    DROP CONSTRAINT IF EXISTS warden_permissions_tenant_id_name_key;
+ALTER TABLE warden_permissions
+    ADD CONSTRAINT warden_permissions_scope_name_key
+    UNIQUE (tenant_id, namespace_path, name);
+
+-- warden_policies: drop (tenant_id, name); add (tenant_id, namespace_path, name).
+ALTER TABLE warden_policies
+    DROP CONSTRAINT IF EXISTS warden_policies_tenant_id_name_key;
+ALTER TABLE warden_policies
+    ADD CONSTRAINT warden_policies_scope_name_key
+    UNIQUE (tenant_id, namespace_path, name);
+
+-- warden_resource_types: drop (tenant_id, name); add (tenant_id, namespace_path, name).
+ALTER TABLE warden_resource_types
+    DROP CONSTRAINT IF EXISTS warden_resource_types_tenant_id_name_key;
+ALTER TABLE warden_resource_types
+    ADD CONSTRAINT warden_resource_types_scope_name_key
+    UNIQUE (tenant_id, namespace_path, name);
+
+-- warden_assignments: drop the old (tenant_id, role_id, subject_kind, subject_id,
+-- resource_type, resource_id) key; add namespace_path to it. Postgres truncates
+-- auto-names to 63 bytes, hence the slightly cropped default name on the DROP.
+ALTER TABLE warden_assignments
+    DROP CONSTRAINT IF EXISTS warden_assignments_tenant_id_role_id_subject_kind_subject_id_resou_key;
+ALTER TABLE warden_assignments
+    ADD CONSTRAINT warden_assignments_scope_key
+    UNIQUE (tenant_id, namespace_path, role_id, subject_kind, subject_id, resource_type, resource_id);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_roles            DROP CONSTRAINT IF EXISTS warden_roles_scope_slug_key;
+ALTER TABLE warden_roles            ADD  CONSTRAINT warden_roles_tenant_id_slug_key UNIQUE (tenant_id, slug);
+
+ALTER TABLE warden_permissions      DROP CONSTRAINT IF EXISTS warden_permissions_scope_name_key;
+ALTER TABLE warden_permissions      ADD  CONSTRAINT warden_permissions_tenant_id_name_key UNIQUE (tenant_id, name);
+
+ALTER TABLE warden_policies         DROP CONSTRAINT IF EXISTS warden_policies_scope_name_key;
+ALTER TABLE warden_policies         ADD  CONSTRAINT warden_policies_tenant_id_name_key UNIQUE (tenant_id, name);
+
+ALTER TABLE warden_resource_types   DROP CONSTRAINT IF EXISTS warden_resource_types_scope_name_key;
+ALTER TABLE warden_resource_types   ADD  CONSTRAINT warden_resource_types_tenant_id_name_key UNIQUE (tenant_id, name);
+
+ALTER TABLE warden_assignments      DROP CONSTRAINT IF EXISTS warden_assignments_scope_key;
+ALTER TABLE warden_assignments      ADD  CONSTRAINT warden_assignments_tenant_id_role_id_subject_kind_subject_id_resou_key
+    UNIQUE (tenant_id, role_id, subject_kind, subject_id, resource_type, resource_id);
+`)
+				return err
+			},
+		},
 	)
 }
