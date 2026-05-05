@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/xraph/grove"
@@ -20,6 +21,7 @@ import (
 	"github.com/xraph/warden/resourcetype"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store"
+	"github.com/xraph/warden/wardenerr"
 )
 
 // Compile-time interface check.
@@ -70,6 +72,18 @@ func isNoRows(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
 }
 
+// isUniqueViolation reports whether err is a sqlite UNIQUE constraint
+// violation. Sqlite reports these via error code 19 (SQLITE_CONSTRAINT)
+// with the canonical message text "UNIQUE constraint failed". The
+// grove driver wraps the underlying sqlite error, so we string-match
+// rather than type-assert.
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
 // ──────────────────────────────────────────────────
 // Role operations
 // ──────────────────────────────────────────────────
@@ -90,6 +104,10 @@ func (s *Store) CreateRole(ctx context.Context, r *role.Role) error {
 		return fmt.Errorf("warden: create role: %w", err)
 	}
 	if _, err := s.sdb.NewInsert(m).Exec(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("role %q in tenant %q ns %q: %w",
+				r.Slug, r.TenantID, r.NamespacePath, wardenerr.ErrDuplicateRole)
+		}
 		return fmt.Errorf("warden: create role: %w", err)
 	}
 	return nil
@@ -362,6 +380,10 @@ func (s *Store) CreatePermission(ctx context.Context, p *permission.Permission) 
 		return fmt.Errorf("warden: create permission: %w", err)
 	}
 	if _, err := s.sdb.NewInsert(m).Exec(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("permission %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePermission)
+		}
 		return fmt.Errorf("warden: create permission: %w", err)
 	}
 	return nil
@@ -552,6 +574,11 @@ func (s *Store) CreateAssignment(ctx context.Context, a *assignment.Assignment) 
 		return fmt.Errorf("warden: create assignment: %w", err)
 	}
 	if _, err := s.sdb.NewInsert(m).Exec(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("assignment role=%s subject=%s:%s in tenant %q ns %q: %w",
+				a.RoleID, a.SubjectKind, a.SubjectID, a.TenantID, a.NamespacePath,
+				wardenerr.ErrDuplicateAssignment)
+		}
 		return fmt.Errorf("warden: create assignment: %w", err)
 	}
 	return nil
@@ -782,6 +809,11 @@ func (s *Store) CreateRelation(ctx context.Context, t *relation.Tuple) error {
 		return fmt.Errorf("warden: create relation: %w", err)
 	}
 	if _, err := s.sdb.NewInsert(m).Exec(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("relation %s:%s#%s@%s:%s in tenant %q: %w",
+				t.ObjectType, t.ObjectID, t.Relation, t.SubjectType, t.SubjectID,
+				t.TenantID, wardenerr.ErrDuplicateRelation)
+		}
 		return fmt.Errorf("warden: create relation: %w", err)
 	}
 	return nil
@@ -1007,6 +1039,10 @@ func (s *Store) CreatePolicy(ctx context.Context, p *policy.Policy) error {
 		return fmt.Errorf("warden: create policy: %w", err)
 	}
 	if _, err := s.sdb.NewInsert(m).Exec(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+		}
 		return fmt.Errorf("warden: create policy: %w", err)
 	}
 	return nil
@@ -1193,6 +1229,10 @@ func (s *Store) CreateResourceType(ctx context.Context, rt *resourcetype.Resourc
 		return fmt.Errorf("warden: create resource type: %w", err)
 	}
 	if _, err := s.sdb.NewInsert(m).Exec(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("resource type %q in tenant %q ns %q: %w",
+				rt.Name, rt.TenantID, rt.NamespacePath, wardenerr.ErrDuplicateResourceType)
+		}
 		return fmt.Errorf("warden: create resource type: %w", err)
 	}
 	return nil

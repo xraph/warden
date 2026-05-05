@@ -475,5 +475,221 @@ CREATE INDEX IF NOT EXISTS idx_warden_clogs_created ON warden_check_logs (create
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "namespace_scoped_uniqueness",
+			Version: "20260201000001",
+			// SQLite cannot drop UNIQUE constraints in place; recreate each
+			// affected table with the new (tenant_id, namespace_path, ...) key.
+			// Only the constraint and the FK widening differ from the original
+			// schema — column lists and types stay the same.
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+-- ─── warden_roles (drop self-FK first; widen unique; widen FK) ───
+DROP INDEX IF EXISTS idx_warden_roles_tenant;
+DROP INDEX IF EXISTS idx_warden_roles_parent_slug;
+DROP INDEX IF EXISTS idx_warden_roles_system;
+DROP INDEX IF EXISTS idx_warden_roles_ns;
+
+CREATE TABLE warden_roles_new (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
+    namespace_path  TEXT NOT NULL DEFAULT '',
+    app_id          TEXT NOT NULL DEFAULT '',
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    slug            TEXT NOT NULL,
+    is_system       INTEGER NOT NULL DEFAULT 0,
+    is_default      INTEGER NOT NULL DEFAULT 0,
+    parent_slug     TEXT,
+    max_members     INTEGER NOT NULL DEFAULT 0,
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(tenant_id, namespace_path, slug),
+    FOREIGN KEY (tenant_id, namespace_path, parent_slug)
+        REFERENCES warden_roles_new(tenant_id, namespace_path, slug)
+        ON DELETE SET NULL ON UPDATE CASCADE
+);
+INSERT INTO warden_roles_new (
+    id, tenant_id, namespace_path, app_id, name, description, slug,
+    is_system, is_default, parent_slug, max_members, metadata,
+    created_at, updated_at
+) SELECT
+    id, tenant_id, namespace_path, app_id, name, description, slug,
+    is_system, is_default, parent_slug, max_members, metadata,
+    created_at, updated_at
+FROM warden_roles;
+DROP TABLE warden_roles;
+ALTER TABLE warden_roles_new RENAME TO warden_roles;
+CREATE INDEX IF NOT EXISTS idx_warden_roles_tenant      ON warden_roles (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_warden_roles_parent_slug ON warden_roles (tenant_id, parent_slug) WHERE parent_slug IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_warden_roles_system      ON warden_roles (tenant_id, is_system);
+CREATE INDEX IF NOT EXISTS idx_warden_roles_ns          ON warden_roles (tenant_id, namespace_path);
+
+-- ─── warden_permissions ───
+DROP INDEX IF EXISTS idx_warden_permissions_tenant;
+DROP INDEX IF EXISTS idx_warden_permissions_resource;
+DROP INDEX IF EXISTS idx_warden_perms_ns;
+
+CREATE TABLE warden_permissions_new (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
+    namespace_path  TEXT NOT NULL DEFAULT '',
+    app_id          TEXT NOT NULL DEFAULT '',
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    resource        TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    is_system       INTEGER NOT NULL DEFAULT 0,
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(tenant_id, namespace_path, name)
+);
+INSERT INTO warden_permissions_new (
+    id, tenant_id, namespace_path, app_id, name, description, resource,
+    action, is_system, metadata, created_at, updated_at
+) SELECT
+    id, tenant_id, namespace_path, app_id, name, description, resource,
+    action, is_system, metadata, created_at, updated_at
+FROM warden_permissions;
+DROP TABLE warden_permissions;
+ALTER TABLE warden_permissions_new RENAME TO warden_permissions;
+CREATE INDEX IF NOT EXISTS idx_warden_permissions_tenant   ON warden_permissions (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_warden_permissions_resource ON warden_permissions (tenant_id, resource, action);
+CREATE INDEX IF NOT EXISTS idx_warden_perms_ns             ON warden_permissions (tenant_id, namespace_path);
+
+-- ─── warden_policies ───
+DROP INDEX IF EXISTS idx_warden_policies_tenant;
+DROP INDEX IF EXISTS idx_warden_policies_active;
+DROP INDEX IF EXISTS idx_warden_policies_ns;
+DROP INDEX IF EXISTS idx_warden_policies_window;
+
+CREATE TABLE warden_policies_new (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
+    namespace_path  TEXT NOT NULL DEFAULT '',
+    app_id          TEXT NOT NULL DEFAULT '',
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    effect          TEXT NOT NULL DEFAULT 'allow',
+    priority        INTEGER NOT NULL DEFAULT 0,
+    is_active       INTEGER NOT NULL DEFAULT 1,
+    version         INTEGER NOT NULL DEFAULT 1,
+    subjects        TEXT NOT NULL DEFAULT '[]',
+    actions         TEXT NOT NULL DEFAULT '[]',
+    resources       TEXT NOT NULL DEFAULT '[]',
+    conditions      TEXT NOT NULL DEFAULT '[]',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    not_before      TEXT,
+    not_after       TEXT,
+    obligations     TEXT NOT NULL DEFAULT '[]',
+
+    UNIQUE(tenant_id, namespace_path, name)
+);
+INSERT INTO warden_policies_new (
+    id, tenant_id, namespace_path, app_id, name, description, effect,
+    priority, is_active, version, subjects, actions, resources, conditions,
+    metadata, created_at, updated_at, not_before, not_after, obligations
+) SELECT
+    id, tenant_id, namespace_path, app_id, name, description, effect,
+    priority, is_active, version, subjects, actions, resources, conditions,
+    metadata, created_at, updated_at, not_before, not_after, obligations
+FROM warden_policies;
+DROP TABLE warden_policies;
+ALTER TABLE warden_policies_new RENAME TO warden_policies;
+CREATE INDEX IF NOT EXISTS idx_warden_policies_tenant ON warden_policies (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_warden_policies_active ON warden_policies (tenant_id, is_active, priority);
+CREATE INDEX IF NOT EXISTS idx_warden_policies_ns     ON warden_policies (tenant_id, namespace_path);
+CREATE INDEX IF NOT EXISTS idx_warden_policies_window
+    ON warden_policies (tenant_id, namespace_path)
+    WHERE not_before IS NOT NULL OR not_after IS NOT NULL;
+
+-- ─── warden_resource_types ───
+DROP INDEX IF EXISTS idx_warden_rtypes_tenant;
+DROP INDEX IF EXISTS idx_warden_rtypes_ns;
+
+CREATE TABLE warden_resource_types_new (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
+    namespace_path  TEXT NOT NULL DEFAULT '',
+    app_id          TEXT NOT NULL DEFAULT '',
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    relations       TEXT NOT NULL DEFAULT '[]',
+    permissions     TEXT NOT NULL DEFAULT '[]',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(tenant_id, namespace_path, name)
+);
+INSERT INTO warden_resource_types_new (
+    id, tenant_id, namespace_path, app_id, name, description, relations,
+    permissions, metadata, created_at, updated_at
+) SELECT
+    id, tenant_id, namespace_path, app_id, name, description, relations,
+    permissions, metadata, created_at, updated_at
+FROM warden_resource_types;
+DROP TABLE warden_resource_types;
+ALTER TABLE warden_resource_types_new RENAME TO warden_resource_types;
+CREATE INDEX IF NOT EXISTS idx_warden_rtypes_tenant ON warden_resource_types (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_warden_rtypes_ns     ON warden_resource_types (tenant_id, namespace_path);
+
+-- ─── warden_assignments ───
+DROP INDEX IF EXISTS idx_warden_assign_tenant;
+DROP INDEX IF EXISTS idx_warden_assign_subject;
+DROP INDEX IF EXISTS idx_warden_assign_role;
+DROP INDEX IF EXISTS idx_warden_assign_resource;
+DROP INDEX IF EXISTS idx_warden_assign_expires;
+DROP INDEX IF EXISTS idx_warden_assign_ns;
+
+CREATE TABLE warden_assignments_new (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
+    namespace_path  TEXT NOT NULL DEFAULT '',
+    app_id          TEXT NOT NULL DEFAULT '',
+    role_id         TEXT NOT NULL REFERENCES warden_roles(id) ON DELETE CASCADE,
+    subject_kind    TEXT NOT NULL,
+    subject_id      TEXT NOT NULL,
+    resource_type   TEXT NOT NULL DEFAULT '',
+    resource_id     TEXT NOT NULL DEFAULT '',
+    expires_at      TEXT,
+    granted_by      TEXT NOT NULL DEFAULT '',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(tenant_id, namespace_path, role_id, subject_kind, subject_id, resource_type, resource_id)
+);
+INSERT INTO warden_assignments_new (
+    id, tenant_id, namespace_path, app_id, role_id, subject_kind, subject_id,
+    resource_type, resource_id, expires_at, granted_by, metadata, created_at
+) SELECT
+    id, tenant_id, namespace_path, app_id, role_id, subject_kind, subject_id,
+    resource_type, resource_id, expires_at, granted_by, metadata, created_at
+FROM warden_assignments;
+DROP TABLE warden_assignments;
+ALTER TABLE warden_assignments_new RENAME TO warden_assignments;
+CREATE INDEX IF NOT EXISTS idx_warden_assign_tenant   ON warden_assignments (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_warden_assign_subject  ON warden_assignments (tenant_id, subject_kind, subject_id);
+CREATE INDEX IF NOT EXISTS idx_warden_assign_role     ON warden_assignments (role_id);
+CREATE INDEX IF NOT EXISTS idx_warden_assign_resource ON warden_assignments (tenant_id, subject_kind, subject_id, resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_warden_assign_expires  ON warden_assignments (expires_at);
+CREATE INDEX IF NOT EXISTS idx_warden_assign_ns       ON warden_assignments (tenant_id, namespace_path, subject_kind, subject_id);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				// SQLite down for table-recreate migrations is intentionally
+				// not implemented — restore from a snapshot if you need to
+				// roll back. The forward migration is idempotent if no rows
+				// share a (tenant, ns, key) triple.
+				return nil
+			},
+		},
 	)
 }
