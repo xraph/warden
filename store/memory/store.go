@@ -317,15 +317,15 @@ func (s *Store) GetPermission(_ context.Context, permID id.PermissionID) (*permi
 	return copyPermission(p), nil
 }
 
-func (s *Store) GetPermissionByName(_ context.Context, tenantID, name string) (*permission.Permission, error) {
+func (s *Store) GetPermissionByName(_ context.Context, tenantID, namespacePath, name string) (*permission.Permission, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, p := range s.permissions {
-		if p.TenantID == tenantID && p.Name == name {
+		if p.TenantID == tenantID && p.NamespacePath == namespacePath && p.Name == name {
 			return copyPermission(p), nil
 		}
 	}
-	return nil, fmt.Errorf("permission %q: %w", name, errNotFound)
+	return nil, fmt.Errorf("permission %q in ns %q: %w", name, namespacePath, errNotFound)
 }
 
 func (s *Store) UpdatePermission(_ context.Context, p *permission.Permission) error {
@@ -820,15 +820,15 @@ func (s *Store) GetPolicy(_ context.Context, polID id.PolicyID) (*policy.Policy,
 	return copyPolicy(p), nil
 }
 
-func (s *Store) GetPolicyByName(_ context.Context, tenantID, name string) (*policy.Policy, error) {
+func (s *Store) GetPolicyByName(_ context.Context, tenantID, namespacePath, name string) (*policy.Policy, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, p := range s.policies {
-		if p.TenantID == tenantID && p.Name == name {
+		if p.TenantID == tenantID && p.NamespacePath == namespacePath && p.Name == name {
 			return copyPolicy(p), nil
 		}
 	}
-	return nil, fmt.Errorf("policy %q: %w", name, errNotFound)
+	return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, errNotFound)
 }
 
 func (s *Store) UpdatePolicy(_ context.Context, p *policy.Policy) error {
@@ -958,15 +958,15 @@ func (s *Store) GetResourceType(_ context.Context, rtID id.ResourceTypeID) (*res
 	return copyResourceType(rt), nil
 }
 
-func (s *Store) GetResourceTypeByName(_ context.Context, tenantID, name string) (*resourcetype.ResourceType, error) {
+func (s *Store) GetResourceTypeByName(_ context.Context, tenantID, namespacePath, name string) (*resourcetype.ResourceType, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, rt := range s.resourceTypes {
-		if rt.TenantID == tenantID && rt.Name == name {
+		if rt.TenantID == tenantID && rt.NamespacePath == namespacePath && rt.Name == name {
 			return copyResourceType(rt), nil
 		}
 	}
-	return nil, fmt.Errorf("resource type %q: %w", name, errNotFound)
+	return nil, fmt.Errorf("resource type %q in ns %q: %w", name, namespacePath, errNotFound)
 }
 
 func (s *Store) UpdateResourceType(_ context.Context, rt *resourcetype.ResourceType) error {

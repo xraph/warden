@@ -14,8 +14,9 @@ type Store interface {
 	// GetPolicy retrieves a policy by ID.
 	GetPolicy(ctx context.Context, polID id.PolicyID) (*Policy, error)
 
-	// GetPolicyByName retrieves a policy by tenant and name.
-	GetPolicyByName(ctx context.Context, tenantID, name string) (*Policy, error)
+	// GetPolicyByName retrieves a policy by tenant, namespace, and name.
+	// Names are unique per (tenant_id, namespace_path).
+	GetPolicyByName(ctx context.Context, tenantID, namespacePath, name string) (*Policy, error)
 
 	// UpdatePolicy persists changes to a policy.
 	UpdatePolicy(ctx context.Context, p *Policy) error

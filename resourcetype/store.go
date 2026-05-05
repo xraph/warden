@@ -14,8 +14,9 @@ type Store interface {
 	// GetResourceType retrieves a resource type by ID.
 	GetResourceType(ctx context.Context, rtID id.ResourceTypeID) (*ResourceType, error)
 
-	// GetResourceTypeByName retrieves a resource type by tenant and name.
-	GetResourceTypeByName(ctx context.Context, tenantID, name string) (*ResourceType, error)
+	// GetResourceTypeByName retrieves a resource type by tenant, namespace, and name.
+	// Names are unique per (tenant_id, namespace_path).
+	GetResourceTypeByName(ctx context.Context, tenantID, namespacePath, name string) (*ResourceType, error)
 
 	// UpdateResourceType persists changes to a resource type.
 	UpdateResourceType(ctx context.Context, rt *ResourceType) error

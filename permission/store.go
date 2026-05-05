@@ -14,8 +14,10 @@ type Store interface {
 	// GetPermission retrieves a permission by ID.
 	GetPermission(ctx context.Context, permID id.PermissionID) (*Permission, error)
 
-	// GetPermissionByName retrieves a permission by tenant and name.
-	GetPermissionByName(ctx context.Context, tenantID, name string) (*Permission, error)
+	// GetPermissionByName retrieves a permission by tenant, namespace, and name.
+	// Names are unique per (tenant_id, namespace_path); the namespace argument
+	// disambiguates permissions sharing a name across different namespaces.
+	GetPermissionByName(ctx context.Context, tenantID, namespacePath, name string) (*Permission, error)
 
 	// UpdatePermission persists changes to a permission.
 	UpdatePermission(ctx context.Context, p *Permission) error

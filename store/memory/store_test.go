@@ -113,7 +113,7 @@ func TestPermissionCRUD(t *testing.T) {
 		t.Fatal("mismatch")
 	}
 
-	got, err = s.GetPermissionByName(ctx, "t1", "document:read")
+	got, err = s.GetPermissionByName(ctx, "t1", "", "document:read")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestResourceTypeCRUD(t *testing.T) {
 		t.Fatal("mismatch")
 	}
 
-	got, err = s.GetResourceTypeByName(ctx, "t1", "document")
+	got, err = s.GetResourceTypeByName(ctx, "t1", "", "document")
 	if err != nil {
 		t.Fatal(err)
 	}

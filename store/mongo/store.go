@@ -481,14 +481,14 @@ func (s *Store) GetPermission(ctx context.Context, permID id.PermissionID) (*per
 	return permissionFromModel(&m), nil
 }
 
-func (s *Store) GetPermissionByName(ctx context.Context, tenantID, name string) (*permission.Permission, error) {
+func (s *Store) GetPermissionByName(ctx context.Context, tenantID, namespacePath, name string) (*permission.Permission, error) {
 	var m permissionModel
 	err := s.mdb.NewFind(&m).
-		Filter(bson.M{"tenant_id": tenantID, "name": name}).
+		Filter(bson.M{"tenant_id": tenantID, "namespace_path": namespacePath, "name": name}).
 		Scan(ctx)
 	if err != nil {
 		if isNoDocuments(err) {
-			return nil, fmt.Errorf("permission %q: %w", name, errNotFound)
+			return nil, fmt.Errorf("permission %q in ns %q: %w", name, namespacePath, errNotFound)
 		}
 		return nil, fmt.Errorf("warden: get permission by name: %w", err)
 	}
@@ -1161,14 +1161,14 @@ func (s *Store) GetPolicy(ctx context.Context, polID id.PolicyID) (*policy.Polic
 	return policyFromModel(&m), nil
 }
 
-func (s *Store) GetPolicyByName(ctx context.Context, tenantID, name string) (*policy.Policy, error) {
+func (s *Store) GetPolicyByName(ctx context.Context, tenantID, namespacePath, name string) (*policy.Policy, error) {
 	var m policyModel
 	err := s.mdb.NewFind(&m).
-		Filter(bson.M{"tenant_id": tenantID, "name": name}).
+		Filter(bson.M{"tenant_id": tenantID, "namespace_path": namespacePath, "name": name}).
 		Scan(ctx)
 	if err != nil {
 		if isNoDocuments(err) {
-			return nil, fmt.Errorf("policy %q: %w", name, errNotFound)
+			return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, errNotFound)
 		}
 		return nil, fmt.Errorf("warden: get policy by name: %w", err)
 	}
@@ -1347,14 +1347,14 @@ func (s *Store) GetResourceType(ctx context.Context, rtID id.ResourceTypeID) (*r
 	return resourceTypeFromModel(&m), nil
 }
 
-func (s *Store) GetResourceTypeByName(ctx context.Context, tenantID, name string) (*resourcetype.ResourceType, error) {
+func (s *Store) GetResourceTypeByName(ctx context.Context, tenantID, namespacePath, name string) (*resourcetype.ResourceType, error) {
 	var m resourceTypeModel
 	err := s.mdb.NewFind(&m).
-		Filter(bson.M{"tenant_id": tenantID, "name": name}).
+		Filter(bson.M{"tenant_id": tenantID, "namespace_path": namespacePath, "name": name}).
 		Scan(ctx)
 	if err != nil {
 		if isNoDocuments(err) {
-			return nil, fmt.Errorf("resource type %q: %w", name, errNotFound)
+			return nil, fmt.Errorf("resource type %q in ns %q: %w", name, namespacePath, errNotFound)
 		}
 		return nil, fmt.Errorf("warden: get resource type by name: %w", err)
 	}

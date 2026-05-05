@@ -96,20 +96,20 @@ type applier struct {
 		ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role.Role, error)
 		// Permissions
 		CreatePermission(ctx context.Context, p *permission.Permission) error
-		GetPermissionByName(ctx context.Context, tenantID, name string) (*permission.Permission, error)
+		GetPermissionByName(ctx context.Context, tenantID, namespacePath, name string) (*permission.Permission, error)
 		UpdatePermission(ctx context.Context, p *permission.Permission) error
 		DeletePermission(ctx context.Context, permID id.PermissionID) error
 		ListPermissions(ctx context.Context, filter *permission.ListFilter) ([]*permission.Permission, error)
 		SetRolePermissions(ctx context.Context, roleID id.RoleID, refs []permission.Ref) error
 		// Policies
 		CreatePolicy(ctx context.Context, p *policy.Policy) error
-		GetPolicyByName(ctx context.Context, tenantID, name string) (*policy.Policy, error)
+		GetPolicyByName(ctx context.Context, tenantID, namespacePath, name string) (*policy.Policy, error)
 		UpdatePolicy(ctx context.Context, p *policy.Policy) error
 		DeletePolicy(ctx context.Context, polID id.PolicyID) error
 		ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]*policy.Policy, error)
 		// Resource types
 		CreateResourceType(ctx context.Context, rt *resourcetype.ResourceType) error
-		GetResourceTypeByName(ctx context.Context, tenantID, name string) (*resourcetype.ResourceType, error)
+		GetResourceTypeByName(ctx context.Context, tenantID, namespacePath, name string) (*resourcetype.ResourceType, error)
 		UpdateResourceType(ctx context.Context, rt *resourcetype.ResourceType) error
 		DeleteResourceType(ctx context.Context, rtID id.ResourceTypeID) error
 		ListResourceTypes(ctx context.Context, filter *resourcetype.ListFilter) ([]*resourcetype.ResourceType, error)
@@ -165,7 +165,7 @@ func (a *applier) applyResourceTypes(prog *Program) error {
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
-		existing, _ := a.store.GetResourceTypeByName(a.ctx, a.tenantID, rt.Name) //nolint:errcheck // missing → create
+		existing, _ := a.store.GetResourceTypeByName(a.ctx, a.tenantID, rt.NamespacePath, rt.Name) //nolint:errcheck // missing → create
 		if existing == nil {
 			// ID is auto-assigned by the store on CreateResourceType.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ resource_type/%s/%s", rt.NamespacePath, rt.Name))
@@ -286,7 +286,7 @@ func (a *applier) applyPermissions(prog *Program) error {
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
-		existing, _ := a.store.GetPermissionByName(a.ctx, a.tenantID, p.Name) //nolint:errcheck // missing → create
+		existing, _ := a.store.GetPermissionByName(a.ctx, a.tenantID, p.NamespacePath, p.Name) //nolint:errcheck // missing → create
 		if existing == nil {
 			// ID is auto-assigned by the store on CreatePermission.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ permission/%s/%s", p.NamespacePath, p.Name))
@@ -451,7 +451,8 @@ func (a *applier) applyRolePermissions(prog *Program) error {
 					continue
 				}
 				// Fall back to checking the store — the perm may already exist.
-				if perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, name); err == nil && perm != nil {
+				// Grants are looked up in the role's namespace.
+				if perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, r.NamespacePath, name); err == nil && perm != nil {
 					continue
 				}
 				return fmt.Errorf("role %s grants unknown permission %q", r.Slug, name)
@@ -480,7 +481,7 @@ func (a *applier) applyRolePermissions(prog *Program) error {
 				// concrete attachment row. Skip.
 				continue
 			}
-			perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, name)
+			perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, r.NamespacePath, name)
 			if err != nil || perm == nil {
 				return fmt.Errorf("role %s grants unknown permission %q", r.Slug, name)
 			}
@@ -527,7 +528,7 @@ func (a *applier) applyPolicies(prog *Program) error {
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
-		existing, _ := a.store.GetPolicyByName(a.ctx, a.tenantID, p.Name) //nolint:errcheck // missing → create
+		existing, _ := a.store.GetPolicyByName(a.ctx, a.tenantID, p.NamespacePath, p.Name) //nolint:errcheck // missing → create
 		if existing == nil {
 			// ID is auto-assigned by the store on CreatePolicy.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ policy/%s/%s", p.NamespacePath, p.Name))
