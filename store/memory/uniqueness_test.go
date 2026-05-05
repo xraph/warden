@@ -12,7 +12,19 @@ import (
 	"github.com/xraph/warden/policy"
 	"github.com/xraph/warden/resourcetype"
 	"github.com/xraph/warden/role"
+	"github.com/xraph/warden/store"
+	"github.com/xraph/warden/store/contract"
 )
+
+// TestMemory_UniquenessContract runs the shared backend-agnostic
+// uniqueness suite against the in-memory store. The in-package tests
+// below cover edge cases the contract doesn't (e.g. cross-namespace
+// allowance for permissions, distinct-resource allowance for assignments).
+func TestMemory_UniquenessContract(t *testing.T) {
+	contract.RunUniquenessContract(t, func(t *testing.T) (store.Store, func()) {
+		return New(), func() {}
+	})
+}
 
 func TestCreateRole_DuplicateInSameScope_Rejected(t *testing.T) {
 	ctx := context.Background()
