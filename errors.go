@@ -1,6 +1,10 @@
 package warden
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/xraph/warden/wardenerr"
+)
 
 var (
 	// ErrAccessDenied is returned when an authorization check fails.
@@ -30,11 +34,37 @@ var (
 	// ErrSystemPermissionImmutable is returned when trying to modify a system permission.
 	ErrSystemPermissionImmutable = errors.New("warden: system permission cannot be modified")
 
-	// ErrDuplicateAssignment is returned when a role is already assigned to a subject.
-	ErrDuplicateAssignment = errors.New("warden: role already assigned to subject")
+	// ErrAlreadyExists is the common base error for entity-uniqueness
+	// violations. Use errors.Is(err, ErrAlreadyExists) to match any of the
+	// specialized ErrDuplicate* errors below.
+	//
+	// Defined in wardenerr so that low-level subpackages (e.g. store/memory)
+	// can return typed duplicate errors without an import cycle.
+	ErrAlreadyExists = wardenerr.ErrAlreadyExists
+
+	// ErrDuplicateRole is returned when a role would violate the
+	// (tenant_id, namespace_path, slug) uniqueness constraint.
+	ErrDuplicateRole = wardenerr.ErrDuplicateRole
+
+	// ErrDuplicatePermission is returned when a permission would violate the
+	// (tenant_id, namespace_path, name) uniqueness constraint.
+	ErrDuplicatePermission = wardenerr.ErrDuplicatePermission
+
+	// ErrDuplicatePolicy is returned when a policy would violate the
+	// (tenant_id, namespace_path, name) uniqueness constraint.
+	ErrDuplicatePolicy = wardenerr.ErrDuplicatePolicy
+
+	// ErrDuplicateResourceType is returned when a resource type would violate
+	// the (tenant_id, namespace_path, name) uniqueness constraint.
+	ErrDuplicateResourceType = wardenerr.ErrDuplicateResourceType
+
+	// ErrDuplicateAssignment is returned when a role is already assigned to a
+	// subject within the same scope. Wraps ErrAlreadyExists.
+	ErrDuplicateAssignment = wardenerr.ErrDuplicateAssignment
 
 	// ErrDuplicateRelation is returned when a relation tuple already exists.
-	ErrDuplicateRelation = errors.New("warden: relation tuple already exists")
+	// Wraps ErrAlreadyExists.
+	ErrDuplicateRelation = wardenerr.ErrDuplicateRelation
 
 	// ErrCyclicRoleInheritance is returned when role inheritance would create a cycle.
 	ErrCyclicRoleInheritance = errors.New("warden: cyclic role inheritance detected")
