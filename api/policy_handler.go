@@ -89,6 +89,9 @@ func (a *API) createPolicy(ctx forge.Context, req *CreatePolicyRequest) (*policy
 		Effect:      policy.Effect(req.Effect),
 		Priority:    req.Priority,
 		IsActive:    req.IsActive,
+		NotBefore:   req.NotBefore,
+		NotAfter:    req.NotAfter,
+		Obligations: req.Obligations,
 		Version:     1,
 		Subjects:    req.Subjects,
 		Actions:     req.Actions,
@@ -157,6 +160,15 @@ func (a *API) updatePolicy(ctx forge.Context, req *UpdatePolicyRequest) (*policy
 	}
 	if req.IsActive != nil {
 		p.IsActive = *req.IsActive
+	}
+	if req.NotBefore != nil {
+		p.NotBefore = req.NotBefore
+	}
+	if req.NotAfter != nil {
+		p.NotAfter = req.NotAfter
+	}
+	if req.Obligations != nil {
+		p.Obligations = req.Obligations
 	}
 	if req.Subjects != nil {
 		p.Subjects = req.Subjects

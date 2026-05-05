@@ -1,9 +1,11 @@
 ---
 title: Check Engine
-description: The core authorization engine that evaluates RBAC, ABAC, and ReBAC.
+description: The core authorization engine that evaluates RBAC, ABAC, ReBAC, and PBAC.
 ---
 
-The `Engine` is the central component of Warden. It coordinates all three authorization models and returns a unified decision.
+The `Engine` is the central component of Warden. It coordinates all four authorization models and returns a unified decision.
+
+> **No DSL counterpart.** The `.warden` language describes configuration (roles, permissions, policies, resource types, relations) — it doesn't describe runtime calls. The Check / Enforce / CanI APIs on this page are how you ask "is this allowed?" once your config is in place.
 
 ## Creating an Engine
 
@@ -25,19 +27,20 @@ eng, err := warden.NewEngine(
 
 ```go
 result, err := eng.Check(ctx, &warden.CheckRequest{
-    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
-    Action:       "read",
-    ResourceType: "document",
-    ResourceID:   "doc-123",
-    Context:      map[string]any{
+    Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "user-42"},
+    Action:   warden.Action{Name: "read"},
+    Resource: warden.Resource{Type: "document", ID: "doc-123"},
+    Context: map[string]any{
         "ip_address": "10.0.1.5",
         "department": "engineering",
     },
 })
 
-fmt.Println(result.Allowed)  // true or false
-fmt.Println(result.Reason)   // "rbac: permission document:read granted via role editor"
-fmt.Println(result.Sources)  // ["rbac"]
+fmt.Println(result.Allowed)     // true or false
+fmt.Println(result.Decision)    // "allow" / "deny_explicit" / "deny_no_perms" / ...
+fmt.Println(result.Reason)      // "denied by policy 'incident-freeze'"
+fmt.Println(result.MatchedBy)   // []MatchInfo — which rule matched
+fmt.Println(result.Obligations) // []string — PBAC side-effect signals
 ```
 
 ### CheckRequest Fields
@@ -45,38 +48,50 @@ fmt.Println(result.Sources)  // ["rbac"]
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `Subject` | `Subject` | Yes | Who is requesting access |
-| `Action` | `string` | Yes | What action (e.g., "read", "write", "delete") |
-| `ResourceType` | `string` | Yes | What type of resource |
-| `ResourceID` | `string` | No | Specific resource instance |
-| `Context` | `map[string]any` | No | Attributes for ABAC evaluation |
+| `Action` | `Action` | Yes | What action (`Action{Name: "read"}`) |
+| `Resource` | `Resource` | Yes | What resource (`Resource{Type, ID, Attributes}`) |
+| `Context` | `map[string]any` | No | Attributes for ABAC/PBAC evaluation |
+| `TenantID` | `string` | No | Override the context-derived tenant |
+| `NamespacePath` | `string` | No | Override the context-derived namespace |
+
+### CheckResult Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Allowed` | `bool` | Decision shorthand |
+| `Decision` | `Decision` | `allow` / `deny_explicit` / `deny_no_roles` / `deny_no_perms` / `deny_condition` / `deny_relation` / `deny_default` |
+| `Reason` | `string` | Human-readable explanation |
+| `MatchedBy` | `[]MatchInfo` | Every rule that matched (RBAC role IDs, ABAC policy IDs, ReBAC paths) |
+| `Obligations` | `[]string` | PBAC side-effect actions — `audit-log`, `require-mfa`, etc. |
+| `EvalTimeNs` | `int64` | Evaluation latency |
 
 ## Enforce
 
-`Enforce()` is like `Check()` but returns an error if access is denied:
+`Enforce()` is like `Check()` but returns an error when access is denied:
 
 ```go
 err := eng.Enforce(ctx, &warden.CheckRequest{
-    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
-    Action:       "delete",
-    ResourceType: "document",
-    ResourceID:   "doc-123",
+    Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "user-42"},
+    Action:   warden.Action{Name: "delete"},
+    Resource: warden.Resource{Type: "document", ID: "doc-123"},
 })
 if err != nil {
-    // err is warden.ErrAccessDenied
+    // wrapped with the decision reason
     return err
 }
 ```
 
 ## CanI (Boolean Check)
 
-`CanI()` returns a simple boolean:
+`CanI()` returns a simple bool — handy for templating and quick checks:
 
 ```go
-allowed := eng.CanI(ctx, &warden.CheckRequest{
-    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
-    Action:       "read",
-    ResourceType: "document",
-})
+allowed, err := eng.CanI(
+    ctx,
+    warden.SubjectUser, "user-42",
+    "read",
+    "document", "doc-123",
+)
 ```
 
 ## Configuration Options
@@ -85,16 +100,17 @@ allowed := eng.CanI(ctx, &warden.CheckRequest{
 eng, _ := warden.NewEngine(
     warden.WithStore(store),
     warden.WithConfig(warden.Config{
-        EnableRBAC:    true,          // Enable role-based checks
-        EnableABAC:    true,          // Enable policy-based checks
-        EnableReBAC:   true,          // Enable relationship-based checks
-        MaxGraphDepth: 10,            // ReBAC traversal limit
-        CacheTTL:      5 * time.Minute,
+        EnableRBAC:    true,            // Enable role-based checks
+        EnableABAC:    true,            // Enable policy-based checks
+        EnableReBAC:   true,            // Enable relationship-based checks
+        MaxGraphDepth: 10,              // ReBAC traversal limit
+        CacheTTL:      5 * time.Minute, // Cache positive decisions
     }),
-    warden.WithEvaluator(customEval), // Custom ABAC evaluator
-    warden.WithGraphWalker(customGW), // Custom graph walker
-    warden.WithCache(lruCache),       // Enable caching
-    warden.WithPlugin(auditPlugin),   // Add plugins
+    warden.WithEvaluator(customEval),         // Custom ABAC/PBAC evaluator
+    warden.WithGraphWalker(customGW),         // Custom ReBAC graph walker
+    warden.WithCache(redisCache),             // Shared cache (Redis-backed, etc.)
+    warden.WithExpressionEvaluator(dslEval),  // Resource-type permission expressions
+    warden.WithPlugin(auditPlugin),           // Lifecycle hooks
 )
 ```
 
@@ -104,14 +120,32 @@ The subject in a check request can be any kind of identity:
 
 ```go
 // Human user (from Authsome)
-warden.Subject{Kind: "user", ID: "user-42"}
+warden.Subject{Kind: warden.SubjectUser, ID: "user-42"}
 
 // API key (from Keysmith)
-warden.Subject{Kind: "api_key", ID: "key-abc"}
+warden.Subject{Kind: warden.SubjectAPIKey, ID: "key-abc"}
+
+// Service-to-service caller
+warden.Subject{Kind: warden.SubjectService, ID: "billing-svc"}
 
 // Service account
-warden.Subject{Kind: "service", ID: "billing-svc"}
+warden.Subject{Kind: warden.SubjectServiceAcct, ID: "acct-foo"}
 
-// Anonymous
+// Custom — any string is allowed; "anonymous" by convention
 warden.Subject{Kind: "anonymous", ID: ""}
 ```
+
+Each subject can carry attributes that ABAC/PBAC conditions can match on:
+
+```go
+warden.Subject{
+    Kind: warden.SubjectUser,
+    ID:   "user-42",
+    Attributes: map[string]any{
+        "department": "engineering",
+        "role_label": "staff-engineer",
+    },
+}
+```
+
+A condition like `subject.attributes.department == "engineering"` resolves against this map at check time. See [Policies & Conditions](/docs/authorization/policies-conditions) for the full operator table.

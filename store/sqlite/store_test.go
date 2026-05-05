@@ -13,6 +13,7 @@ import (
 	_ "github.com/xraph/grove/drivers/sqlitedriver/sqlitemigrate"
 
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/role"
 )
 
@@ -89,6 +90,92 @@ func TestSQLiteStore_RoleRoundTrip(t *testing.T) {
 	}
 	if len(roles) != 1 {
 		t.Errorf("expected 1 role, got %d", len(roles))
+	}
+}
+
+// TestSQLiteStore_RolePermissionsNaturalKey verifies the Phase A.5 junction
+// schema: SetRolePermissions writes (role_id, perm_namespace_path, perm_name)
+// rows, and ListRolePermissions returns full Permission records via JOIN.
+func TestSQLiteStore_RolePermissionsNaturalKey(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "warden.db")
+
+	drv := sqlitedriver.New()
+	if err := drv.Open(ctx, dbPath); err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = drv.Close() })
+
+	db, err := grove.Open(drv)
+	if err != nil {
+		t.Fatalf("grove open: %v", err)
+	}
+
+	s := New(db)
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// Create role + perms.
+	roleID := id.NewRoleID()
+	now := time.Now()
+	if err := s.CreateRole(ctx, &role.Role{
+		ID: roleID, TenantID: "t1", Name: "Editor", Slug: "editor", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	for _, name := range []string{"document:read", "document:write"} {
+		if err := s.CreatePermission(ctx, &permission.Permission{
+			ID: id.NewPermissionID(), TenantID: "t1", Name: name,
+			Resource: "document", Action: name[len("document:"):],
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreatePermission %s: %v", name, err)
+		}
+	}
+
+	// Attach two permissions by ref.
+	for _, name := range []string{"document:read", "document:write"} {
+		if err := s.AttachPermission(ctx, roleID, permission.Ref{Name: name}); err != nil {
+			t.Fatalf("AttachPermission %s: %v", name, err)
+		}
+	}
+
+	// JOIN-based ListRolePermissions returns full records.
+	got, err := s.ListRolePermissions(ctx, roleID)
+	if err != nil {
+		t.Fatalf("ListRolePermissions: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 perms, got %d", len(got))
+	}
+	names := map[string]bool{}
+	for _, p := range got {
+		names[p.Name] = true
+		if p.Resource != "document" {
+			t.Errorf("expected Resource=document, got %q", p.Resource)
+		}
+	}
+	if !names["document:read"] || !names["document:write"] {
+		t.Errorf("missing expected permission names: %v", names)
+	}
+
+	// Detach one, confirm the other remains.
+	if err := s.DetachPermission(ctx, roleID, permission.Ref{Name: "document:read"}); err != nil {
+		t.Fatalf("DetachPermission: %v", err)
+	}
+	got, _ = s.ListRolePermissions(ctx, roleID)
+	if len(got) != 1 || got[0].Name != "document:write" {
+		t.Fatalf("after detach: got %d perms, want 1 (write)", len(got))
+	}
+
+	// SetRolePermissions replaces.
+	if err := s.SetRolePermissions(ctx, roleID, []permission.Ref{{Name: "document:read"}}); err != nil {
+		t.Fatalf("SetRolePermissions: %v", err)
+	}
+	got, _ = s.ListRolePermissions(ctx, roleID)
+	if len(got) != 1 || got[0].Name != "document:read" {
+		t.Fatalf("after set: got %d perms, want 1 (read)", len(got))
 	}
 }
 

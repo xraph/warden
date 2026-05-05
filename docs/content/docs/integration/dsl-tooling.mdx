@@ -1,0 +1,424 @@
+---
+title: DSL & Tooling
+description: Overview of the .warden declarative language, CLI subcommands, language server, and VS Code extension.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+Warden ships a purpose-built declarative language (`.warden`) for defining roles, permissions, resource types, policies, and relations as source-controlled files. The language has first-class tooling: a CLI for lint/apply/format/export, a language server (LSP) for diagnostics, completion, hover, and go-to-definition, and a VS Code extension that wraps both.
+
+This page is the **tooling overview**. For the language itself — every block, field, expression, operator, and convention — see the [.warden Language Reference](/docs/integration/dsl-reference).
+
+## At a glance
+
+```warden
+warden config 1
+tenant acme
+
+resource document {
+  relation owner:  user
+  relation editor: user | group#member
+  relation viewer: user | group#member
+
+  permission read   = viewer or editor or owner
+  permission edit   = editor or owner
+  permission delete = owner
+}
+
+permission "doc:read"   (document : read)
+permission "doc:write"  (document : edit)
+permission "doc:delete" (document : delete)
+
+role viewer {
+  name   = "Viewer"
+  grants = ["doc:read"]
+}
+
+role editor : viewer {
+  name   = "Editor"
+  grants += ["doc:write"]
+}
+
+policy "incident-freeze" {
+  description = "Block deploys until 2026-06-01"
+  effect      = deny
+  priority    = 1
+  active      = true
+  not_after   = "2026-06-01T00:00:00Z"
+  actions     = ["deploy:*"]
+  obligations = ["notify-oncall", "audit-log"]
+}
+```
+
+A directory of `.warden` files is one logical program. References resolve across files; `warden apply -f config/` walks recursively, parses every file, runs name resolution + type checking + topological sort, then applies against the engine in dependency order.
+
+## CLI
+
+The single `warden` binary covers every authoring workflow.
+
+### Install
+
+<Tabs items={["go install", "Pre-built binary", "From source"]}>
+
+```bash tab="go install"
+go install github.com/xraph/warden/cmd/warden@latest
+go install github.com/xraph/warden/cmd/warden-lsp@latest
+```
+
+```bash tab="Pre-built binary"
+# Pick a platform from https://github.com/xraph/warden/releases/latest
+curl -L -o warden.tar.gz \
+  https://github.com/xraph/warden/releases/latest/download/warden-<version>-<os>-<arch>.tar.gz
+
+# Verify checksum
+curl -L -o checksums.txt \
+  https://github.com/xraph/warden/releases/latest/download/checksums.txt
+shasum -a 256 -c checksums.txt --ignore-missing
+
+tar -xzf warden.tar.gz
+sudo mv warden warden-lsp /usr/local/bin/
+```
+
+```bash tab="From source"
+git clone https://github.com/xraph/warden.git
+cd warden
+make build
+```
+
+</Tabs>
+
+Pre-built archives ship `linux`, `darwin`, `windows` × `amd64`, `arm64` from every [GitHub Release](https://github.com/xraph/warden/releases) and contain both `warden` and `warden-lsp`.
+
+### Subcommands
+
+| Subcommand | Purpose |
+|---|---|
+| `warden lint <path>` | Static checks only — parser + type checker, no DB. Per-file/line diagnostics. |
+| `warden apply -f <path> --store DSN` | Apply config to a tenant. Idempotent. |
+| `warden diff -f <path> --store DSN` | Equivalent to `apply --dry-run`. Shows what would change. |
+| `warden fmt <path>` | Format file(s) in place. `-d` prints diff, `--check` exits 1 if reformatting needed. |
+| `warden export --tenant ID --store DSN -o <dir>` | Dump tenant state back to `.warden` files. |
+| `warden lsp` | Start the language server on stdio (used by editors). |
+
+**Store DSNs** match the rest of Warden:
+
+- `memory:` — in-memory; tests only.
+- `sqlite:./warden.db` — single-file dev.
+- `postgres://user:pass@host/db` — production.
+
+**Flags:**
+
+- `--tenant ID` / `--app ID` — override `tenant` / `app` declared in source. Both are optional; if neither source nor flag sets a tenant, apply uses the **global scope** (empty `tenant_id`) — the natural default for single-tenant apps. See [Multi-Tenancy](/docs/concepts/multi-tenancy#single-tenant-apps-skip-the-tenant-entirely).
+- `--var KEY=VALUE` — bind a DSL template variable. Repeatable. Wins over `WARDEN_VAR_*` env. See [Variables](#variables) below.
+- `--dry-run` — plan without writing.
+- `--prune` — delete tenant entries not in config (apply only).
+- `--skip-migrate` — don't run store migrations on connect.
+
+**Exit codes:** `0` success, `1` diagnostics, `2` usage error, `3` store/runtime error.
+
+### Variables
+
+Source files can contain `${NAME}` placeholders that get expanded before parsing. Three layers, later wins:
+
+1. **Programmatic** — `dsl.WithVariables(...)` to `dsl.Load`/`LoadFile`/`LoadDir`/`LoadGlob`/`LoadFS`.
+2. **Environment** — every env var matching `WARDEN_VAR_<NAME>` is auto-bound to `${NAME}`.
+3. **CLI** — `--var NAME=VALUE`, repeatable.
+
+```warden
+warden config 1
+tenant ${TENANT}
+
+role admin {
+  name        = "Admin (${ENV})"
+  description = "Tenant ${TENANT} on region ${REGION}"
+}
+```
+
+```bash
+# Same source file across environments:
+WARDEN_VAR_REGION=us-east-1 \
+  warden apply -f config/ \
+    --var TENANT=acme \
+    --var ENV=prod \
+    --store postgres://…
+
+# CI / GitOps: stamp the tenant per-pipeline
+WARDEN_VAR_TENANT=acme warden apply -f config/ --store $DSN
+```
+
+Substitution is purely textual — placeholders in string literals and comments expand the same way. Use `$$` to escape: `$${LITERAL}` produces `${LITERAL}` verbatim.
+
+Diagnostics are produced for undefined, unclosed, or invalid placeholders, with the `$` column as the position. The full [language reference](/docs/integration/dsl-reference#variables-template-substitution) lists the rules.
+
+### Example: GitOps pipeline
+
+```bash
+# CI: validate before merge
+warden lint config/ --var TENANT=$TENANT
+
+# Dry-run against an ephemeral DB to catch FK / cross-tenant issues
+warden apply --dry-run -f config/ --var TENANT=$TENANT --store $TEST_DSN
+
+# On merge to main
+warden apply -f config/ --var TENANT=$TENANT --store $PROD_DSN
+```
+
+`warden export` closes the loop — pull current state out, edit, re-apply, see zero diff if no changes were made.
+
+## Programmatic apply
+
+The CLI is just a thin wrapper around the `dsl` package, which exposes the same load-resolve-apply pipeline as a library. Three convenience helpers cover the common shapes:
+
+| Helper | Loads from | Use when |
+|---|---|---|
+| `dsl.ApplyFile(ctx, eng, path, opts, loadOpts...)` | A single `.warden` file on disk. | One-file configs; CLIs you build on top of Warden. |
+| `dsl.ApplyDir(ctx, eng, dir, opts, loadOpts...)` | A directory tree on disk. | Server bootstrap from a sibling `config/` folder. |
+| `dsl.ApplyFS(ctx, eng, fsys, root, opts, loadOpts...)` | Any `fs.FS` (including `embed.FS`). | Single-binary deployments — ship the config inside the executable. |
+
+Each helper composes `Load*` + parse-diagnostic check + `Apply`. Diagnostics from any phase surface as a `*dsl.DiagnosticError` you can extract with `errors.As`.
+
+### Embed the config in the binary
+
+```go
+package main
+
+import (
+    "context"
+    "embed"
+    "errors"
+    "fmt"
+    "os"
+
+    "github.com/xraph/warden"
+    "github.com/xraph/warden/dsl"
+    "github.com/xraph/warden/store/memory"
+)
+
+//go:embed all:config
+var configFS embed.FS
+
+func main() {
+    ctx := context.Background()
+    eng, _ := warden.NewEngine(warden.WithStore(memory.New()))
+
+    res, err := dsl.ApplyFS(ctx, eng, configFS, "config",
+        dsl.ApplyOptions{TenantID: "acme"},
+        dsl.WithVariables(dsl.Variables{
+            "REGION": os.Getenv("AWS_REGION"),
+        }),
+    )
+    if err != nil {
+        var derr *dsl.DiagnosticError
+        if errors.As(err, &derr) {
+            for _, d := range derr.Diagnostics() {
+                fmt.Fprintln(os.Stderr, d)
+            }
+            os.Exit(1)
+        }
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Applied %d entries (%d unchanged)\n",
+        len(res.Created)+len(res.Updated), res.NoOps)
+}
+```
+
+The `all:` prefix is **required** when your config tree contains underscore-prefixed directories (Warden's convention is `_shared/` for cross-cutting policies). Go's default `//go:embed` pattern silently strips those.
+
+A complete runnable example lives at [`_examples/standalone-embed/`](https://github.com/xraph/warden/tree/main/_examples/standalone-embed) — clone the repo and `go run ./_examples/standalone-embed` to see it work.
+
+### Apply from a directory
+
+```go
+res, err := dsl.ApplyDir(ctx, eng, "./config",
+    dsl.ApplyOptions{TenantID: "acme"})
+```
+
+Walks the directory recursively, picks up every `.warden` file, applies idempotently. Hidden directories (`.git`) are skipped; `_`-prefixed directories are kept by convention.
+
+### Apply a single file
+
+```go
+res, err := dsl.ApplyFile(ctx, eng, "config/main.warden",
+    dsl.ApplyOptions{TenantID: "acme"})
+```
+
+### Reading diagnostics
+
+`*dsl.DiagnosticError` satisfies `error` and exposes the underlying diagnostic list:
+
+```go
+var derr *dsl.DiagnosticError
+if errors.As(err, &derr) {
+    for _, d := range derr.Diagnostics() {
+        // d.Pos.File, d.Pos.Line, d.Pos.Col, d.Msg
+        fmt.Println(d) // formatted "file:line:col: message"
+    }
+}
+```
+
+Both parse-time errors (lexer, syntax) and resolver errors (undefined parent, type mismatch in expressions) flow through the same channel.
+
+### Lower-level path
+
+If you need to inspect or transform the parsed `*dsl.Program` before applying — e.g. to filter declarations, rewrite namespace paths, or run custom validation — call the layers directly:
+
+```go
+prog, parseErrs, err := dsl.LoadFS(configFS, "config",
+    dsl.WithVariables(vars))
+if err != nil {
+    return err
+}
+if len(parseErrs) > 0 {
+    return &dsl.DiagnosticError{Diags: parseErrs}
+}
+
+// ... inspect or modify prog ...
+
+result, err := dsl.Apply(ctx, eng, prog, dsl.ApplyOptions{TenantID: "acme"})
+```
+
+`Apply` runs the resolver itself, so its own diagnostics still come back as `*dsl.DiagnosticError`.
+
+## Language Server (LSP)
+
+The `lsp/` package implements the full Language Server Protocol over stdio. Two equivalent entry points, both delegate to `lsp.Run`:
+
+```bash
+# Subcommand of the unified CLI (recommended)
+warden lsp
+
+# Standalone shim
+go install github.com/xraph/warden/cmd/warden-lsp@latest
+warden-lsp
+```
+
+Editor configs can target either form interchangeably.
+
+### Capabilities
+
+| Method | What it does |
+|---|---|
+| `textDocument/publishDiagnostics` | Parser + resolver errors with source position, severity, and a `warden` source label. |
+| `textDocument/hover` | Markdown summary for the role / permission / resource type / policy under the cursor. |
+| `textDocument/definition` | Jump from a parent slug, grant name, or expression reference to its declaration. |
+| `textDocument/formatting` | Full-document canonical replacement via `dsl.Format`. |
+| `textDocument/completion` | Context-aware suggestions; cross-file workspace index. |
+
+### Completion contexts
+
+The completion handler classifies the cursor position into one of nine contexts and offers suggestions tailored to each:
+
+1. **Top-level keyword** — `resource`, `permission`, `role`, `policy`, `namespace`, `relation`, `import`.
+2. **Role parent slug** — after `role X :`, every role declared in any open document (with absolute paths for cross-namespace refs).
+3. **Role grants string** — inside `grants = [`, every permission name in the workspace.
+4. **Permission resource ref** — after `permission "x:y" (`, declared resource type names.
+5. **Permission action ref** — after `permission "x:y" (resource :`, the action names that resource declares.
+6. **Expression refs** — inside `permission read = ` in a resource block, the relations declared on that resource plus `or` / `and` / `not`.
+7. **Policy fields** — inside a `policy { ... }` block, including the PBAC trio (`not_before`, `not_after`, `obligations`).
+8. **Role fields** — inside a `role { ... }` block.
+9. **Condition operators** — inside a `when { context.X ` predicate.
+
+Suggestions always carry origin metadata — `Detail` shows the source file + line so cross-file disambiguation is visible at the point of suggestion. The workspace index rebuilds on every `didOpen` / `didChange` / `didClose` and dedupes by `(namespace_path, name)`.
+
+### Editor wiring
+
+**Neovim (lspconfig):**
+
+```lua
+require'lspconfig'.warden = {
+  default_config = {
+    cmd = {'warden', 'lsp'},   -- or {'warden-lsp'}
+    filetypes = {'warden'},
+    root_dir = function() return vim.fn.getcwd() end,
+  },
+}
+```
+
+**Helix** — in `languages.toml`:
+
+```toml
+[[language]]
+name = "warden"
+language-server = { command = "warden", args = ["lsp"] }
+```
+
+**Zed** — point the language server config at `warden lsp`.
+
+**VS Code** — see below; the extension wraps both grammar and LSP wiring.
+
+## VS Code Extension
+
+Published as **`xraph.vscode-warden`** on the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=xraph.vscode-warden) and [Open VSX Registry](https://open-vsx.org/extension/xraph/vscode-warden). Source at [`editor/vscode-warden/`](https://github.com/xraph/warden/tree/main/editor/vscode-warden).
+
+### Install
+
+```bash
+code --install-extension xraph.vscode-warden
+```
+
+…or open the Extensions panel (`Cmd+Shift+X` / `Ctrl+Shift+X`) and search for **"Warden"**.
+
+For VS Code forks compatible with Open VSX (Cursor, VSCodium):
+
+```bash
+codium --install-extension xraph.vscode-warden
+```
+
+The extension still works without the language server installed (syntax highlighting only). For live diagnostics, completion, hover, and go-to-definition, install the `warden` CLI:
+
+```bash
+go install github.com/xraph/warden/cmd/warden@latest
+```
+
+### Settings
+
+| Key | Default | Description |
+|---|---|---|
+| `warden.lsp.command` | `["warden", "lsp"]` | Argv used to spawn the LSP. Use `["warden-lsp"]` for the standalone shim or an absolute path to bypass `PATH`. |
+| `warden.lsp.trace` | `off` | LSP wire trace. `messages` for method names, `verbose` for full bodies. |
+| `warden.lsp.disable` | `false` | Disable the language server entirely. Syntax highlighting still works. |
+
+### Build from source
+
+```bash
+cd editor/vscode-warden
+npm install
+npm run compile
+# Open this directory in VS Code → press F5 to launch an Extension Host.
+```
+
+`bun install && bun run compile` works equivalently — the project ships a `package-lock.json` for npm-based CI but bun reads `package.json` directly.
+
+The extension is a thin TypeScript wrapper that bundles the TextMate grammar (for syntax highlighting) and spawns the language server via `vscode-languageclient`. Every semantic feature comes from the LSP, keeping the extension surface small and free of drift.
+
+### Release process
+
+Tag pushes drive the release pipeline. From the repo root:
+
+```bash
+# 1. Bump the version
+cd editor/vscode-warden
+npm version 0.2.0 --no-git-tag-version
+
+# 2. Commit + push
+git add package.json package-lock.json
+git commit -m "chore(vscode): bump to 0.2.0"
+git push origin main
+
+# 3. Tag — the workflow handles validate, package, publish to Marketplace
+#    + Open VSX, and a GitHub Release with the .vsix attached.
+git tag vscode-warden/v0.2.0
+git push origin vscode-warden/v0.2.0
+```
+
+PRs touching `editor/vscode-warden/**` run the `validate` job (lint → compile → package) without publishing. The full pipeline lives at [.github/workflows/vscode-extension.yml](https://github.com/xraph/warden/blob/main/.github/workflows/vscode-extension.yml). Required secrets: `VSCE_PAT` (Marketplace) and optionally `OVSX_PAT` (Open VSX).
+
+## Other editor assets
+
+`editor/` also ships the source-of-truth grammar files used by these tools:
+
+- `warden.tmLanguage.json` — TextMate grammar for VS Code, Sublime, IntelliJ.
+- `tree-sitter-warden/` — Tree-sitter grammar scaffold for Helix, Neovim, Zed, GitHub web. Mirrors `dsl/parser.go`. Distribution via a future standalone repo.
+
+When the DSL changes, all four artifacts (canonical Go parser, lexer, TextMate grammar, tree-sitter grammar) need updating. The repo's `editor/README.md` enumerates the synchronization steps.

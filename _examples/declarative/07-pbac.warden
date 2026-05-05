@@ -1,0 +1,77 @@
+// PBAC — Policy-Based Access Control
+//
+// This example demonstrates the two PBAC features that go beyond plain ABAC:
+//
+//   1. Time-bound policies — a policy is only effective inside the
+//      half-open window [not_before, not_after]. Outside that window
+//      the engine skips it as if `active = false`. Either bound is
+//      optional; nil means "no limit on that side".
+//
+//   2. Obligations — named side-effect actions the engine emits in
+//      CheckResult.Obligations whenever the policy matches. The plugin
+//      registry also fires PolicyObligationFired per obligation, so
+//      Chronicle / audit / dispatcher plugins pick them up without any
+//      per-plugin code change.
+//
+// Obligations don't change the allow/deny outcome — they're signals to
+// the calling system. Common values:
+//   - "audit-log"      record this decision in the audit trail
+//   - "require-mfa"    refuse the request unless an MFA token is present
+//   - "notify-security" page on-call
+//   - "step-up-auth"   prompt the user to re-authenticate
+//
+// Combine the two and you get scheduled access grants, incident-response
+// freezes, and per-action MFA gates — all expressible in one declarative
+// document.
+
+warden config 1
+tenant t1
+
+// ──────────────────────────────────────────────────────────────────
+// 1. Incident-response freeze: deny all deploys until 2026-06-01.
+// ──────────────────────────────────────────────────────────────────
+
+policy "incident-freeze" {
+  description = "Block all deploys until the post-incident review closes"
+  effect      = deny
+  priority    = 1
+  active      = true
+  not_after   = "2026-06-01T00:00:00Z"
+  actions     = ["deploy:*"]
+  obligations = ["notify-oncall", "audit-log"]
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 2. Scheduled access grant: read-only data exports, business hours,
+//    Q2 2026 only.
+// ──────────────────────────────────────────────────────────────────
+
+policy "q2-data-export-window" {
+  description = "Allow data exports during Q2 2026 only"
+  effect      = allow
+  priority    = 100
+  active      = true
+  not_before  = "2026-04-01T00:00:00Z"
+  not_after   = "2026-07-01T00:00:00Z"
+  actions     = ["export"]
+  resources   = ["dataset"]
+  obligations = ["audit-log"]
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 3. Per-action MFA gate: writes outside business hours require MFA.
+// ──────────────────────────────────────────────────────────────────
+
+policy "after-hours-mfa" {
+  description = "Require MFA for writes outside business hours"
+  effect      = allow
+  priority    = 100
+  active      = true
+  actions     = ["write", "delete"]
+  obligations = ["require-mfa", "audit-log"]
+
+  when {
+    context.time time_before "09:00:00Z"
+    context.time time_after  "17:00:00Z"
+  }
+}

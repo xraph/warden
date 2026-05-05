@@ -1,0 +1,166 @@
+# GoReleaser configuration for the Warden CLI binaries.
+#
+# Builds `warden` and `warden-lsp` for linux/darwin/windows × amd64/arm64,
+# packages each platform as a single archive containing both binaries +
+# README + LICENSE, emits a checksums file, and creates a GitHub Release
+# with a categorized changelog.
+#
+# Driven by .github/workflows/release.yml on tag pushes (`v*.*.*`).
+# For local snapshot testing: `make release-snapshot`.
+version: 2
+
+project_name: warden
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod verify
+
+builds:
+  - id: warden
+    main: ./cmd/warden
+    binary: warden
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Skip windows/arm64 — uncommon and no obvious user demand.
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.buildTime={{.Date}}
+      - -X main.builtBy=goreleaser
+    flags:
+      - -trimpath
+
+  - id: warden-lsp
+    main: ./cmd/warden-lsp
+    binary: warden-lsp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+    flags:
+      - -trimpath
+
+archives:
+  - id: warden-archives
+    ids:
+      - warden
+      - warden-lsp
+    name_template: >-
+      {{ .ProjectName }}-
+      {{- .Version }}-
+      {{- .Os }}-
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+    formats: ['tar.gz']
+    format_overrides:
+      - goos: windows
+        formats: ['zip']
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - 'merge conflict'
+      - 'Merge pull request'
+      - 'Merge remote-tracking branch'
+      - 'Merge branch'
+  groups:
+    - title: 'New Features'
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: 'Bug Fixes'
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: 'Refactoring'
+      regexp: '^.*?refactor(\(.+\))??!?:.+$'
+      order: 2
+    - title: 'Performance Improvements'
+      regexp: '^.*?perf(\(.+\))??!?:.+$'
+      order: 3
+    - title: 'Documentation Updates'
+      regexp: '^.*?docs(\(.+\))??!?:.+$'
+      order: 4
+    - title: 'Other Changes'
+      order: 999
+
+release:
+  github:
+    owner: xraph
+    name: warden
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## Warden {{ .Tag }} ({{ .Date }})
+
+    Composable RBAC + ABAC + ReBAC + PBAC for Go, with a declarative
+    `.warden` config language and language server in the box.
+
+  footer: |
+    ## Installation
+
+    ### Using `go install`
+
+    ```bash
+    go install github.com/xraph/warden/cmd/warden@{{ .Tag }}
+    go install github.com/xraph/warden/cmd/warden-lsp@{{ .Tag }}
+    ```
+
+    ### Pre-built binaries
+
+    Download the appropriate archive for your platform from the assets
+    below. Each archive contains both `warden` and `warden-lsp`.
+
+    Verify checksums:
+
+    ```bash
+    shasum -a 256 -c checksums.txt
+    ```
+
+    ### VS Code extension
+
+    The companion VS Code extension is published as
+    `xraph.vscode-warden` and released on its own
+    `vscode-warden/v*.*.*` tag schedule. See
+    [the extension README](https://github.com/xraph/warden/blob/main/editor/vscode-warden/README.md).
+
+    ## What's Changed
+
+    Full changelog: https://github.com/xraph/warden/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+git:
+  tag_sort: -version:refname

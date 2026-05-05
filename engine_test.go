@@ -42,11 +42,10 @@ func TestRBACFlow(t *testing.T) {
 
 	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "editor", Slug: "editor"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"})
-	_ = s.AttachPermission(ctx, roleID, permID)
+	_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: "document:read"})
 
 	// Assign role to user.
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
-		ID:          id.NewAssignmentID(),
 		TenantID:    "t1",
 		RoleID:      roleID,
 		SubjectKind: "user",
@@ -95,11 +94,11 @@ func TestRBACRoleInheritance(t *testing.T) {
 	_ = s.CreateRole(ctx, &role.Role{ID: parentID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
 	_ = s.CreateRole(ctx, &role.Role{ID: childID, TenantID: "t1", Name: "editor", Slug: "editor", ParentSlug: "viewer"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"})
-	_ = s.AttachPermission(ctx, parentID, permID)
+	_ = s.AttachPermission(ctx, parentID, permission.Ref{Name: "document:read"})
 
 	// Assign child role to user.
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
-		ID: id.NewAssignmentID(), TenantID: "t1", RoleID: childID, SubjectKind: "user", SubjectID: "u1",
+		TenantID: "t1", RoleID: childID, SubjectKind: "user", SubjectID: "u1",
 	})
 
 	// User should inherit parent's permissions.
@@ -138,12 +137,12 @@ func TestRBACRoleInheritance_MultiLevel(t *testing.T) {
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: writePerm, TenantID: "t1", Name: "doc:write", Resource: "doc", Action: "write"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: deletePerm, TenantID: "t1", Name: "doc:delete", Resource: "doc", Action: "delete"})
 
-	_ = s.AttachPermission(ctx, viewerID, readPerm)
-	_ = s.AttachPermission(ctx, editorID, writePerm)
-	_ = s.AttachPermission(ctx, adminID, deletePerm)
+	_ = s.AttachPermission(ctx, viewerID, permission.Ref{Name: "doc:read"})
+	_ = s.AttachPermission(ctx, editorID, permission.Ref{Name: "doc:write"})
+	_ = s.AttachPermission(ctx, adminID, permission.Ref{Name: "doc:delete"})
 
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
-		ID: id.NewAssignmentID(), TenantID: "t1", RoleID: adminID, SubjectKind: "user", SubjectID: "u1",
+		TenantID: "t1", RoleID: adminID, SubjectKind: "user", SubjectID: "u1",
 	})
 
 	for _, action := range []string{"read", "write", "delete"} {
@@ -176,10 +175,10 @@ func TestRBACRoleInheritance_CircularSlug(t *testing.T) {
 	_ = s.CreateRole(ctx, &role.Role{ID: aID, TenantID: "t1", Name: "A", Slug: "role-a", ParentSlug: "role-b"})
 	_ = s.CreateRole(ctx, &role.Role{ID: bID, TenantID: "t1", Name: "B", Slug: "role-b", ParentSlug: "role-a"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
-	_ = s.AttachPermission(ctx, bID, permID)
+	_ = s.AttachPermission(ctx, bID, permission.Ref{Name: "doc:read"})
 
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
-		ID: id.NewAssignmentID(), TenantID: "t1", RoleID: aID, SubjectKind: "user", SubjectID: "u1",
+		TenantID: "t1", RoleID: aID, SubjectKind: "user", SubjectID: "u1",
 	})
 
 	done := make(chan struct{})
@@ -219,10 +218,10 @@ func TestRBACRoleInheritance_DanglingParentSlug(t *testing.T) {
 
 	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "orphan", Slug: "orphan", ParentSlug: "ghost"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
-	_ = s.AttachPermission(ctx, roleID, permID)
+	_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: "doc:read"})
 
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
-		ID: id.NewAssignmentID(), TenantID: "t1", RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
+		TenantID: "t1", RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
 	})
 
 	result, err := eng.Check(ctx, &CheckRequest{
@@ -244,7 +243,6 @@ func TestReBAC_DirectRelation(t *testing.T) {
 
 	// Create direct relation: user u1 is viewer of document doc1.
 	_ = s.CreateRelation(ctx, &relation.Tuple{
-		ID:          id.NewRelationID(),
 		TenantID:    "t1",
 		ObjectType:  "document",
 		ObjectID:    "doc1",
@@ -272,13 +270,13 @@ func TestReBAC_TransitiveRelation(t *testing.T) {
 
 	// document:doc1#read -> folder:f1#read (subject set: read on folder grants read on doc)
 	_ = s.CreateRelation(ctx, &relation.Tuple{
-		ID: id.NewRelationID(), TenantID: "t1",
+		TenantID:   "t1",
 		ObjectType: "document", ObjectID: "doc1", Relation: "read",
 		SubjectType: "folder", SubjectID: "f1", SubjectRelation: "read",
 	})
 	// folder:f1#read -> user:u1
 	_ = s.CreateRelation(ctx, &relation.Tuple{
-		ID: id.NewRelationID(), TenantID: "t1",
+		TenantID:   "t1",
 		ObjectType: "folder", ObjectID: "f1", Relation: "read",
 		SubjectType: "user", SubjectID: "u1",
 	})
@@ -302,7 +300,6 @@ func TestABACFlow(t *testing.T) {
 
 	// Create allow policy for users with role=admin attribute.
 	_ = s.CreatePolicy(ctx, &policy.Policy{
-		ID:       id.NewPolicyID(),
 		TenantID: "t1",
 		Name:     "admin-allow",
 		Effect:   policy.EffectAllow,
@@ -347,13 +344,13 @@ func TestABACDenyOverridesAllow(t *testing.T) {
 
 	// Allow policy.
 	_ = s.CreatePolicy(ctx, &policy.Policy{
-		ID: id.NewPolicyID(), TenantID: "t1", Name: "allow-all",
+		TenantID: "t1", Name: "allow-all",
 		Effect: policy.EffectAllow, IsActive: true,
 		Actions: []string{"*"},
 	})
 	// Deny policy for specific IP range.
 	_ = s.CreatePolicy(ctx, &policy.Policy{
-		ID: id.NewPolicyID(), TenantID: "t1", Name: "deny-internal",
+		TenantID: "t1", Name: "deny-internal",
 		Effect: policy.EffectDeny, IsActive: true,
 		Actions: []string{"*"},
 		Conditions: []policy.Condition{
@@ -398,7 +395,7 @@ func TestEnforce(t *testing.T) {
 	eng, s := newTestEngine(t)
 
 	_ = s.CreatePolicy(ctx, &policy.Policy{
-		ID: id.NewPolicyID(), TenantID: "t1", Name: "allow-all",
+		TenantID: "t1", Name: "allow-all",
 		Effect: policy.EffectAllow, IsActive: true, Actions: []string{"*"},
 	})
 
@@ -417,7 +414,7 @@ func TestCanI(t *testing.T) {
 	eng, s := newTestEngine(t)
 
 	_ = s.CreatePolicy(ctx, &policy.Policy{
-		ID: id.NewPolicyID(), TenantID: "t1", Name: "allow-all",
+		TenantID: "t1", Name: "allow-all",
 		Effect: policy.EffectAllow, IsActive: true, Actions: []string{"*"},
 	})
 
@@ -474,11 +471,11 @@ func TestResourceScopedRole(t *testing.T) {
 
 	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "doc-editor", Slug: "doc-editor"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "document:write", Resource: "document", Action: "write"})
-	_ = s.AttachPermission(ctx, roleID, permID)
+	_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: "document:write"})
 
 	// Assign role scoped to a specific document.
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
-		ID: id.NewAssignmentID(), TenantID: "t1", RoleID: roleID,
+		TenantID: "t1", RoleID: roleID,
 		SubjectKind: "user", SubjectID: "u1",
 		ResourceType: "document", ResourceID: "doc1",
 	})
@@ -503,7 +500,7 @@ func TestABACTimeCondition(t *testing.T) {
 
 	future := time.Now().Add(time.Hour).Format(time.RFC3339)
 	_ = s.CreatePolicy(ctx, &policy.Policy{
-		ID: id.NewPolicyID(), TenantID: "t1", Name: "time-limited",
+		TenantID: "t1", Name: "time-limited",
 		Effect: policy.EffectAllow, IsActive: true,
 		Actions: []string{"*"},
 		Conditions: []policy.Condition{
@@ -536,10 +533,10 @@ func TestCheckWithTenantOverride(t *testing.T) {
 
 	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t2", Name: "admin", Slug: "admin"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t2", Name: "document:read", Resource: "document", Action: "read"})
-	_ = s.AttachPermission(ctx, roleID, permID)
+	_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: "document:read"})
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
-		ID: id.NewAssignmentID(), TenantID: "t2",
-		RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
+		TenantID: "t2",
+		RoleID:   roleID, SubjectKind: "user", SubjectID: "u1",
 	})
 
 	// Without tenant override — context tenant "t1" is used, should be denied.
@@ -629,8 +626,8 @@ func TestCheck_DenyReasonIncludesContext(t *testing.T) {
 	roleID := id.NewRoleID()
 	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
-		ID: id.NewAssignmentID(), TenantID: "t1",
-		RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
+		TenantID: "t1",
+		RoleID:   roleID, SubjectKind: "user", SubjectID: "u1",
 	})
 
 	result, err := eng.Check(ctx, &CheckRequest{

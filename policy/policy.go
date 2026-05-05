@@ -1,4 +1,19 @@
-// Package policy defines the ABAC Policy entity with conditions and operators.
+// Package policy defines the Policy entity used for ABAC and PBAC evaluation.
+//
+// ABAC (attribute-based) is the basic match: condition predicates over
+// subject / resource / action / context attributes.
+//
+// PBAC (policy-based) adds:
+//   - Time-bound policies via NotBefore/NotAfter — policies that only fire
+//     within an effective window. Outside the window the policy is treated
+//     as if IsActive=false. Useful for scheduled feature flags, temporary
+//     access grants, audit-mode rollouts, and incident-response rules
+//     ("freeze production deploys until 2026-06-01").
+//   - Obligations: named actions emitted when a policy matches. The engine
+//     records every obligation that fired in CheckResult.Obligations and
+//     emits a plugin hook (PolicyObligationFired) so audit / Chronicle /
+//     notification systems can react. Examples: "audit-log", "require-mfa",
+//     "notify-security", "step-up-auth".
 package policy
 
 import (
@@ -18,10 +33,22 @@ const (
 	EffectDeny Effect = "deny"
 )
 
-// Policy defines an attribute-based access control rule.
+// Policy defines an attribute-based / policy-based access-control rule.
 //
 // NamespacePath locates the policy within the tenant's namespace tree. A
 // policy at namespace N applies to checks in N and all descendants.
+//
+// NotBefore and NotAfter define the policy's effective window. A nil
+// pointer means "no bound on that side". Outside the window the policy is
+// skipped exactly as if IsActive were false, regardless of the IsActive
+// flag — IsActive is the manual override; NotBefore/NotAfter are the
+// schedule.
+//
+// Obligations is a list of named actions the policy emits when it
+// matches. The engine records them in CheckResult.Obligations and fires
+// the PolicyObligationFired plugin hook for each. Obligations don't
+// change the allow/deny decision; they're side-effect signals consumed by
+// audit, notification, and step-up-auth systems.
 type Policy struct {
 	ID            id.PolicyID    `json:"id" db:"id"`
 	TenantID      string         `json:"tenant_id" db:"tenant_id"`
@@ -32,6 +59,9 @@ type Policy struct {
 	Effect        Effect         `json:"effect" db:"effect"`
 	Priority      int            `json:"priority" db:"priority"`
 	IsActive      bool           `json:"is_active" db:"is_active"`
+	NotBefore     *time.Time     `json:"not_before,omitempty" db:"not_before"`
+	NotAfter      *time.Time     `json:"not_after,omitempty" db:"not_after"`
+	Obligations   []string       `json:"obligations,omitempty" db:"-"`
 	Version       int            `json:"version" db:"version"`
 	Subjects      []SubjectMatch `json:"subjects" db:"-"`
 	Actions       []string       `json:"actions" db:"-"`
@@ -40,6 +70,22 @@ type Policy struct {
 	Metadata      map[string]any `json:"metadata,omitempty" db:"metadata"`
 	CreatedAt     time.Time      `json:"created_at" db:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at" db:"updated_at"`
+}
+
+// EffectiveAt reports whether the policy is active at instant t. Returns
+// false if IsActive is false, NotBefore is in the future, or NotAfter is
+// in the past. Inputs may be the zero time (treated as "no bound").
+func (p *Policy) EffectiveAt(t time.Time) bool {
+	if !p.IsActive {
+		return false
+	}
+	if p.NotBefore != nil && t.Before(*p.NotBefore) {
+		return false
+	}
+	if p.NotAfter != nil && t.After(*p.NotAfter) {
+		return false
+	}
+	return true
 }
 
 // SubjectMatch defines which subjects a policy applies to.

@@ -1,0 +1,18 @@
+// Shared policies pulled into every environment. Lives under
+// `_shared/` to make the directory naming convention obvious.
+//
+// This is a real ABAC policy with a PBAC obligation — every successful
+// document write triggers an "audit-log" obligation that an audit
+// plugin would pick up via PolicyObligationFired.
+
+warden config 1
+
+policy "audit-writes" {
+  description = "Emit an audit-log obligation on every document write."
+  effect      = allow
+  priority    = 100
+  active      = true
+  actions     = ["write"]
+  resources   = ["document"]
+  obligations = ["audit-log"]
+}

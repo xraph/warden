@@ -11,7 +11,7 @@ import (
 // CompileExpr parses a textual permission expression into an AST.
 // Used by the engine to compile ResourceType.Permissions[].Expression
 // at Check time (with caching).
-func CompileExpr(file string, src string) (Expr, []*Diagnostic) {
+func CompileExpr(file, src string) (Expr, []*Diagnostic) {
 	p := &parser{
 		l:    NewLexer(file, []byte(src)),
 		file: file,
@@ -176,8 +176,6 @@ func (e *Evaluator) walk(ctx context.Context, expr Expr, ec EvalContext, depth i
 // actually a permission would require recursive evaluation against the
 // chained resource type. We support that recursion via a callback the
 // engine wires in via WithPermissionResolver.
-type permResolver func(ctx context.Context, resourceType, resourceID, permName string, ec EvalContext) (bool, error)
-
 func (e *Evaluator) walkTraversal(ctx context.Context, steps []string, ec EvalContext, depth int) (bool, error) {
 	if len(steps) < 2 {
 		return false, nil

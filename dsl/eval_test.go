@@ -10,18 +10,17 @@ import (
 	"github.com/xraph/warden/store/memory"
 )
 
-func writeTuple(t *testing.T, s *memory.Store, tenant, ns, objType, objID, rel, subjType, subjID string) {
+func writeTuple(t *testing.T, s *memory.Store, objType, objID, rel, subjType, subjID string) {
 	t.Helper()
 	if err := s.CreateRelation(context.Background(), &relation.Tuple{
-		ID:            id.NewRelationID(),
-		TenantID:      tenant,
-		NamespacePath: ns,
-		ObjectType:    objType,
-		ObjectID:      objID,
-		Relation:      rel,
-		SubjectType:   subjType,
-		SubjectID:     subjID,
-		CreatedAt:     time.Now(),
+		ID:          id.NewRelationID(),
+		TenantID:    "t1",
+		ObjectType:  objType,
+		ObjectID:    objID,
+		Relation:    rel,
+		SubjectType: subjType,
+		SubjectID:   subjID,
+		CreatedAt:   time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +34,7 @@ func TestEval_DirectRelation(t *testing.T) {
 		t.Fatalf("compile: %v", errs)
 	}
 
-	writeTuple(t, s, "t1", "", "doc", "d1", "viewer", "user", "alice")
+	writeTuple(t, s, "doc", "d1", "viewer", "user", "alice")
 
 	ec := EvalContext{
 		TenantID:    "t1",
@@ -65,9 +64,9 @@ func TestEval_OrAndNot(t *testing.T) {
 	ev := NewEvaluator(s)
 
 	// Alice is editor; Bob is viewer; Carol is banned.
-	writeTuple(t, s, "t1", "", "doc", "d1", "editor", "user", "alice")
-	writeTuple(t, s, "t1", "", "doc", "d1", "viewer", "user", "bob")
-	writeTuple(t, s, "t1", "", "doc", "d1", "banned", "user", "carol")
+	writeTuple(t, s, "doc", "d1", "editor", "user", "alice")
+	writeTuple(t, s, "doc", "d1", "viewer", "user", "bob")
+	writeTuple(t, s, "doc", "d1", "banned", "user", "carol")
 
 	tests := []struct {
 		name    string
@@ -111,8 +110,8 @@ func TestEval_Traversal(t *testing.T) {
 
 	// folder/parent has alice as viewer.
 	// document/child has its parent set to folder/parent.
-	writeTuple(t, s, "t1", "", "folder", "parent", "viewer", "user", "alice")
-	writeTuple(t, s, "t1", "", "doc", "child", "parent", "folder", "parent")
+	writeTuple(t, s, "folder", "parent", "viewer", "user", "alice")
+	writeTuple(t, s, "doc", "child", "parent", "folder", "parent")
 
 	// `parent->viewer` should match: hop into folder/parent, then check
 	// viewer.
@@ -159,9 +158,9 @@ func TestEval_DepthBound(t *testing.T) {
 	ev := NewEvaluator(s)
 	// A chain of folders, each parent of the next, but no terminating viewer.
 	// Walker should bottom out at depth and return false rather than recurse forever.
-	writeTuple(t, s, "t1", "", "folder", "f1", "parent", "folder", "f2")
-	writeTuple(t, s, "t1", "", "folder", "f2", "parent", "folder", "f3")
-	writeTuple(t, s, "t1", "", "folder", "f3", "parent", "folder", "f1") // cycle
+	writeTuple(t, s, "folder", "f1", "parent", "folder", "f2")
+	writeTuple(t, s, "folder", "f2", "parent", "folder", "f3")
+	writeTuple(t, s, "folder", "f3", "parent", "folder", "f1") // cycle
 
 	expr, _ := CompileExpr("test", "parent->parent->parent->viewer")
 	ec := EvalContext{

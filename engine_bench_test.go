@@ -42,7 +42,7 @@ func BenchmarkCheckWithNamespace(b *testing.B) {
 			permID := id.NewPermissionID()
 			_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
 			_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
-			_ = s.AttachPermission(ctx, roleID, permID)
+			_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: "doc:read"})
 			_ = s.CreateAssignment(ctx, &assignment.Assignment{
 				ID: id.NewAssignmentID(), TenantID: "t1", RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
 			})
@@ -63,6 +63,61 @@ func BenchmarkCheckWithNamespace(b *testing.B) {
 				}
 				if !result.Allowed {
 					b.Fatalf("expected allow at depth %d, got %s", depth, result.Decision)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkRBACWithPermsCount measures the cost of an RBAC Check on a role
+// with N grants. Pre-Phase A.5 the engine did N+1 queries (ListRolePermissions
+// returned []PermissionID, then GetPermission per ID). After A.5 it's a
+// single JOIN — Check time should be flat in N for the per-perm dispatch
+// (still scales with the matching loop, but no additional DB calls).
+func BenchmarkRBACWithPermsCount(b *testing.B) {
+	for _, n := range []int{1, 5, 20, 100} {
+		b.Run("N="+strconv.Itoa(n), func(b *testing.B) {
+			ctx := WithTenant(context.Background(), "app1", "t1")
+			s := memory.New()
+			eng, err := NewEngine(WithStore(s))
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			roleID := id.NewRoleID()
+			_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
+
+			// N permissions on the same resource. The granting one is
+			// at index 0; the rest are red-herrings the engine has to skip.
+			for i := 0; i < n; i++ {
+				name := "doc:read"
+				if i > 0 {
+					name = "doc:noop_" + strconv.Itoa(i)
+				}
+				_ = s.CreatePermission(ctx, &permission.Permission{
+					ID: id.NewPermissionID(), TenantID: "t1", Name: name,
+					Resource: "doc", Action: name[len("doc:"):],
+				})
+				_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: name})
+			}
+			_ = s.CreateAssignment(ctx, &assignment.Assignment{
+				ID: id.NewAssignmentID(), TenantID: "t1", RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
+			})
+			req := &CheckRequest{
+				Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+				Action:   Action{Name: "read"},
+				Resource: Resource{Type: "doc", ID: "d1"},
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				result, err := eng.Check(ctx, req)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if !result.Allowed {
+					b.Fatalf("expected allow at N=%d", n)
 				}
 			}
 		})
@@ -101,7 +156,7 @@ func BenchmarkRoleInheritance(b *testing.B) {
 				}
 				_ = s.CreateRole(ctx, r)
 			}
-			_ = s.AttachPermission(ctx, roleIDs[0], permID)
+			_ = s.AttachPermission(ctx, roleIDs[0], permission.Ref{Name: "doc:read"})
 
 			_ = s.CreateAssignment(ctx, &assignment.Assignment{
 				ID: id.NewAssignmentID(), TenantID: "t1", RoleID: roleIDs[depth], SubjectKind: "user", SubjectID: "u1",

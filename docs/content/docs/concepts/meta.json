@@ -5,6 +5,7 @@
     "type-ids",
     "decision-model",
     "multi-tenancy",
+    "namespaces",
     "errors"
   ]
 }

@@ -10,13 +10,55 @@ import (
 	"strings"
 )
 
+// LoadOption configures a Load* call. Use the With* helpers below.
+type LoadOption func(*loadConfig)
+
+type loadConfig struct {
+	vars Variables
+}
+
+func collectLoadOptions(opts []LoadOption) loadConfig {
+	var cfg loadConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return cfg
+}
+
+// WithVariables expands `${NAME}` placeholders in every loaded source
+// file using the supplied map. Names match `[A-Za-z_][A-Za-z0-9_]*`.
+// Substitution is purely textual; see SubstituteVariables for the full
+// rules. Pass nil or an empty map to disable substitution (the default).
+func WithVariables(v Variables) LoadOption {
+	return func(c *loadConfig) { c.vars = v }
+}
+
+// substituteIfNeeded runs SubstituteVariables on src. We always run it,
+// even when no variables are configured, so source containing
+// `${UNDEFINED}` produces a clean "undefined variable" diagnostic
+// instead of a cascade of parser errors. Files with no `${...}` pay
+// only the cost of a single byte scan, which is microseconds for
+// editor-scale documents.
+//
+// Source that needs a literal `${...}` (for example, a regex pattern in
+// a condition value) escapes the dollar sign with `$$` — see
+// SubstituteVariables for the rules.
+func (cfg *loadConfig) substituteIfNeeded(file string, src []byte) ([]byte, []*Diagnostic) {
+	return SubstituteVariables(file, src, cfg.vars)
+}
+
 // LoadFile reads and parses a single .warden file.
-func LoadFile(path string) (*Program, []*Diagnostic, error) {
+func LoadFile(path string, opts ...LoadOption) (*Program, []*Diagnostic, error) {
+	cfg := collectLoadOptions(opts)
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, err
 	}
+	src, varDiags := cfg.substituteIfNeeded(path, src)
 	prog, errs := Parse(path, src)
+	if len(varDiags) > 0 {
+		errs = append(varDiags, errs...)
+	}
 	return prog, errs, nil
 }
 
@@ -27,7 +69,7 @@ func LoadFile(path string) (*Program, []*Diagnostic, error) {
 // of files determines tie-breaking only for the scope (tenant/app)
 // fields — the first file with a non-empty value wins, and any later file
 // declaring a conflicting non-empty value yields a diagnostic.
-func LoadFiles(paths []string) (*Program, []*Diagnostic, error) {
+func LoadFiles(paths []string, opts ...LoadOption) (*Program, []*Diagnostic, error) {
 	merged := &Program{}
 	var allErrs []*Diagnostic
 
@@ -36,7 +78,7 @@ func LoadFiles(paths []string) (*Program, []*Diagnostic, error) {
 	sort.Strings(files)
 
 	for _, path := range files {
-		prog, errs, err := LoadFile(path)
+		prog, errs, err := LoadFile(path, opts...)
 		if err != nil {
 			return nil, allErrs, err
 		}
@@ -52,7 +94,7 @@ func LoadFiles(paths []string) (*Program, []*Diagnostic, error) {
 // LoadDir walks a directory tree and loads every .warden file under it.
 // Hidden directories (those starting with `.`) are skipped; underscore-
 // prefixed directories like `_shared/` are kept by convention.
-func LoadDir(dir string) (*Program, []*Diagnostic, error) {
+func LoadDir(dir string, opts ...LoadOption) (*Program, []*Diagnostic, error) {
 	var paths []string
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -76,14 +118,14 @@ func LoadDir(dir string) (*Program, []*Diagnostic, error) {
 	if len(paths) == 0 {
 		return nil, nil, fmt.Errorf("warden dsl: no .warden files found under %s", dir)
 	}
-	return LoadFiles(paths)
+	return LoadFiles(paths, opts...)
 }
 
 // LoadGlob loads every .warden file matching a glob pattern.
 // Pattern semantics match filepath.Glob plus `**` for recursive matching
 // (we don't expand `**` here — use LoadDir for that, or expand the pattern
 // yourself with doublestar).
-func LoadGlob(pattern string) (*Program, []*Diagnostic, error) {
+func LoadGlob(pattern string, opts ...LoadOption) (*Program, []*Diagnostic, error) {
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, nil, err
@@ -97,12 +139,13 @@ func LoadGlob(pattern string) (*Program, []*Diagnostic, error) {
 			paths = append(paths, m)
 		}
 	}
-	return LoadFiles(paths)
+	return LoadFiles(paths, opts...)
 }
 
 // LoadFS reads .warden files from an fs.FS rooted at root. Useful for
 // embedded configs (//go:embed).
-func LoadFS(fsys fs.FS, root string) (*Program, []*Diagnostic, error) {
+func LoadFS(fsys fs.FS, root string, opts ...LoadOption) (*Program, []*Diagnostic, error) {
+	cfg := collectLoadOptions(opts)
 	var paths []string
 	err := fs.WalkDir(fsys, root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -130,6 +173,8 @@ func LoadFS(fsys fs.FS, root string) (*Program, []*Diagnostic, error) {
 		if err != nil {
 			return nil, allErrs, err
 		}
+		src, varDiags := cfg.substituteIfNeeded(path, src)
+		allErrs = append(allErrs, varDiags...)
 		prog, errs := Parse(path, src)
 		allErrs = append(allErrs, errs...)
 		mergeInto(merged, prog, path, &allErrs)
@@ -138,16 +183,16 @@ func LoadFS(fsys fs.FS, root string) (*Program, []*Diagnostic, error) {
 }
 
 // Load auto-detects whether arg is a file, directory, or glob pattern.
-func Load(arg string) (*Program, []*Diagnostic, error) {
+func Load(arg string, opts ...LoadOption) (*Program, []*Diagnostic, error) {
 	info, err := os.Stat(arg)
 	if err == nil {
 		if info.IsDir() {
-			return LoadDir(arg)
+			return LoadDir(arg, opts...)
 		}
-		return LoadFile(arg)
+		return LoadFile(arg, opts...)
 	}
 	// Not a real path — try as a glob.
-	return LoadGlob(arg)
+	return LoadGlob(arg, opts...)
 }
 
 func isWardenFile(name string) bool {

@@ -8,7 +8,6 @@ import (
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
-	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store/memory"
@@ -23,18 +22,22 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Create role and permission.
-	roleID := id.NewRoleID()
-	permID := id.NewPermissionID()
+	// Create role and permission. IDs are auto-assigned by the store;
+	// we read them from the entity after Create when we need them.
+	editor := &role.Role{TenantID: "tenant-1", Name: "editor", Slug: "editor"}
+	_ = s.CreateRole(ctx, editor)
 
-	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "tenant-1", Name: "editor", Slug: "editor"})
-	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "tenant-1", Name: "document:read", Resource: "document", Action: "read"})
-	_ = s.AttachPermission(ctx, roleID, permID)
+	_ = s.CreatePermission(ctx, &permission.Permission{
+		TenantID: "tenant-1", Name: "document:read", Resource: "document", Action: "read",
+	})
+	_ = s.AttachPermission(ctx, editor.ID, permission.Ref{Name: "document:read"})
 
 	// Assign role to user.
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
-		ID: id.NewAssignmentID(), TenantID: "tenant-1",
-		RoleID: roleID, SubjectKind: "user", SubjectID: "alice",
+		TenantID:    "tenant-1",
+		RoleID:      editor.ID,
+		SubjectKind: "user",
+		SubjectID:   "alice",
 	})
 
 	// Check authorization.

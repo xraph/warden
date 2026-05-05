@@ -231,6 +231,63 @@ CREATE INDEX IF NOT EXISTS idx_warden_rtypes_tenant ON warden_resource_types (te
 			},
 		},
 		&migrate.Migration{
+			Name:    "role_permissions_natural_key",
+			Version: "20260101000003",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Backfill perm natural keys, recreate the table with the new
+				// schema (SQLite can't drop columns or change PK in-place).
+				_, err := exec.Exec(ctx, `
+CREATE TABLE warden_role_permissions_new (
+    role_id              TEXT NOT NULL REFERENCES warden_roles(id) ON DELETE CASCADE,
+    perm_namespace_path  TEXT NOT NULL,
+    perm_name            TEXT NOT NULL,
+    PRIMARY KEY (role_id, perm_namespace_path, perm_name)
+);
+
+INSERT INTO warden_role_permissions_new (role_id, perm_namespace_path, perm_name)
+SELECT rp.role_id, p.namespace_path, p.name
+FROM warden_role_permissions rp
+JOIN warden_permissions p ON p.id = rp.permission_id;
+
+DROP INDEX IF EXISTS idx_warden_role_perms_role;
+DROP INDEX IF EXISTS idx_warden_role_perms_perm;
+DROP TABLE warden_role_permissions;
+ALTER TABLE warden_role_permissions_new RENAME TO warden_role_permissions;
+
+CREATE INDEX IF NOT EXISTS idx_warden_role_perms_role ON warden_role_permissions (role_id);
+CREATE INDEX IF NOT EXISTS idx_warden_role_perms_perm ON warden_role_permissions (perm_namespace_path, perm_name);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+CREATE TABLE warden_role_permissions_old (
+    role_id         TEXT NOT NULL REFERENCES warden_roles(id) ON DELETE CASCADE,
+    permission_id   TEXT NOT NULL REFERENCES warden_permissions(id) ON DELETE CASCADE,
+    PRIMARY KEY (role_id, permission_id)
+);
+
+INSERT INTO warden_role_permissions_old (role_id, permission_id)
+SELECT rp.role_id, p.id
+FROM warden_role_permissions rp
+JOIN warden_roles r ON r.id = rp.role_id
+JOIN warden_permissions p
+  ON p.tenant_id = r.tenant_id
+ AND p.namespace_path = rp.perm_namespace_path
+ AND p.name = rp.perm_name;
+
+DROP INDEX IF EXISTS idx_warden_role_perms_role;
+DROP INDEX IF EXISTS idx_warden_role_perms_perm;
+DROP TABLE warden_role_permissions;
+ALTER TABLE warden_role_permissions_old RENAME TO warden_role_permissions;
+
+CREATE INDEX IF NOT EXISTS idx_warden_role_perms_role ON warden_role_permissions (role_id);
+CREATE INDEX IF NOT EXISTS idx_warden_role_perms_perm ON warden_role_permissions (permission_id);
+`)
+				return err
+			},
+		},
+		&migrate.Migration{
 			Name:    "namespaces",
 			Version: "20260101000002",
 			Up: func(ctx context.Context, exec migrate.Executor) error {
@@ -353,6 +410,32 @@ ALTER TABLE warden_roles_old RENAME TO warden_roles;
 CREATE INDEX IF NOT EXISTS idx_warden_roles_tenant ON warden_roles (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_parent ON warden_roles (parent_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_system ON warden_roles (tenant_id, is_system);
+`)
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "policy_pbac",
+			Version: "20260101000004",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_policies ADD COLUMN not_before  TEXT;
+ALTER TABLE warden_policies ADD COLUMN not_after   TEXT;
+ALTER TABLE warden_policies ADD COLUMN obligations TEXT NOT NULL DEFAULT '[]';
+
+CREATE INDEX IF NOT EXISTS idx_warden_policies_window
+    ON warden_policies (tenant_id, namespace_path)
+    WHERE not_before IS NOT NULL OR not_after IS NOT NULL;
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_warden_policies_window;
+
+ALTER TABLE warden_policies DROP COLUMN not_before;
+ALTER TABLE warden_policies DROP COLUMN not_after;
+ALTER TABLE warden_policies DROP COLUMN obligations;
 `)
 				return err
 			},

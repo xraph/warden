@@ -178,8 +178,11 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 		e.cache.Set(ctx, scope.tenantID, req, result)
 	}
 
-	// 7. Extension hook: after check.
+	// 7. Extension hooks: per-obligation, then after check.
 	if e.plugins != nil {
+		for _, ob := range result.Obligations {
+			e.plugins.EmitPolicyObligationFired(ctx, policyIDFromMatched(result.MatchedBy), ob, req, result)
+		}
 		e.plugins.EmitAfterCheck(ctx, req, result)
 	}
 
@@ -292,13 +295,10 @@ func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *Check
 			log.Int("perm_count", len(perms)),
 		)
 
-		for _, permID := range perms {
-			perm, err := e.store.GetPermission(ctx, permID)
-			if err != nil || perm == nil {
-				e.logger.Warn("warden: rbac GetPermission error",
-					log.String("perm_id", permID.String()),
-					log.Error(err),
-				)
+		// Phase A.5: ListRolePermissions returns full Permission records via JOIN.
+		// No more N+1 GetPermission lookups in this hot path.
+		for _, perm := range perms {
+			if perm == nil {
 				continue
 			}
 			storedPerm := perm.Resource + ":" + perm.Action
@@ -421,24 +421,66 @@ func (e *Engine) evaluateABAC(ctx context.Context, scope tenantScope, req *Check
 }
 
 func (e *Engine) mergeDecisions(req *CheckRequest, rbac, rebac, abac *CheckResult) *CheckResult {
+	// Obligations from every matched policy (allow OR deny) flow through to
+	// the final result regardless of which decision wins. Side-effect
+	// signals are independent of the allow/deny outcome.
+	obligations := mergeObligations(rbac, rebac, abac)
+
 	// Explicit deny (from ABAC) always wins.
 	if abac != nil && abac.Decision == DecisionDenyExplicit {
-		return abac
+		out := *abac
+		out.Obligations = obligations
+		return &out
 	}
 
 	// Any allow from any model grants access.
 	for _, r := range []*CheckResult{rbac, rebac, abac} {
 		if r != nil && r.Allowed {
-			return r
+			out := *r
+			out.Obligations = obligations
+			return &out
 		}
 	}
 
 	// Default deny — pick most informative reason.
 	for _, r := range []*CheckResult{rbac, rebac, abac} {
 		if r != nil && r.Reason != "" {
-			return r
+			out := *r
+			out.Obligations = obligations
+			return &out
 		}
 	}
 
-	return &CheckResult{Decision: DecisionDenyDefault, Reason: fmt.Sprintf("no rule allows %s:%s to %s on %s:%s", req.Subject.Kind, req.Subject.ID, req.Action.Name, req.Resource.Type, req.Resource.ID)}
+	return &CheckResult{
+		Decision:    DecisionDenyDefault,
+		Reason:      fmt.Sprintf("no rule allows %s:%s to %s on %s:%s", req.Subject.Kind, req.Subject.ID, req.Action.Name, req.Resource.Type, req.Resource.ID),
+		Obligations: obligations,
+	}
+}
+
+func mergeObligations(results ...*CheckResult) []string {
+	var all []string
+	for _, r := range results {
+		if r == nil {
+			continue
+		}
+		all = append(all, r.Obligations...)
+	}
+	return dedupeStrings(all)
+}
+
+// policyIDFromMatched returns the first ABAC policy ID in matchedBy, or
+// the zero value if none is present. Used to attach provenance to
+// PolicyObligationFired events; consumers needing full provenance can
+// iterate result.MatchedBy directly.
+func policyIDFromMatched(matchedBy []MatchInfo) id.PolicyID {
+	for _, m := range matchedBy {
+		if m.Source != "abac" {
+			continue
+		}
+		if pid, err := id.ParsePolicyID(m.RuleID); err == nil {
+			return pid
+		}
+	}
+	return id.PolicyID{}
 }

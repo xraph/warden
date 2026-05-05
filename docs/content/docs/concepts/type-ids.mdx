@@ -7,11 +7,13 @@ Every entity in Warden has a TypeID. TypeIDs are globally unique, sortable, URL-
 
 A TypeID looks like this:
 
-```
+```text
 role_01h455vb4pex5vsknk084sn02q
 ```
 
 The `role` prefix identifies this as a role. The suffix is a base32-encoded UUIDv7 that encodes creation time, so IDs sort chronologically.
+
+> **Auto-assigned by default.** Every store's `Create*` method generates a TypeID for you when the input's `ID` field is nil — see the auto-ID note in [Roles & Permissions](/docs/authorization/roles-permissions). The DSL goes further: `.warden` source never references TypeIDs at all. Roles cite each other by slug (`role editor : viewer`), permissions by name (`grants = ["doc:read"]`), namespaces by path (`/eng/admin`). TypeIDs are an implementation detail you only see when you're calling the store directly or inspecting the database.
 
 ## The `id` package
 

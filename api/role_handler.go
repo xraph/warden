@@ -9,6 +9,7 @@ import (
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/role"
 )
 
@@ -242,45 +243,75 @@ func (a *API) listRoles(ctx forge.Context, req *ListRolesRequest) (*RoleListResp
 	return &RoleListResponse{Body: roles}, nil
 }
 
+// resolvePermRef converts an attach/detach request's mixed-form permission
+// reference into a permission.Ref. PermissionName wins when both are set;
+// PermissionID is resolved via GetPermission for the legacy code path.
+func (a *API) resolvePermRef(ctx forge.Context, tenantID, permIDStr, permName, permNamespace string) (permission.Ref, *id.PermissionID, error) {
+	if permName != "" {
+		return permission.Ref{NamespacePath: permNamespace, Name: permName}, nil, nil
+	}
+	if permIDStr == "" {
+		return permission.Ref{}, nil, forge.BadRequest("permission_id or permission_name is required")
+	}
+	pid, err := id.ParsePermissionID(permIDStr)
+	if err != nil {
+		return permission.Ref{}, nil, forge.BadRequest(fmt.Sprintf("invalid permission ID: %v", err))
+	}
+	p, err := a.eng.Store().GetPermission(ctx.Context(), pid)
+	if err != nil || p == nil {
+		return permission.Ref{}, nil, forge.NotFound(fmt.Sprintf("permission %q not found", permIDStr))
+	}
+	if p.TenantID != tenantID {
+		return permission.Ref{}, nil, forge.NotFound(fmt.Sprintf("permission %q not found in tenant", permIDStr))
+	}
+	return permission.Ref{NamespacePath: p.NamespacePath, Name: p.Name}, &pid, nil
+}
+
 func (a *API) attachPermissionToRole(ctx forge.Context, req *AttachPermissionRequest) (*struct{}, error) {
 	roleID, err := id.ParseRoleID(ctx.Param("roleId"))
 	if err != nil {
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
+	_, tenantID := scopeFromForgeContext(ctx)
 
-	permID, err := id.ParsePermissionID(req.PermissionID)
-	if err != nil {
-		return nil, forge.BadRequest(fmt.Sprintf("invalid permission ID: %v", err))
+	ref, legacyID, perr := a.resolvePermRef(ctx, tenantID, req.PermissionID, req.PermissionName, req.PermissionNamespacePath)
+	if perr != nil {
+		return nil, perr
 	}
 
-	if err := a.eng.Store().AttachPermission(ctx.Context(), roleID, permID); err != nil {
+	if err := a.eng.Store().AttachPermission(ctx.Context(), roleID, ref); err != nil {
 		return nil, mapError(err)
 	}
 
-	if a.eng.Plugins() != nil {
-		a.eng.Plugins().EmitPermissionAttached(ctx.Context(), roleID, permID)
+	if a.eng.Plugins() != nil && legacyID != nil {
+		a.eng.Plugins().EmitPermissionAttached(ctx.Context(), roleID, *legacyID)
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)
 }
 
-func (a *API) detachPermissionFromRole(ctx forge.Context, _ *DetachPermissionRequest) (*struct{}, error) {
+func (a *API) detachPermissionFromRole(ctx forge.Context, req *DetachPermissionRequest) (*struct{}, error) {
 	roleID, err := id.ParseRoleID(ctx.Param("roleId"))
 	if err != nil {
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
+	_, tenantID := scopeFromForgeContext(ctx)
 
-	permID, err := id.ParsePermissionID(ctx.Param("permissionId"))
-	if err != nil {
-		return nil, forge.BadRequest(fmt.Sprintf("invalid permission ID: %v", err))
+	permIDStr := ctx.Param("permissionId")
+	if permIDStr == "" {
+		permIDStr = req.PermissionID
+	}
+	ref, legacyID, perr := a.resolvePermRef(ctx, tenantID, permIDStr, req.PermissionName, req.PermissionNamespacePath)
+	if perr != nil {
+		return nil, perr
 	}
 
-	if err := a.eng.Store().DetachPermission(ctx.Context(), roleID, permID); err != nil {
+	if err := a.eng.Store().DetachPermission(ctx.Context(), roleID, ref); err != nil {
 		return nil, mapError(err)
 	}
 
-	if a.eng.Plugins() != nil {
-		a.eng.Plugins().EmitPermissionDetached(ctx.Context(), roleID, permID)
+	if a.eng.Plugins() != nil && legacyID != nil {
+		a.eng.Plugins().EmitPermissionDetached(ctx.Context(), roleID, *legacyID)
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)

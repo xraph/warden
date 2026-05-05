@@ -175,7 +175,7 @@ func setupRBACData(t *testing.T, s *memory.Store, tenantID string) {
 
 	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: tenantID, Name: resource + "-" + action, Slug: resource + "-" + action})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: tenantID, Name: resource + ":" + action, Resource: resource, Action: action})
-	_ = s.AttachPermission(ctx, roleID, permID)
+	_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: resource + ":" + action})
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
 		ID: id.NewAssignmentID(), TenantID: tenantID,
 		RoleID: roleID, SubjectKind: "user", SubjectID: "u1",

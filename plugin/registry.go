@@ -79,6 +79,10 @@ type policyDeletedEntry struct {
 	name string
 	hook PolicyDeleted
 }
+type policyObligationFiredEntry struct {
+	name string
+	hook PolicyObligationFired
+}
 type shutdownEntry struct {
 	name string
 	hook Shutdown
@@ -107,6 +111,7 @@ type Registry struct {
 	policyCreated      []policyCreatedEntry
 	policyUpdated      []policyUpdatedEntry
 	policyDeleted      []policyDeletedEntry
+	policyObligation   []policyObligationFiredEntry
 	shutdown           []shutdownEntry
 }
 
@@ -168,6 +173,9 @@ func (r *Registry) Register(p Plugin) {
 	}
 	if h, ok := p.(PolicyDeleted); ok {
 		r.policyDeleted = append(r.policyDeleted, policyDeletedEntry{name, h})
+	}
+	if h, ok := p.(PolicyObligationFired); ok {
+		r.policyObligation = append(r.policyObligation, policyObligationFiredEntry{name, h})
 	}
 	if h, ok := p.(Shutdown); ok {
 		r.shutdown = append(r.shutdown, shutdownEntry{name, h})
@@ -341,6 +349,17 @@ func (r *Registry) EmitPolicyDeleted(ctx context.Context, polID id.PolicyID) {
 	for _, e := range r.policyDeleted {
 		if err := e.hook.OnPolicyDeleted(ctx, polID); err != nil {
 			r.logHookError("OnPolicyDeleted", e.name, err)
+		}
+	}
+}
+
+// EmitPolicyObligationFired notifies all plugins that implement
+// PolicyObligationFired. Called once per obligation produced by the
+// engine after merging RBAC / ReBAC / ABAC results.
+func (r *Registry) EmitPolicyObligationFired(ctx context.Context, polID id.PolicyID, obligation string, req, result any) {
+	for _, e := range r.policyObligation {
+		if err := e.hook.OnPolicyObligationFired(ctx, polID, obligation, req, result); err != nil {
+			r.logHookError("OnPolicyObligationFired", e.name, err)
 		}
 	}
 }

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"time"
+
 	"github.com/xraph/warden/policy"
 )
 
@@ -69,15 +71,33 @@ type ListRolesRequest struct {
 }
 
 // AttachPermissionRequest is the body for attaching a permission to a role.
+//
+// After Phase A.5 the junction is keyed by natural keys (perm_namespace_path,
+// perm_name) rather than typeids. Provide either:
+//   - PermissionID — legacy form; the handler resolves it to a Ref by
+//     calling GetPermission once.
+//   - PermissionName + optional PermissionNamespacePath — preferred natural
+//     form; what the DSL applier uses internally.
+//
+// At least one of the two forms is required; if both are provided the name
+// form wins.
 type AttachPermissionRequest struct {
-	RoleID       string `path:"roleId" description:"Role ID"`
-	PermissionID string `json:"permission_id" description:"Permission ID to attach"`
+	RoleID                  string `path:"roleId" description:"Role ID"`
+	PermissionID            string `json:"permission_id,omitempty" description:"Permission ID (legacy; resolved to a name+namespace ref)"`
+	PermissionName          string `json:"permission_name,omitempty" description:"Permission name (e.g. \"document:read\")"`
+	PermissionNamespacePath string `json:"permission_namespace_path,omitempty" description:"Namespace path of the permission (defaults to tenant root)"`
 }
 
 // DetachPermissionRequest binds the path for DELETE /roles/:roleId/permissions/:permissionId.
+//
+// As with attach, accept either the legacy permission ID (path-segment) or
+// the natural-key form (query/body). The natural form is required when the
+// caller knows the permission by name.
 type DetachPermissionRequest struct {
-	RoleID       string `path:"roleId" description:"Role ID"`
-	PermissionID string `path:"permissionId" description:"Permission ID"`
+	RoleID                  string `path:"roleId" description:"Role ID"`
+	PermissionID            string `path:"permissionId" description:"Permission ID (legacy)"`
+	PermissionName          string `query:"permission_name,omitempty" description:"Permission name (alternative to permissionId)"`
+	PermissionNamespacePath string `query:"permission_namespace_path,omitempty" description:"Namespace path of the permission"`
 }
 
 // ──────────────────────────────────────────────────
@@ -181,13 +201,16 @@ type ListRelationsRequest struct {
 // Policy requests
 // ──────────────────────────────────────────────────
 
-// CreatePolicyRequest is the body for creating an ABAC policy.
+// CreatePolicyRequest is the body for creating an ABAC/PBAC policy.
 type CreatePolicyRequest struct {
 	Name        string                `json:"name" description:"Policy name"`
 	Description string                `json:"description,omitempty" description:"Human-readable description"`
 	Effect      string                `json:"effect" description:"Policy effect (allow or deny)"`
 	Priority    int                   `json:"priority,omitempty" description:"Policy priority"`
 	IsActive    bool                  `json:"is_active" description:"Whether the policy is active"`
+	NotBefore   *time.Time            `json:"not_before,omitempty" description:"PBAC: policy is inactive before this RFC3339 instant"`
+	NotAfter    *time.Time            `json:"not_after,omitempty" description:"PBAC: policy is inactive after this RFC3339 instant"`
+	Obligations []string              `json:"obligations,omitempty" description:"PBAC: named side-effect actions emitted on match"`
 	Subjects    []policy.SubjectMatch `json:"subjects,omitempty" description:"Subject matchers"`
 	Actions     []string              `json:"actions,omitempty" description:"Action patterns"`
 	Resources   []string              `json:"resources,omitempty" description:"Resource patterns"`
@@ -210,6 +233,9 @@ type UpdatePolicyRequest struct {
 	Effect      string                `json:"effect,omitempty" description:"Policy effect"`
 	Priority    *int                  `json:"priority,omitempty" description:"Priority"`
 	IsActive    *bool                 `json:"is_active,omitempty" description:"Active flag"`
+	NotBefore   *time.Time            `json:"not_before,omitempty" description:"PBAC: lower time bound (RFC3339)"`
+	NotAfter    *time.Time            `json:"not_after,omitempty" description:"PBAC: upper time bound (RFC3339)"`
+	Obligations []string              `json:"obligations,omitempty" description:"PBAC: named side-effect actions emitted on match"`
 	Subjects    []policy.SubjectMatch `json:"subjects,omitempty" description:"Subject matchers"`
 	Actions     []string              `json:"actions,omitempty" description:"Action patterns"`
 	Resources   []string              `json:"resources,omitempty" description:"Resource patterns"`

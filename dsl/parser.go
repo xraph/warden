@@ -4,7 +4,22 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// parseRFC3339 parses a timestamp literal as used in PBAC time-bound
+// fields (`not_before`, `not_after`). Accepts both RFC3339 and
+// RFC3339Nano so authors can write either `"2026-06-01T00:00:00Z"` or
+// `"2026-06-01T00:00:00.000Z"` interchangeably.
+func parseRFC3339(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.UTC(), nil
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("expected RFC3339 (e.g. \"2026-06-01T00:00:00Z\"), got %q", s)
+}
 
 // Parse parses `.warden` source into a Program. Errors are accumulated
 // (one per problem) and returned as a slice; a non-nil Program is returned
@@ -23,6 +38,8 @@ func Parse(file string, src []byte) (*Program, []*Diagnostic) {
 }
 
 // Diagnostic is a parser/checker error with a source position and message.
+//
+//nolint:errname // public API; rename would be a breaking change
 type Diagnostic struct {
 	Pos Pos
 	Msg string
@@ -39,29 +56,15 @@ type parser struct {
 	l    *Lexer
 	file string
 
-	cur, next Token
-	hasNext   bool
+	cur Token
 
 	errs []*Diagnostic
 }
 
 func (p *parser) advance() Token {
 	prev := p.cur
-	if p.hasNext {
-		p.cur = p.next
-		p.hasNext = false
-	} else {
-		p.cur = p.l.Next()
-	}
+	p.cur = p.l.Next()
 	return prev
-}
-
-func (p *parser) peek() Token {
-	if !p.hasNext {
-		p.next = p.l.Next()
-		p.hasNext = true
-	}
-	return p.next
 }
 
 func (p *parser) expect(k TokenKind) Token {
@@ -369,9 +372,9 @@ func (p *parser) parsePermission() *PermissionDecl {
 		return nil
 	}
 	d := &PermissionDecl{Name: p.cur.Value, Pos: pos}
-	if i := strings.Index(d.Name, ":"); i >= 0 {
-		d.Resource = d.Name[:i]
-		d.Action = d.Name[i+1:]
+	if res, act, ok := strings.Cut(d.Name, ":"); ok {
+		d.Resource = res
+		d.Action = act
 	}
 	p.advance()
 
@@ -418,11 +421,10 @@ func (p *parser) parsePermission() *PermissionDecl {
 				}
 				switch key {
 				case "action":
-					if p.cur.Kind == IDENT {
+					switch p.cur.Kind {
+					case IDENT, STRING:
 						d.Action = p.cur.Value
-					} else if p.cur.Kind == STRING {
-						d.Action = p.cur.Value
-					} else {
+					default:
 						p.errf(p.cur.Pos, "expected action identifier")
 					}
 					p.advance()
@@ -472,7 +474,8 @@ func (p *parser) parseRole() *RoleDecl {
 
 	// Optional parent: `: <slug>` or `: /seg/seg/.../slug`.
 	if p.accept(COLON) {
-		if p.cur.Kind == SLASH {
+		switch p.cur.Kind {
+		case SLASH:
 			// Absolute path: read /seg/seg/.../leaf
 			var sb strings.Builder
 			sb.WriteString("/")
@@ -490,10 +493,10 @@ func (p *parser) parseRole() *RoleDecl {
 				sb.WriteString("/")
 			}
 			d.Parent = sb.String()
-		} else if p.cur.Kind == IDENT {
+		case IDENT:
 			d.Parent = p.cur.Value
 			p.advance()
-		} else {
+		default:
 			p.errf(p.cur.Pos, "expected parent role slug after `:`")
 		}
 	}
@@ -643,6 +646,42 @@ func (p *parser) parsePolicy() *PolicyDecl {
 				d.Description = p.cur.Value
 				p.advance()
 			}
+		case NOT_BEFORE:
+			p.advance()
+			if !p.accept(ASSIGN) {
+				p.errf(p.cur.Pos, "expected `=` after not_before")
+			}
+			if p.cur.Kind == STRING {
+				if t, err := parseRFC3339(p.cur.Value); err != nil {
+					p.errf(p.cur.Pos, "not_before must be RFC3339 timestamp: %v", err)
+				} else {
+					d.NotBefore = &t
+				}
+				p.advance()
+			} else {
+				p.errf(p.cur.Pos, "expected RFC3339 timestamp string after not_before =")
+			}
+		case NOT_AFTER:
+			p.advance()
+			if !p.accept(ASSIGN) {
+				p.errf(p.cur.Pos, "expected `=` after not_after")
+			}
+			if p.cur.Kind == STRING {
+				if t, err := parseRFC3339(p.cur.Value); err != nil {
+					p.errf(p.cur.Pos, "not_after must be RFC3339 timestamp: %v", err)
+				} else {
+					d.NotAfter = &t
+				}
+				p.advance()
+			} else {
+				p.errf(p.cur.Pos, "expected RFC3339 timestamp string after not_after =")
+			}
+		case OBLIGATIONS:
+			p.advance()
+			if !p.accept(ASSIGN) {
+				p.errf(p.cur.Pos, "expected `=` after obligations")
+			}
+			d.Obligations = append(d.Obligations, p.parseStringList()...)
 		case WHEN:
 			p.advance()
 			if !p.accept(LBRACE) {
@@ -732,11 +771,12 @@ func (p *parser) parseFieldPath() string {
 	sb.WriteString(p.cur.Value)
 	p.advance()
 	for p.accept(DOT) {
-		if p.cur.Kind == IDENT {
+		switch p.cur.Kind {
+		case IDENT:
 			sb.WriteString(".")
 			sb.WriteString(p.cur.Value)
 			p.advance()
-		} else if p.cur.Kind == LBRACKET {
+		case LBRACKET:
 			// .[...] for map access
 			p.advance()
 			if p.cur.Kind == STRING {
@@ -746,9 +786,9 @@ func (p *parser) parseFieldPath() string {
 				p.advance()
 			}
 			p.expect(RBRACKET)
-		} else {
+		default:
 			p.errf(p.cur.Pos, "expected identifier after `.`")
-			break
+			return sb.String()
 		}
 	}
 	return sb.String()
@@ -831,7 +871,12 @@ func (p *parser) parseLiteralValue() (any, bool) {
 		p.advance()
 		return v, true
 	case INT:
-		i, _ := strconv.Atoi(p.cur.Value)
+		i, err := strconv.Atoi(p.cur.Value)
+		if err != nil {
+			p.errf(p.cur.Pos, "invalid integer literal %q: %v", p.cur.Value, err)
+			p.advance()
+			return nil, false
+		}
 		p.advance()
 		return i, true
 	case BOOL:

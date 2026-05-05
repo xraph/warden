@@ -108,6 +108,96 @@ function highlightGo(code: string): string {
   return out;
 }
 
+// Tokenize-then-render highlighter for the .warden DSL.
+// Mirrors the keyword set in dsl/token.go so highlighting tracks the parser.
+function highlightWarden(code: string): string {
+  const wardenKeywords = new Set([
+    "warden",
+    "config",
+    "tenant",
+    "app",
+    "namespace",
+    "import",
+    "resource",
+    "relation",
+    "permission",
+    "role",
+    "policy",
+    "effect",
+    "allow",
+    "deny",
+    "actions",
+    "resources",
+    "subjects",
+    "when",
+    "negate",
+    "grants",
+    "name",
+    "description",
+    "priority",
+    "active",
+    "is_system",
+    "is_default",
+    "max_members",
+    "metadata",
+    "or",
+    "and",
+    "not",
+    "in",
+    "contains",
+    "starts_with",
+    "ends_with",
+    "exists",
+    "ip_in_cidr",
+    "time_after",
+    "time_before",
+    "all_of",
+    "any_of",
+    "not_before",
+    "not_after",
+    "obligations",
+    "true",
+    "false",
+  ]);
+
+  // Groups: 1=line comment, 2=block comment, 3=string, 4=number, 5=word
+  const tokenRe =
+    /(\/\/.*$)|(\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*")|(\b\d+\b)|([a-zA-Z_][\w-]*)/gm;
+
+  let out = "";
+  let last = 0;
+
+  for (let m = tokenRe.exec(code); m !== null; m = tokenRe.exec(code)) {
+    if (m.index > last) {
+      out += esc(code.slice(last, m.index));
+    }
+    last = m.index + m[0].length;
+
+    if (m[1] != null) {
+      out += `<span class="text-fd-muted-foreground/60 italic">${esc(m[1])}</span>`;
+    } else if (m[2] != null) {
+      out += `<span class="text-fd-muted-foreground/60 italic">${esc(m[2])}</span>`;
+    } else if (m[3] != null) {
+      out += `<span class="text-teal-400">${esc(m[3])}</span>`;
+    } else if (m[4] != null) {
+      out += `<span class="text-amber-300">${esc(m[4])}</span>`;
+    } else if (m[5] != null) {
+      const word = m[5];
+      if (wardenKeywords.has(word)) {
+        out += `<span class="text-purple-400 font-medium">${esc(word)}</span>`;
+      } else {
+        out += esc(word);
+      }
+    }
+  }
+
+  if (last < code.length) {
+    out += esc(code.slice(last));
+  }
+
+  return out;
+}
+
 // Tokenize-then-render TSX/JSX syntax highlighter.
 function highlightTSX(code: string): string {
   const tsxKeywords = new Set([
@@ -203,7 +293,7 @@ interface CodeBlockProps {
   filename?: string;
   className?: string;
   showLineNumbers?: boolean;
-  language?: "go" | "tsx";
+  language?: "go" | "tsx" | "warden" | "shell";
 }
 
 export function CodeBlock({
@@ -228,7 +318,24 @@ export function CodeBlock({
     setCopied(true);
   };
 
-  const highlighter = language === "tsx" ? highlightTSX : highlightGo;
+  let highlighter: (line: string) => string;
+  switch (language) {
+    case "tsx":
+      highlighter = highlightTSX;
+      break;
+    case "warden":
+      highlighter = highlightWarden;
+      break;
+    case "shell":
+      // Shell snippets are mostly literal — only `$` prompt + comments get color.
+      highlighter = (line) =>
+        line
+          .replace(/^(\s*\$)/, '<span class="text-fd-muted-foreground/60">$1</span>')
+          .replace(/(#.*$)/, '<span class="text-fd-muted-foreground/60 italic">$1</span>');
+      break;
+    default:
+      highlighter = highlightGo;
+  }
   const lines = code.split("\n");
   const highlighted = lines.map((line) => highlighter(line));
 

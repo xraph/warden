@@ -143,9 +143,10 @@ func permissionFromModel(m *permissionModel) *permission.Permission {
 // ──────────────────────────────────────────────────
 
 type rolePermissionModel struct {
-	grove.BaseModel `grove:"table:warden_role_permissions"`
-	RoleID          string `grove:"role_id,pk"       bson:"role_id"`
-	PermissionID    string `grove:"permission_id,pk" bson:"permission_id"`
+	grove.BaseModel   `grove:"table:warden_role_permissions"`
+	RoleID            string `grove:"role_id,pk"             bson:"role_id"`
+	PermNamespacePath string `grove:"perm_namespace_path,pk" bson:"perm_namespace_path"`
+	PermName          string `grove:"perm_name,pk"           bson:"perm_name"`
 }
 
 // ──────────────────────────────────────────────────
@@ -277,6 +278,9 @@ type policyModel struct {
 	Effect          string                `grove:"effect"          bson:"effect"`
 	Priority        int                   `grove:"priority"        bson:"priority"`
 	IsActive        bool                  `grove:"is_active"       bson:"is_active"`
+	NotBefore       *time.Time            `grove:"not_before"      bson:"not_before,omitempty"`
+	NotAfter        *time.Time            `grove:"not_after"       bson:"not_after,omitempty"`
+	Obligations     []string              `grove:"obligations"     bson:"obligations"`
 	Version         int                   `grove:"version"         bson:"version"`
 	Subjects        []policy.SubjectMatch `grove:"subjects"        bson:"subjects"`
 	Actions         []string              `grove:"actions"         bson:"actions"`
@@ -288,6 +292,10 @@ type policyModel struct {
 }
 
 func policyToModel(p *policy.Policy) *policyModel {
+	obligations := p.Obligations
+	if obligations == nil {
+		obligations = []string{}
+	}
 	return &policyModel{
 		ID:            p.ID.String(),
 		TenantID:      p.TenantID,
@@ -298,6 +306,9 @@ func policyToModel(p *policy.Policy) *policyModel {
 		Effect:        string(p.Effect),
 		Priority:      p.Priority,
 		IsActive:      p.IsActive,
+		NotBefore:     p.NotBefore,
+		NotAfter:      p.NotAfter,
+		Obligations:   obligations,
 		Version:       p.Version,
 		Subjects:      p.Subjects,
 		Actions:       p.Actions,
@@ -321,6 +332,9 @@ func policyFromModel(m *policyModel) *policy.Policy {
 		Effect:        policy.Effect(m.Effect),
 		Priority:      m.Priority,
 		IsActive:      m.IsActive,
+		NotBefore:     m.NotBefore,
+		NotAfter:      m.NotAfter,
+		Obligations:   m.Obligations,
 		Version:       m.Version,
 		Subjects:      m.Subjects,
 		Actions:       m.Actions,

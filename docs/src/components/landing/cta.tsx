@@ -3,13 +3,14 @@
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { cn } from "@/lib/cn";
+import { AuroraBackground, GradientText, Pill } from "./primitives";
 
 export function CTA() {
   return (
-    <section className="relative w-full py-20 sm:py-28 overflow-hidden">
-      {/* Background gradients */}
-      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-blue-500/[0.03] to-transparent" />
-      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-gradient-to-t from-blue-500/8 to-transparent rounded-full blur-3xl" />
+    <section className="relative w-full py-24 sm:py-32 overflow-hidden">
+      <AuroraBackground className="opacity-50 dark:opacity-30" />
+      <div className="absolute inset-0 bg-grid opacity-[0.03] dark:opacity-[0.06]" />
+      <div className="absolute inset-0 bg-gradient-to-b from-fd-background via-transparent to-fd-background" />
 
       <div className="relative container max-w-(--fd-layout-width) mx-auto px-4 sm:px-6">
         <motion.div
@@ -17,59 +18,122 @@ export function CTA() {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.5 }}
-          className="max-w-2xl mx-auto text-center"
+          className="relative mx-auto max-w-4xl"
         >
-          <h2 className="text-3xl font-bold tracking-tight text-fd-foreground sm:text-4xl">
-            Start building with Warden
-          </h2>
-          <p className="mt-4 text-lg text-fd-muted-foreground leading-relaxed">
-            Add RBAC, ABAC, and ReBAC authorization to your Go service in
-            minutes. Warden handles role hierarchies, policy evaluation, graph
-            traversal, and audit trails out of the box.
-          </p>
+          {/* Outer glow */}
+          <div className="absolute inset-x-12 -bottom-16 -z-10 h-32 bg-gradient-to-t from-blue-500/30 via-indigo-500/20 to-transparent blur-3xl" />
 
-          {/* Install command */}
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.5, delay: 0.2 }}
-            className="mt-8 flex items-center justify-center gap-2 rounded-lg border border-fd-border bg-fd-muted/40 px-4 py-2.5 font-mono text-sm max-w-md mx-auto"
-          >
-            <span className="text-fd-muted-foreground select-none">$</span>
-            <code className="text-fd-foreground">
-              go get github.com/xraph/warden
-            </code>
-          </motion.div>
+          <div className="relative rounded-3xl border border-fd-border bg-fd-card/70 backdrop-blur-xl p-10 sm:p-14 text-center shadow-2xl shadow-black/[0.04] dark:shadow-black/40">
+            {/* Eyebrow */}
+            <Pill className="border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-300">
+              Ready when you are
+            </Pill>
 
-          {/* CTAs */}
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.5, delay: 0.3 }}
-            className="mt-8 flex items-center justify-center gap-3"
-          >
-            <Link
-              href="/docs"
-              className={cn(
-                "inline-flex items-center justify-center rounded-lg px-6 py-2.5 text-sm font-medium transition-colors",
-                "bg-blue-500 text-white hover:bg-blue-600",
-                "shadow-sm shadow-blue-500/20",
-              )}
+            <h2 className="mt-5 text-balance text-4xl font-bold tracking-tight text-fd-foreground sm:text-5xl md:text-6xl">
+              Ship authorization,{" "}
+              <GradientText>without the boilerplate.</GradientText>
+            </h2>
+
+            <p className="mx-auto mt-5 max-w-2xl text-pretty text-base sm:text-lg text-fd-muted-foreground leading-relaxed">
+              One Go module. One CLI. One language server. Define your full
+              authorization topology in source-controlled{" "}
+              <code className="font-mono text-fd-foreground text-sm">
+                .warden
+              </code>{" "}
+              files, ship it inside your binary, and Check at runtime — across
+              every model.
+            </p>
+
+            {/* Install command */}
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.5, delay: 0.2 }}
+              className="mx-auto mt-8 inline-flex w-fit items-center gap-2 rounded-full border border-fd-border bg-fd-background/40 backdrop-blur-md px-4 py-1.5 font-mono text-xs sm:text-sm shadow-sm"
             >
-              Get Started
-            </Link>
-            <Link
-              href="/docs/guides/full-example"
-              className={cn(
-                "inline-flex items-center justify-center rounded-lg px-6 py-2.5 text-sm font-medium transition-colors",
-                "border border-fd-border bg-fd-background hover:bg-fd-muted/50 text-fd-foreground",
-              )}
+              <span className="text-fd-muted-foreground select-none">$</span>
+              <code className="text-fd-foreground">
+                go install github.com/xraph/warden/cmd/warden@latest
+              </code>
+            </motion.div>
+
+            {/* CTAs */}
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.5, delay: 0.3 }}
+              className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3"
             >
-              View Examples
-            </Link>
-          </motion.div>
+              <Link
+                href="/docs/getting-started"
+                className={cn(
+                  "inline-flex items-center justify-center rounded-full px-6 py-3 text-sm font-semibold transition-all",
+                  "bg-fd-foreground text-fd-background hover:bg-fd-foreground/90",
+                  "shadow-lg shadow-fd-foreground/10 hover:shadow-xl hover:-translate-y-0.5",
+                )}
+              >
+                Read the quickstart
+                <svg
+                  className="ml-1.5 size-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M17 8l4 4m0 0l-4 4m4-4H3"
+                  />
+                </svg>
+              </Link>
+              <Link
+                href="/docs/integration/dsl-reference"
+                className={cn(
+                  "inline-flex items-center justify-center rounded-full px-6 py-3 text-sm font-semibold transition-all",
+                  "border border-fd-border bg-fd-background/60 hover:bg-fd-muted/60 text-fd-foreground",
+                )}
+              >
+                .warden language reference
+              </Link>
+            </motion.div>
+
+            {/* Tertiary chip row */}
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-fd-muted-foreground">
+              <Link
+                href="/docs/integration/dsl-tooling"
+                className="hover:text-fd-foreground transition-colors"
+              >
+                CLI &amp; LSP
+              </Link>
+              <span className="text-fd-border">·</span>
+              <Link
+                href="/docs/concepts/namespaces"
+                className="hover:text-fd-foreground transition-colors"
+              >
+                Nested namespaces
+              </Link>
+              <span className="text-fd-border">·</span>
+              <Link
+                href="/docs/authorization/policies-conditions"
+                className="hover:text-fd-foreground transition-colors"
+              >
+                PBAC &amp; obligations
+              </Link>
+              <span className="text-fd-border">·</span>
+              <a
+                href="https://github.com/xraph/warden"
+                target="_blank"
+                rel="noreferrer"
+                className="hover:text-fd-foreground transition-colors"
+              >
+                GitHub
+              </a>
+            </div>
+          </div>
         </motion.div>
       </div>
     </section>

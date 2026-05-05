@@ -62,12 +62,21 @@ type CheckRequest struct {
 }
 
 // CheckResult is the outcome of an authorization check.
+//
+// Obligations is the list of obligation names from PBAC policies that
+// matched this check (allow OR deny). Obligations are side-effect
+// signals — names of actions the calling system should perform
+// (audit-log, require-mfa, notify-security, etc.). They don't change the
+// Allowed/Decision outcome. The engine also fires the
+// PolicyObligationFired plugin hook per obligation, so existing plugin
+// pipelines (Chronicle audit, dispatchers) get them automatically.
 type CheckResult struct {
-	Allowed    bool        `json:"allowed"`
-	Decision   Decision    `json:"decision"`
-	Reason     string      `json:"reason,omitempty"`
-	MatchedBy  []MatchInfo `json:"matched_by,omitempty"`
-	EvalTimeNs int64       `json:"eval_time_ns"`
+	Allowed     bool        `json:"allowed"`
+	Decision    Decision    `json:"decision"`
+	Reason      string      `json:"reason,omitempty"`
+	MatchedBy   []MatchInfo `json:"matched_by,omitempty"`
+	Obligations []string    `json:"obligations,omitempty"`
+	EvalTimeNs  int64       `json:"eval_time_ns"`
 }
 
 // Decision is the authorization outcome.

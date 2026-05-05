@@ -11,26 +11,45 @@ import (
 	"github.com/xraph/warden/policy"
 )
 
-// Evaluator evaluates ABAC policies against a check request.
+// Evaluator evaluates ABAC/PBAC policies against a check request.
 type Evaluator interface {
 	Evaluate(ctx context.Context, policies []*policy.Policy, req *CheckRequest) (*CheckResult, error)
 }
 
-// DefaultEvaluator returns the built-in condition evaluator.
-func DefaultEvaluator() Evaluator { return &conditionEvaluator{} }
+// DefaultEvaluator returns the built-in condition evaluator backed by the
+// system wall clock.
+func DefaultEvaluator() Evaluator { return NewConditionEvaluator(time.Now) }
 
-type conditionEvaluator struct{}
+// NewConditionEvaluator returns an Evaluator that uses the supplied clock
+// for PBAC time-window evaluation (NotBefore / NotAfter). Pass time.Now
+// for production; tests can pass a fixed-time function.
+func NewConditionEvaluator(now func() time.Time) Evaluator {
+	if now == nil {
+		now = time.Now
+	}
+	return &conditionEvaluator{now: now}
+}
+
+type conditionEvaluator struct {
+	now func() time.Time
+}
 
 func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Policy, req *CheckRequest) (*CheckResult, error) {
 	if len(policies) == 0 {
 		return nil, nil
 	}
 
+	now := e.now()
+	if now.IsZero() {
+		now = time.Now()
+	}
+
 	var bestDeny *CheckResult
 	var bestAllow *CheckResult
+	var allObligations []string
 
 	for _, pol := range policies {
-		if !pol.IsActive {
+		if !pol.EffectiveAt(now) {
 			continue
 		}
 
@@ -51,6 +70,10 @@ func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Poli
 		if !conditionsMet {
 			continue
 		}
+
+		// Obligations fire on every matched policy, regardless of effect.
+		// They are side-effect signals; the calling system decides what to do.
+		allObligations = append(allObligations, pol.Obligations...)
 
 		info := MatchInfo{
 			Source: "abac",
@@ -80,15 +103,37 @@ func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Poli
 		}
 	}
 
-	// Explicit deny always wins over allow.
+	// Explicit deny always wins over allow. Obligations from every matched
+	// policy (allow OR deny) flow through to the caller.
 	if bestDeny != nil {
+		bestDeny.Obligations = dedupeStrings(allObligations)
 		return bestDeny, nil
 	}
 	if bestAllow != nil {
+		bestAllow.Obligations = dedupeStrings(allObligations)
 		return bestAllow, nil
 	}
 
 	return nil, nil
+}
+
+// dedupeStrings returns a new slice preserving first-occurrence order. Used
+// for merging obligations from many matched policies; obligations are
+// idempotent by name (the consumer dedupes the action it triggers).
+func dedupeStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 func (e *conditionEvaluator) matchesSubject(pol *policy.Policy, req *CheckRequest) bool {

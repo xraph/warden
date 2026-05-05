@@ -1,5 +1,7 @@
 package dsl
 
+import "time"
+
 // Program is the root AST node — one parsed `.warden` file or set of files.
 //
 // All decls within a program share the same logical namespace; cross-file
@@ -115,6 +117,12 @@ type RoleDecl struct {
 }
 
 // PolicyDecl is a top-level `policy "<name>" { ... }` block.
+//
+// PBAC fields:
+//   - NotBefore / NotAfter: optional RFC3339 instants bounding when the
+//     policy is effective. Either may be nil ("no bound on that side").
+//   - Obligations: list of named side-effect actions emitted when the
+//     policy matches (e.g. "audit-log", "require-mfa").
 type PolicyDecl struct {
 	Name          string
 	NamespacePath string
@@ -122,6 +130,9 @@ type PolicyDecl struct {
 	Effect        string // "allow" | "deny"
 	Priority      int
 	Active        bool
+	NotBefore     *time.Time
+	NotAfter      *time.Time
+	Obligations   []string
 	Actions       []string
 	Resources     []string
 	Conditions    []*Condition

@@ -111,6 +111,13 @@ func (r *resolver) checkConventions() {
 		if pol.Effect == "" {
 			r.errf(pol.Pos, "policy %q is missing `effect`", pol.Name)
 		}
+		if pol.NotBefore != nil && pol.NotAfter != nil && pol.NotAfter.Before(*pol.NotBefore) {
+			r.errf(pol.Pos, "policy %q has not_after (%s) before not_before (%s)",
+				pol.Name,
+				pol.NotAfter.UTC().Format("2006-01-02T15:04:05Z"),
+				pol.NotBefore.UTC().Format("2006-01-02T15:04:05Z"),
+			)
+		}
 	}
 	for _, rt := range r.prog.ResourceTypes {
 		if !rtNameRegex.MatchString(rt.Name) {
@@ -197,7 +204,7 @@ func (r *resolver) checkCycles() {
 }
 
 func formatCycle(roles []*RoleDecl) string {
-	var parts []string
+	parts := make([]string, 0, len(roles))
 	for _, r := range roles {
 		parts = append(parts, r.Slug)
 	}

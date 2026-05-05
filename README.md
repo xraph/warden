@@ -72,9 +72,45 @@ func main() {
 
 ## Installation
 
+### Library
+
 ```bash
 go get github.com/xraph/warden
 ```
+
+### CLI (`warden` and `warden-lsp`)
+
+**Using `go install`** — recommended if you have a Go toolchain:
+
+```bash
+go install github.com/xraph/warden/cmd/warden@latest
+go install github.com/xraph/warden/cmd/warden-lsp@latest
+```
+
+**Pre-built binaries** — multi-platform archives (linux / darwin / windows × amd64 / arm64) are attached to every [GitHub Release](https://github.com/xraph/warden/releases). Each archive contains both `warden` and `warden-lsp`.
+
+```bash
+# Pick a platform from https://github.com/xraph/warden/releases/latest
+curl -L -o warden.tar.gz \
+  https://github.com/xraph/warden/releases/latest/download/warden-<version>-<os>-<arch>.tar.gz
+
+# Verify the checksum
+curl -L -o checksums.txt \
+  https://github.com/xraph/warden/releases/latest/download/checksums.txt
+shasum -a 256 -c checksums.txt --ignore-missing
+
+tar -xzf warden.tar.gz
+sudo mv warden warden-lsp /usr/local/bin/
+warden version
+```
+
+### VS Code extension
+
+```bash
+code --install-extension xraph.vscode-warden
+```
+
+Or search for **"Warden"** in the Extensions panel. See [editor/vscode-warden/README.md](editor/vscode-warden/README.md) for a walkthrough.
 
 ## Architecture
 

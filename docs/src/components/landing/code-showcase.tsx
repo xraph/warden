@@ -9,11 +9,9 @@ const rbacCode = `package main
 import (
   "context"
   "fmt"
-  "time"
 
   "github.com/xraph/warden"
   "github.com/xraph/warden/assignment"
-  "github.com/xraph/warden/id"
   "github.com/xraph/warden/permission"
   "github.com/xraph/warden/role"
   "github.com/xraph/warden/store/memory"
@@ -24,33 +22,28 @@ func main() {
   st := memory.New()
   eng, _ := warden.NewEngine(warden.WithStore(st))
 
-  now := time.Now()
+  // IDs and timestamps are auto-assigned by the store.
   perm := &permission.Permission{
-    ID: id.NewPermissionID(), Resource: "document",
-    Action: "read", Name: "Read Docs",
-    CreatedAt: now, UpdatedAt: now,
+    Name: "doc:read", Resource: "document", Action: "read",
   }
-  r := &role.Role{
-    ID: id.NewRoleID(), Name: "Viewer", Slug: "viewer",
-    CreatedAt: now, UpdatedAt: now,
-  }
+  r := &role.Role{Name: "Viewer", Slug: "viewer"}
   _ = st.CreatePermission(ctx, perm)
   _ = st.CreateRole(ctx, r)
-  _ = st.AttachPermission(ctx, r.ID, perm.ID)
+  _ = st.AttachPermission(ctx, r.ID, permission.Ref{Name: "doc:read"})
+
   _ = st.CreateAssignment(ctx, &assignment.Assignment{
-    ID: id.NewAssignmentID(), RoleID: r.ID,
+    RoleID:      r.ID,
     SubjectKind: "user", SubjectID: "alice",
-    CreatedAt: now,
   })
 
   result, _ := eng.Check(ctx, &warden.CheckRequest{
-    Subject:      warden.Subject{Kind: "user", ID: "alice"},
-    Action:       "read",
-    ResourceType: "document",
+    Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "alice"},
+    Action:   warden.Action{Name: "read"},
+    Resource: warden.Resource{Type: "document", ID: "doc-1"},
   })
   fmt.Printf("allowed=%v reason=%q\\n",
     result.Allowed, result.Reason)
-  // allowed=true reason="rbac: granted"
+  // allowed=true reason="role.viewer grants doc:read"
 }`;
 
 const rebacCode = `package main
@@ -58,10 +51,8 @@ const rebacCode = `package main
 import (
   "context"
   "fmt"
-  "time"
 
   "github.com/xraph/warden"
-  "github.com/xraph/warden/id"
   "github.com/xraph/warden/relation"
   "github.com/xraph/warden/store/memory"
 )
@@ -71,33 +62,27 @@ func main() {
   st := memory.New()
   eng, _ := warden.NewEngine(warden.WithStore(st))
 
-  now := time.Now()
-
   // user:alice is member of team:eng
   _ = st.CreateRelation(ctx, &relation.Tuple{
-    ID: id.NewRelationID(),
-    ObjectType: "team", ObjectID: "eng",
-    Relation: "member",
+    ObjectType:  "team", ObjectID: "eng",
+    Relation:    "member",
     SubjectType: "user", SubjectID: "alice",
-    CreatedAt: now,
   })
 
-  // team:eng is editor of project:alpha
+  // team:eng is editor of project:alpha (via subject set #member)
   _ = st.CreateRelation(ctx, &relation.Tuple{
-    ID: id.NewRelationID(),
-    ObjectType: "project", ObjectID: "alpha",
-    Relation: "editor",
-    SubjectType: "team", SubjectID: "eng",
-    CreatedAt: now,
+    ObjectType:      "project", ObjectID: "alpha",
+    Relation:        "editor",
+    SubjectType:     "team", SubjectID: "eng",
+    SubjectRelation: "member",
   })
 
   // Can alice edit project:alpha?
-  // Traverses: alice → team:eng → project:alpha
+  // BFS: alice → team:eng#member → project:alpha
   result, _ := eng.Check(ctx, &warden.CheckRequest{
-    Subject:      warden.Subject{Kind: "user", ID: "alice"},
-    Action:       "write",
-    ResourceType: "project",
-    ResourceID:   "alpha",
+    Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "alice"},
+    Action:   warden.Action{Name: "write"},
+    Resource: warden.Resource{Type: "project", ID: "alpha"},
   })
   fmt.Printf("allowed=%v\\n", result.Allowed)
   // allowed=true (via transitive relation)

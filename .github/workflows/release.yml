@@ -3,85 +3,321 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - 'v*.*.*'
+      - 'v*.*.*-*'
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Release tag (e.g., v1.0.0)'
+      version:
+        description: 'Semantic version to release (e.g. 1.2.3 or 1.0.0-beta.1)'
         required: true
         type: string
+      dry_run:
+        description: 'Dry run — validate everything but do not publish'
+        required: false
+        type: boolean
+        default: false
+      skip_tests:
+        description: 'Skip tests (use for hotfixes when tests already passed)'
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark as a pre-release'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  id-token: write
 
+defaults:
+  run:
+    shell: bash
+
+# -------------------------------------------------------------------
+# Job: detect
+# Normalises inputs from both tag-push and workflow_dispatch triggers
+# into a single set of outputs consumed by downstream jobs.
+# -------------------------------------------------------------------
 jobs:
-  release:
-    name: Release
+  detect:
+    name: Detect release parameters
     runs-on: ubuntu-latest
-
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      is_prerelease: ${{ steps.resolve.outputs.is_prerelease }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+      skip_tests: ${{ steps.resolve.outputs.skip_tests }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set release tag
-        id: set-tag
+      - name: Resolve release parameters
+        id: resolve
         run: |
+          DRY_RUN="false"
+          SKIP_TESTS="false"
+
+          # ---- workflow_dispatch path ----
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.tag }}"
-            echo "Creating tag $TAG"
+            VERSION="${{ inputs.version }}"
+            DRY_RUN="${{ inputs.dry_run }}"
+            SKIP_TESTS="${{ inputs.skip_tests }}"
+            IS_PRERELEASE="${{ inputs.prerelease }}"
+
+            # Validate semver
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+              echo "::error::Invalid semantic version: $VERSION (expected N.N.N or N.N.N-pre)"
+              exit 1
+            fi
+
+            TAG="v${VERSION}"
+
+            # Auto-detect prerelease from version string
+            if [[ "$VERSION" == *"-"* ]]; then
+              IS_PRERELEASE="true"
+            fi
+
+          # ---- tag push path ----
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+
+            if [[ "$TAG" =~ ^v(.+)$ ]]; then
+              VERSION="${BASH_REMATCH[1]}"
+            else
+              echo "::error::Unrecognised tag format: $TAG (expected vN.N.N)"
+              exit 1
+            fi
+
+            if [[ "$VERSION" == *"-"* ]]; then
+              IS_PRERELEASE="true"
+            else
+              IS_PRERELEASE="false"
+            fi
+          fi
+
+          # Verify go.mod exists at root
+          if [ ! -f "go.mod" ]; then
+            echo "::error::go.mod not found at repository root"
+            exit 1
+          fi
+
+          # Emit outputs
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "is_prerelease=$IS_PRERELEASE"
+            echo "dry_run=$DRY_RUN"
+            echo "skip_tests=$SKIP_TESTS"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Release Parameters"
+            echo "| Key | Value |"
+            echo "|-----|-------|"
+            echo "| Version | \`$VERSION\` |"
+            echo "| Tag | \`$TAG\` |"
+            echo "| Pre-release | $IS_PRERELEASE |"
+            echo "| Dry run | $DRY_RUN |"
+            echo "| Skip tests | $SKIP_TESTS |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # For manual dispatch, create & push the tag if it doesn't exist
+      - name: Create tag (manual dispatch)
+        if: github.event_name == 'workflow_dispatch' && steps.resolve.outputs.dry_run == 'false'
+        run: |
+          TAG="${{ steps.resolve.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — skipping creation"
+          else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git tag "$TAG"
             git push origin "$TAG"
-          else
-            TAG="${{ github.ref_name }}"
+            echo "Created and pushed tag $TAG"
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  # -------------------------------------------------------------------
+  # Job: test
+  # Runs the full test matrix against the module being released.
+  # Skippable via workflow_dispatch.
+  # -------------------------------------------------------------------
+  test:
+    name: Test (${{ matrix.os }})
+    needs: detect
+    if: needs.detect.outputs.skip_tests == 'false'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.25.7"
-          cache: true
-          cache-dependency-path: go.sum
+          go-version-file: go.mod
+          check-latest: true
 
-      - name: Verify build
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-warden-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-warden-
+
+      - name: Run tests
         run: |
           go mod download
-          go build ./...
-          go test -race -count=1 ./...
+          go test -v -race -timeout=15m ./...
 
-      - name: Generate release notes
-        id: notes
-        run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -z "$PREV_TAG" ]; then
-            NOTES=$(git log --pretty=format:"- %s (%h)" HEAD)
-          else
-            NOTES=$(git log --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD)
-          fi
-          {
-            echo "notes<<EOF"
-            echo "$NOTES"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+  # -------------------------------------------------------------------
+  # Job: release-cli
+  # Runs GoReleaser to build CLI archives, generate the changelog,
+  # and create the GitHub Release.
+  # -------------------------------------------------------------------
+  release-cli:
+    name: Release CLI (GoReleaser)
+    needs: [detect, test]
+    if: |
+      always() &&
+      needs.detect.outputs.dry_run == 'false' &&
+      needs.detect.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          tag_name: ${{ steps.set-tag.outputs.tag }}
-          body: |
-            ## Changes
+          fetch-depth: 0
 
-            ${{ steps.notes.outputs.notes }}
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
-            ---
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GORELEASER_TOKEN || secrets.GITHUB_TOKEN }}
 
-            ### Installation
+      - name: Notify Go proxy
+        run: |
+          TAG="${{ needs.detect.outputs.tag }}"
+          echo "Requesting Go proxy to cache github.com/xraph/warden@$TAG"
+          sleep 5
+          curl -sf "https://proxy.golang.org/github.com/xraph/warden/@v/${TAG}.info" || \
+            echo "Go proxy notification failed (normal for private repos)"
 
-            ```bash
-            go get github.com/xraph/warden@${{ steps.set-tag.outputs.tag }}
-            ```
-          generate_release_notes: true
+  # -------------------------------------------------------------------
+  # Job: dry-run
+  # Validates the release pipeline without publishing anything.
+  # -------------------------------------------------------------------
+  dry-run:
+    name: Dry run
+    needs: [detect, test]
+    if: |
+      always() &&
+      needs.detect.outputs.dry_run == 'true' &&
+      needs.detect.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Validate module builds
+        run: go build ./...
+
+      - name: GoReleaser dry run
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --snapshot --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dry run summary
+        run: |
+          {
+            echo "### Dry Run Complete"
+            echo ""
+            echo "Warden v${{ needs.detect.outputs.version }} validated successfully."
+            echo "No artifacts were published."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------
+  # Job: summary
+  # Provides a unified release summary.
+  # -------------------------------------------------------------------
+  summary:
+    name: Release summary
+    needs: [detect, test, release-cli, dry-run]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate summary
+        run: |
+          VERSION="${{ needs.detect.outputs.version }}"
+          TAG="${{ needs.detect.outputs.tag }}"
+          DRY="${{ needs.detect.outputs.dry_run }}"
+
+          {
+            echo "# Release Summary"
+            echo ""
+
+            if [ "$DRY" = "true" ]; then
+              echo "> **Dry run** — nothing was published."
+              echo ""
+            fi
+
+            echo "| Key | Value |"
+            echo "|-----|-------|"
+            echo "| Module | \`warden\` |"
+            echo "| Version | \`$VERSION\` |"
+            echo "| Tag | \`$TAG\` |"
+
+            if [ "$DRY" != "true" ]; then
+              echo ""
+              echo "## Installation"
+              echo ""
+              echo '```bash'
+              echo "go install github.com/xraph/warden/cmd/warden@${TAG}"
+              echo "go install github.com/xraph/warden/cmd/warden-lsp@${TAG}"
+              echo '```'
+              echo ""
+              echo "Or download a pre-built archive from the [Release page](https://github.com/xraph/warden/releases/tag/${TAG})."
+            fi
+
+            echo ""
+            echo "## Job Results"
+            echo ""
+            echo "| Job | Status |"
+            echo "|-----|--------|"
+            echo "| Detect | ${{ needs.detect.result }} |"
+            echo "| Test | ${{ needs.test.result }} |"
+            echo "| CLI Release | ${{ needs.release-cli.result }} |"
+            echo "| Dry Run | ${{ needs.dry-run.result }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

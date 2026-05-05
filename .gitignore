@@ -1,0 +1,56 @@
+# ─── Go ──────────────────────────────────────────────────────
+# Test binaries
+*.test
+# Build/coverage outputs
+*.out
+coverage.txt
+coverage.html
+/dist/
+# Compiled binaries from `go build` in module-local dirs
+/warden
+/warden-lsp
+/cmd/warden/warden
+/cmd/warden-lsp/warden-lsp
+
+# Example binaries (built by `go build` inside _examples/<name>/)
+_examples/abac/abac
+_examples/rbac/rbac
+_examples/rebac/rebac
+_examples/standalone/standalone
+_examples/standalone-embed/standalone-embed
+_examples/declarative/declarative
+
+# ─── Node / web tooling ──────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ─── Editors / IDEs ──────────────────────────────────────────
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+*.swp
+*.swo
+
+# ─── OS ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── Env / secrets ───────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Misc ────────────────────────────────────────────────────
+*.log
+*.pid
+tmp/
+.tmp/

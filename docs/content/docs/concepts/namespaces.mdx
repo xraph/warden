@@ -1,0 +1,380 @@
+---
+title: Namespaces (Nested Tenancy)
+description: Hierarchical scoping for organizations that aren't flat — cascading inheritance from ancestors, sibling isolation, runtime resolution, and DSL syntax.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+Tenants are flat by default — every entity sits in one bucket. Real organizations aren't flat. **Namespaces** add a hierarchical dimension on top of `tenant_id`: roles, permissions, policies, resource types, and relation tuples can live at any depth in a tree, with **cascading inheritance** from ancestors and **strict isolation** between siblings.
+
+```text
+tenant: acme
+  ""                          (root — visible everywhere)
+  ├── engineering             (shared across eng teams)
+  │   ├── platform            (sees its own + engineering + root)
+  │   │   └── sre             (sees its own + platform + engineering + root)
+  │   └── frontend            (sees its own + engineering + root, but NOT platform)
+  └── billing                 (sees its own + root, but NOT engineering)
+```
+
+A role declared at `engineering` is automatically visible to `engineering/platform`, `engineering/frontend`, and every descendant — but **not** to siblings like `billing`. That's the whole feature in one sentence.
+
+## When to Reach for Namespaces
+
+Use namespaces when **inside one tenant** you have multiple organizational units that:
+
+- Share some config (the company-wide `super-admin` role, audit policies)
+- But also have their own scoped config (per-team viewer roles, project-specific resource types)
+- Need delegation — let team leads manage their own roles without touching siblings
+
+If your tenants are completely independent (`acme` vs `globex`), you want **multiple tenants**, not nested namespaces. Tenants are a hard wall — no cross-tenant access ever. Namespaces are a soft hierarchy *within* a tenant.
+
+| Pattern | Pick |
+|---|---|
+| Multi-tenant SaaS, customers don't see each other | One **tenant** per customer (flat) |
+| Single-customer deployment with multiple teams | One **tenant**, **namespaces** per team |
+| Shared infrastructure with per-team policy carve-outs | One **tenant**, root + nested namespaces |
+| Single-team app | One **tenant**, no namespaces (or skip tenant entirely — see [Multi-Tenancy](/docs/concepts/multi-tenancy#single-tenant-apps-skip-the-tenant-entirely)) |
+
+## Path Syntax
+
+A namespace path is a `/`-separated list of **segments**:
+
+| Rule | Detail |
+|---|---|
+| **Empty path (`""`)** | The tenant **root**. Always valid. |
+| **Segment regex** | `^[a-z][a-z0-9-]{0,62}$` — lowercase, kebab-allowed, ≤63 chars per segment. |
+| **Separator** | `/`. No leading/trailing slash; no empty segments (`a//b` rejected). |
+| **Reserved segments** | `system`, `admin` — rejected. Reserved for Warden's own use. |
+| **Max depth** | 8 by default (configurable via `Config.MaxNamespaceDepth`). |
+| **Leading `/`** | Only valid in **role-parent references** in DSL source — marks an absolute path from tenant root. |
+
+Validate programmatically:
+
+```go
+import "github.com/xraph/warden"
+
+if err := warden.ValidateNamespacePath("engineering/platform/sre", 0); err != nil {
+    // err names which rule was broken
+}
+
+// 0 means "use the default cap (warden.MaxNamespaceDepth)".
+```
+
+## Cascading Inheritance
+
+When the engine evaluates a Check at namespace `N`, it walks the **ancestor chain**: `N`, then `N`'s parent, then *its* parent, all the way up to the tenant root. Use `warden.AncestorNamespaces` to see the chain explicitly:
+
+```go
+warden.AncestorNamespaces("engineering/platform/sre")
+// → ["engineering/platform/sre", "engineering/platform", "engineering", ""]
+```
+
+The runtime semantics, per entity kind:
+
+| Lookup | Behavior |
+|---|---|
+| **Roles** assigned to a subject | Cascades from the assignment's namespace down to descendants. A role assigned at `engineering` applies for the subject in `engineering/platform`. |
+| **Permissions** referenced from a role's grants | Resolved at the role's own namespace first, then walks ancestors. So a tenant-root permission catalog is accessible from any sub-namespace. |
+| **Resource types** | Same walk — define `document` at the root, every namespace can use it. |
+| **Policies** at namespace `N` | Apply to checks in `N` and **all descendants**. Sub-namespace policies stack on top of ancestor policies in the merge. |
+| **Relation tuples** | **Located** at a namespace; do **not** cascade. A tuple `document:d1 viewer = user:alice` at `engineering` is invisible from `billing` — even though both are in the same tenant. This keeps tuple namespaces partition-clean. |
+
+> **Sibling isolation.** A role declared in `billing` is invisible from `engineering`. The walk only goes *up*, never sideways. Cross-namespace references must use the absolute path (`/billing/...`) explicitly — see [Cross-namespace references](#cross-namespace-references) below.
+
+## Setting the Namespace at Check Time
+
+Three places, in priority order (later wins):
+
+1. **Context** — `warden.WithNamespace(ctx, "eng/platform")` threads through every Check / Enforce / CanI.
+2. **`CheckRequest.NamespacePath`** — overrides the context-derived value.
+3. **`WithCallNamespacePath(...)`** call option — wins per-call.
+
+```go
+import "github.com/xraph/warden"
+
+ctx := warden.WithTenant(context.Background(), "app", "acme")
+ctx  = warden.WithNamespace(ctx, "engineering/platform")
+
+// Threaded namespace.
+result, _ := eng.Check(ctx, &warden.CheckRequest{
+    Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "u1"},
+    Action:   warden.Action{Name: "deploy"},
+    Resource: warden.Resource{Type: "service", ID: "api"},
+})
+
+// Per-call override (e.g. running an audit query from a parent ns).
+result, _ = eng.Check(ctx, req, warden.WithCallNamespacePath("engineering"))
+
+// Inline on the request.
+req.NamespacePath = "engineering/platform/sre"
+result, _ = eng.Check(ctx, req)
+```
+
+The engine resolves the namespace, builds the ancestor list with `AncestorNamespaces`, and queries every level. The cost is roughly `O(depth)` extra store calls — at most 8 by default, usually 1–3 in practice.
+
+## Declaring Namespaces
+
+Two equivalent forms — pick whichever fits your workflow:
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
+Set `NamespacePath` directly on every entity:
+
+```go
+import (
+    "github.com/xraph/warden/permission"
+    "github.com/xraph/warden/role"
+)
+
+// Tenant-root permission, visible from every namespace.
+_ = store.CreatePermission(ctx, &permission.Permission{
+    TenantID:      "acme",
+    NamespacePath: "",
+    Name:          "audit:read",
+    Resource:      "audit_log",
+    Action:        "read",
+})
+
+// Engineering-org role, inherits from no parent.
+_ = store.CreateRole(ctx, &role.Role{
+    TenantID:      "acme",
+    NamespacePath: "engineering",
+    Slug:          "eng-viewer",
+    Name:          "Engineering Viewer",
+})
+
+// Platform-team role, inherits from engineering's role.
+_ = store.CreateRole(ctx, &role.Role{
+    TenantID:      "acme",
+    NamespacePath: "engineering/platform",
+    Slug:          "platform-admin",
+    ParentSlug:    "eng-viewer",   // resolved up the namespace chain
+    Name:          "Platform Admin",
+})
+```
+
+</Tab>
+<Tab value="DSL">
+
+Use nested `namespace "..." { ... }` blocks. Every entity inside inherits the path:
+
+```warden
+warden config 1
+tenant acme
+
+// Root scope — visible everywhere.
+permission "audit:read" (audit_log : read)
+
+namespace "engineering" {
+  role eng-viewer {
+    name = "Engineering Viewer"
+  }
+
+  namespace "platform" {
+    role platform-admin : eng-viewer {   // bare slug → walks ancestors
+      name = "Platform Admin"
+    }
+
+    role sre : /engineering/platform-admin {   // absolute reference
+      name = "SRE"
+    }
+  }
+
+  namespace "frontend" {
+    role frontend-developer : eng-viewer {   // resolves to /engineering/eng-viewer
+      name = "Frontend Developer"
+    }
+  }
+}
+
+namespace "billing" {
+  role billing-admin {                       // sibling of /engineering — isolated
+    name = "Billing Admin"
+  }
+}
+```
+
+The DSL parser flattens these into absolute paths during AST construction — every entity carries its full `NamespacePath` by the time it reaches the applier. See the [.warden Language Reference](/docs/integration/dsl-reference#namespaces) for the full grammar.
+
+</Tab>
+</Tabs>
+
+## Cross-Namespace References
+
+Bare slugs (`role X : viewer`) resolve in the role's own namespace, then walk ancestors. To reach **across** the tree — say a role in `engineering/platform` should inherit from a role in `billing` — use an absolute path with a leading `/`:
+
+```warden
+namespace "engineering" {
+  namespace "platform" {
+    role billing-platform-admin : /billing/billing-admin {
+      name = "Platform admin with billing oversight"
+    }
+  }
+}
+```
+
+The leading `/` flips the resolver into absolute mode: it goes straight to `billing/billing-admin` instead of walking the role's own ancestors. This is the only escape hatch — sibling lookups always require it.
+
+## Resolution Rules at a Glance
+
+| Reference | Resolution |
+|---|---|
+| `role X : viewer` (bare) | Try `viewer` at this role's namespace, then each ancestor up to root. |
+| `role X : /eng/admin` (absolute) | Look exactly at `eng/admin`, no walk. |
+| Permission name in `grants = ["doc:read"]` | Try at this role's namespace, then ancestors. |
+| Permission shorthand `permission "x:y" (document : read)` | `document` is resolved at the permission's namespace, then ancestors. |
+| Resource type referenced in a permission expression | Same — namespace-of-the-permission, then ancestors. |
+| Relation tuple lookup at Check time | Exact namespace match (no walk). |
+| Policy applicability at Check time | Policy's namespace and every ancestor. |
+
+## Storage Shape
+
+Every entity table has a `namespace_path TEXT NOT NULL DEFAULT ''` column. Unique keys include it:
+
+```sql
+-- before namespaces
+UNIQUE(tenant_id, slug)
+
+-- with namespaces
+UNIQUE(tenant_id, namespace_path, slug)
+```
+
+So `role viewer` at the root and `role viewer` at `engineering/platform` are **distinct entities** — their slugs collide, but their `(tenant_id, namespace_path, slug)` triples don't. This is intentional: teams should be able to define a local `viewer` without coordinating across the entire company.
+
+A typed prefix index (`idx_warden_roles_ns` on `(tenant_id, namespace_path)`) keeps ancestor-walk queries fast on PostgreSQL and SQLite. MongoDB uses a sparse compound index with the same shape.
+
+## Worked Example: Drift-Free Per-Team Carve-Outs
+
+Suppose `acme` runs an internal platform with two engineering teams plus a billing org. Tenant-wide policy: never deploy without an MFA token. Per-team carve-outs: Platform engineers can read everything in their namespace; SRE can also page; Frontend can only ship UI.
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
+```go
+// Tenant-root: MFA-required policy applies to every descendant.
+_ = store.CreatePolicy(ctx, &policy.Policy{
+    TenantID:      "acme",
+    NamespacePath: "",
+    Name:          "global-mfa",
+    Effect:        policy.EffectAllow,
+    IsActive:      true,
+    Actions:       []string{"deploy:*"},
+    Obligations:   []string{"require-mfa"},
+})
+
+// Engineering-org viewer role, shared by both sub-teams.
+engViewer := &role.Role{
+    TenantID:      "acme",
+    NamespacePath: "engineering",
+    Slug:          "eng-viewer",
+    Name:          "Engineering Viewer",
+}
+_ = store.CreateRole(ctx, engViewer)
+
+// Platform admin inherits from eng-viewer via the ancestor walk.
+_ = store.CreateRole(ctx, &role.Role{
+    TenantID:      "acme",
+    NamespacePath: "engineering/platform",
+    Slug:          "platform-admin",
+    ParentSlug:    "eng-viewer",
+    Name:          "Platform Admin",
+})
+
+// SRE inherits from platform-admin in the same namespace.
+_ = store.CreateRole(ctx, &role.Role{
+    TenantID:      "acme",
+    NamespacePath: "engineering/platform",
+    Slug:          "sre",
+    ParentSlug:    "platform-admin",
+    Name:          "SRE",
+})
+
+// Frontend developer inherits from eng-viewer (different namespace, same parent).
+_ = store.CreateRole(ctx, &role.Role{
+    TenantID:      "acme",
+    NamespacePath: "engineering/frontend",
+    Slug:          "frontend-developer",
+    ParentSlug:    "eng-viewer",
+    Name:          "Frontend Developer",
+})
+
+// Check: SRE on a deploy. Engine walks engineering/platform → engineering → root,
+// finds the global-mfa policy, returns Allow + Obligation "require-mfa".
+ctx = warden.WithNamespace(ctx, "engineering/platform")
+result, _ := eng.Check(ctx, &warden.CheckRequest{...})
+```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant acme
+
+// Tenant-root: MFA-required policy applies to every descendant.
+policy "global-mfa" {
+  effect      = allow
+  active      = true
+  actions     = ["deploy:*"]
+  obligations = ["require-mfa"]
+}
+
+namespace "engineering" {
+  // Shared by both sub-teams.
+  role eng-viewer {
+    name = "Engineering Viewer"
+  }
+
+  namespace "platform" {
+    role platform-admin : eng-viewer {
+      name = "Platform Admin"
+    }
+    role sre : platform-admin {
+      name = "SRE"
+    }
+  }
+
+  namespace "frontend" {
+    role frontend-developer : eng-viewer {
+      name = "Frontend Developer"
+    }
+  }
+}
+
+namespace "billing" {
+  role billing-admin {
+    name = "Billing Admin"
+  }
+}
+```
+
+Apply once, every namespace has its slice of the org. The `global-mfa` policy lives at root and applies to any deploy regardless of which sub-namespace the request runs in — that's the cascading-from-ancestors guarantee.
+
+</Tab>
+</Tabs>
+
+## Performance Characteristics
+
+| Operation | Cost in namespace depth `d` |
+|---|---|
+| `Check` (RBAC + ABAC + ReBAC) | `O(d)` extra store reads — one per ancestor level |
+| `ListRoles` for an explicit namespace | Single indexed lookup, no walk |
+| `ListActivePolicies(tenant, [N, parent, root])` | Single query with `IN (...)` filter |
+| `AncestorNamespaces` itself | `O(d)` string ops, no I/O |
+
+The default cap of 8 keeps the worst case under a millisecond on warm caches even on busy systems. Bench: `BenchmarkCheckWithNamespace/depth/{0,1,4,8}` is part of the engine's regression suite.
+
+## Reserved Segments and Common Gotchas
+
+- `system` and `admin` are rejected by `ValidateNamespacePath` — they're reserved for Warden's own internal use (think future system-managed namespaces). Use `ops` or `governance` if you need a similar concept.
+- A namespace path **does not** create implicit empty segments. `"a/b"` exists only if you explicitly created entities at `a` and at `a/b`. The store doesn't pre-register parent paths — `engineering/platform` is just the path string, not a row.
+- Renaming a namespace segment is **not** a rename — it's a delete + recreate. Migrate carefully if you rebrand a team.
+- Relation tuples don't cascade. A document shared at `engineering` is invisible from `engineering/platform` even though that's a descendant. This is intentional: you don't want a tuple created in one team's scope leaking sideways via inheritance.
+
+## See Also
+
+- [Multi-Tenancy](/docs/concepts/multi-tenancy) — the flat dimension that namespaces sit *inside*.
+- [.warden Language Reference: Namespaces](/docs/integration/dsl-reference#namespaces) — the full DSL grammar for `namespace` blocks.
+- [Authorization Models](/docs/concepts/authorization-models) — how RBAC, ABAC, ReBAC, and PBAC each interact with the ancestor walk.

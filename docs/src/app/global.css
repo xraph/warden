@@ -18,4 +18,115 @@
     );
     background-size: 32px 32px;
   }
+
+  /* Soft mesh-style gradient — three blobs of color blended together.
+     Renders as a non-animated layer; pair with .aurora-shift for motion. */
+  .bg-aurora {
+    background-image:
+      radial-gradient(
+        at 20% 20%,
+        rgba(99, 102, 241, 0.28) 0,
+        transparent 50%
+      ),
+      radial-gradient(
+        at 80% 30%,
+        rgba(59, 130, 246, 0.22) 0,
+        transparent 50%
+      ),
+      radial-gradient(
+        at 50% 80%,
+        rgba(168, 85, 247, 0.20) 0,
+        transparent 50%
+      );
+  }
+
+  .aurora-shift {
+    animation: aurora-shift 18s ease-in-out infinite alternate;
+  }
+
+  @keyframes aurora-shift {
+    0% {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    100% {
+      transform: translate3d(2%, -2%, 0) scale(1.06);
+    }
+  }
+
+  /* Marquee primitives — used by the capability ticker. */
+  .animate-marquee {
+    animation: marquee 32s linear infinite;
+  }
+
+  @keyframes marquee {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+
+  /* Subtle radial mask so marquee edges fade into the page. */
+  .mask-fade-x {
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black 10%,
+      black 90%,
+      transparent
+    );
+    -webkit-mask-image: linear-gradient(
+      to right,
+      transparent,
+      black 10%,
+      black 90%,
+      transparent
+    );
+  }
+
+  /* Gradient text utility: clip a multi-color gradient to the glyphs.
+     Default uses warden's blue → indigo → purple ramp. */
+  .text-gradient-warden {
+    background-image: linear-gradient(
+      135deg,
+      #60a5fa 0%,
+      #818cf8 50%,
+      #c084fc 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Animated shine border — pseudo-element with a rotating conic gradient.
+     Use on `.shine-border` parents that have `relative` and a child with
+     `bg-fd-card` covering all but ~1px to expose the rotating ring. */
+  .shine-border::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    background: conic-gradient(
+      from 0deg,
+      transparent 70%,
+      #6366f1 80%,
+      #a855f7 90%,
+      transparent 100%
+    );
+    animation: shine-rotate 6s linear infinite;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+  }
+
+  .shine-border:hover::before {
+    opacity: 1;
+  }
+
+  @keyframes shine-rotate {
+    to {
+      transform: rotate(360deg);
+    }
+  }
 }

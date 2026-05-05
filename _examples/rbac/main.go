@@ -8,7 +8,6 @@ import (
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
-	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store/memory"
@@ -24,25 +23,26 @@ func main() {
 	}
 
 	// Create role hierarchy: editor inherits from viewer.
-	viewerID := id.NewRoleID()
-	editorID := id.NewRoleID()
-	readPerm := id.NewPermissionID()
-	writePerm := id.NewPermissionID()
+	// IDs are auto-assigned by the store; we read them from the entity
+	// after Create when we need to reference them downstream.
+	viewer := &role.Role{TenantID: "t1", Name: "viewer", Slug: "viewer"}
+	editor := &role.Role{TenantID: "t1", Name: "editor", Slug: "editor", ParentSlug: "viewer"}
+	_ = s.CreateRole(ctx, viewer)
+	_ = s.CreateRole(ctx, editor)
 
-	_ = s.CreateRole(ctx, &role.Role{ID: viewerID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
-	_ = s.CreateRole(ctx, &role.Role{ID: editorID, TenantID: "t1", Name: "editor", Slug: "editor", ParentSlug: "viewer"})
-
-	_ = s.CreatePermission(ctx, &permission.Permission{ID: readPerm, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
-	_ = s.CreatePermission(ctx, &permission.Permission{ID: writePerm, TenantID: "t1", Name: "doc:write", Resource: "doc", Action: "write"})
+	_ = s.CreatePermission(ctx, &permission.Permission{TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
+	_ = s.CreatePermission(ctx, &permission.Permission{TenantID: "t1", Name: "doc:write", Resource: "doc", Action: "write"})
 
 	// Viewer can read; editor can write (and inherits read).
-	_ = s.AttachPermission(ctx, viewerID, readPerm)
-	_ = s.AttachPermission(ctx, editorID, writePerm)
+	_ = s.AttachPermission(ctx, viewer.ID, permission.Ref{Name: "doc:read"})
+	_ = s.AttachPermission(ctx, editor.ID, permission.Ref{Name: "doc:write"})
 
 	// Assign editor role to Alice.
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
-		ID: id.NewAssignmentID(), TenantID: "t1",
-		RoleID: editorID, SubjectKind: "user", SubjectID: "alice",
+		TenantID:    "t1",
+		RoleID:      editor.ID,
+		SubjectKind: "user",
+		SubjectID:   "alice",
 	})
 
 	// Alice can read (inherited from viewer).

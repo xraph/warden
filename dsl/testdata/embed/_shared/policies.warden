@@ -1,0 +1,16 @@
+// _shared/ files are loaded alongside the main file. The leading
+// underscore is meaningful — the embed.FS walker keeps them, while
+// Go's default //go:embed pattern would skip them. The standalone-embed
+// example uses `all:config` to keep these.
+
+warden config 1
+
+policy "audit-everything" {
+  description = "Emit an audit-log obligation on every read/write."
+  effect      = allow
+  priority    = 100
+  active      = true
+  actions     = ["read", "write"]
+  resources   = ["document"]
+  obligations = ["audit-log"]
+}

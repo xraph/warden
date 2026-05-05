@@ -152,9 +152,10 @@ func permissionFromModel(m *permissionModel) *permission.Permission {
 // ──────────────────────────────────────────────────
 
 type rolePermissionModel struct {
-	grove.BaseModel `grove:"table:warden_role_permissions"`
-	RoleID          string `grove:"role_id,pk"`
-	PermissionID    string `grove:"permission_id,pk"`
+	grove.BaseModel   `grove:"table:warden_role_permissions"`
+	RoleID            string `grove:"role_id,pk"`
+	PermNamespacePath string `grove:"perm_namespace_path,pk"`
+	PermName          string `grove:"perm_name,pk"`
 }
 
 // ──────────────────────────────────────────────────
@@ -294,6 +295,9 @@ type policyModel struct {
 	Effect          string                          `grove:"effect,notnull"`
 	Priority        int                             `grove:"priority,notnull"`
 	IsActive        bool                            `grove:"is_active,notnull"`
+	NotBefore       *time.Time                      `grove:"not_before"`
+	NotAfter        *time.Time                      `grove:"not_after"`
+	Obligations     jsonbSlice[string]              `grove:"obligations,type:jsonb"`
 	Version         int                             `grove:"version,notnull"`
 	Subjects        jsonbSlice[policy.SubjectMatch] `grove:"subjects,type:jsonb"`
 	Actions         jsonbSlice[string]              `grove:"actions,type:jsonb"`
@@ -319,6 +323,9 @@ func policyToModel(p *policy.Policy) *policyModel {
 		Effect:        string(p.Effect),
 		Priority:      p.Priority,
 		IsActive:      p.IsActive,
+		NotBefore:     p.NotBefore,
+		NotAfter:      p.NotAfter,
+		Obligations:   jsonbSlice[string](p.Obligations),
 		Version:       p.Version,
 		Subjects:      jsonbSlice[policy.SubjectMatch](p.Subjects),
 		Actions:       jsonbSlice[string](p.Actions),
@@ -342,6 +349,9 @@ func policyFromModel(m *policyModel) *policy.Policy {
 		Effect:        policy.Effect(m.Effect),
 		Priority:      m.Priority,
 		IsActive:      m.IsActive,
+		NotBefore:     m.NotBefore,
+		NotAfter:      m.NotAfter,
+		Obligations:   []string(m.Obligations),
 		Version:       m.Version,
 		Subjects:      []policy.SubjectMatch(m.Subjects),
 		Actions:       []string(m.Actions),

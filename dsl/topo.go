@@ -60,7 +60,7 @@ func topoSortRoles(roles []*RoleDecl) ([]*RoleDecl, error) {
 // reference, only if it's in the given set (i.e. being applied alongside).
 func lookupParentInSet(r *RoleDecl, byKey map[string]*RoleDecl) (*RoleDecl, bool) {
 	parent := r.Parent
-	if len(parent) > 0 && parent[0] == '/' {
+	if parent != "" && parent[0] == '/' {
 		// Absolute path.
 		rest := parent[1:]
 		var ns, slug string

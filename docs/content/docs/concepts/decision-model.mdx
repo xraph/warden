@@ -1,7 +1,9 @@
 ---
 title: Decision Model
-description: How Warden merges decisions from RBAC, ABAC, and ReBAC evaluators.
+description: How Warden merges decisions from RBAC, ABAC, ReBAC, and PBAC evaluators.
 ---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 
 ## Decision Types
 
@@ -17,70 +19,132 @@ Every evaluator returns one of three decisions:
 
 When multiple evaluators return decisions, Warden merges them with this priority:
 
-```
+```text
 1. If ANY evaluator returns explicit DENY  → DENIED
 2. If ANY evaluator returns ALLOW          → ALLOWED
 3. If all return NoOpinion                 → DENIED (default deny)
 ```
 
-This is a "deny-overrides" strategy: explicit denies always win.
+This is a **deny-overrides** strategy: explicit denies always win.
 
 ## Examples
 
 ### Example 1: RBAC allows, no policies
 
-| RBAC | ABAC | ReBAC | Result |
-|------|------|-------|--------|
+| RBAC | ABAC/PBAC | ReBAC | Result |
+|------|-----------|-------|--------|
 | Allow | NoOpinion | NoOpinion | **Allowed** |
 
-The user has the right role/permission. No ABAC policies or ReBAC tuples apply.
+The user has the right role/permission. No policies or relation tuples apply.
 
 ### Example 2: RBAC allows, ABAC denies
 
-| RBAC | ABAC | ReBAC | Result |
-|------|------|-------|--------|
+| RBAC | ABAC/PBAC | ReBAC | Result |
+|------|-----------|-------|--------|
 | Allow | Deny | NoOpinion | **Denied** |
 
 The user has the right role, but an ABAC policy (e.g., "deny after business hours") blocks access.
 
 ### Example 3: No RBAC match, ReBAC allows
 
-| RBAC | ABAC | ReBAC | Result |
-|------|------|-------|--------|
+| RBAC | ABAC/PBAC | ReBAC | Result |
+|------|-----------|-------|--------|
 | NoOpinion | NoOpinion | Allow | **Allowed** |
 
 No role assignment exists, but a relation tuple grants access through the relationship graph.
 
 ### Example 4: Nothing matches
 
-| RBAC | ABAC | ReBAC | Result |
-|------|------|-------|--------|
+| RBAC | ABAC/PBAC | ReBAC | Result |
+|------|-----------|-------|--------|
 | NoOpinion | NoOpinion | NoOpinion | **Denied** |
 
 Default deny: if no evaluator grants access, the request is denied.
 
 ## CheckResult
 
-The `Check()` call returns a `CheckResult` with details:
+The `Check()` call returns a `CheckResult` with full provenance:
 
 ```go
 type CheckResult struct {
-    Allowed  bool        // Final decision
-    Decision Decision    // Allow, Deny, or NoOpinion
-    Reason   string      // Human-readable explanation
-    Sources  []string    // Which evaluators contributed ("rbac", "abac", "rebac")
-    Duration time.Duration // Evaluation time
+    Allowed     bool        // Decision shorthand
+    Decision    Decision    // allow / deny_explicit / deny_no_roles / deny_no_perms /
+                            // deny_condition / deny_relation / deny_default
+    Reason      string      // Human-readable explanation
+    MatchedBy   []MatchInfo // Every rule that matched (RBAC role IDs, ABAC policy IDs, ReBAC paths)
+    Obligations []string    // PBAC side-effect actions: audit-log, require-mfa, ...
+    EvalTimeNs  int64       // Evaluation latency
+}
+
+type MatchInfo struct {
+    Source string // "rbac" | "abac" | "rebac"
+    RuleID string // typeid of the matched entity
+    Detail string // free-form, e.g. `policy "incident-freeze" (deny)`
 }
 ```
 
+`MatchedBy` carries every contributing rule — useful for debugging "why did this Check return X?" and for audit logs that need to record specific policies, not just decisions.
+
 ## Policy Priority
 
-When multiple ABAC policies match, they are evaluated by priority (lower number = higher priority). The first matching deny policy short-circuits evaluation.
+When multiple ABAC/PBAC policies match, they are evaluated by priority (lower number = higher priority). An explicit deny from any policy still short-circuits the merge — priority controls *order*, not *override semantics*.
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
 
 ```go
 // High priority deny (evaluated first)
-&policy.Policy{Priority: 10, Effect: policy.EffectDeny, ...}
+&policy.Policy{
+    Name:     "incident-freeze",
+    Priority: 1,
+    Effect:   policy.EffectDeny,
+    IsActive: true,
+    Actions:  []string{"deploy:*"},
+}
 
-// Lower priority allow (evaluated second)
-&policy.Policy{Priority: 100, Effect: policy.EffectAllow, ...}
+// Lower priority allow (evaluated after the deny)
+&policy.Policy{
+    Name:     "default-deploy",
+    Priority: 100,
+    Effect:   policy.EffectAllow,
+    IsActive: true,
+    Actions:  []string{"deploy:*"},
+}
 ```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+// High priority deny (evaluated first)
+policy "incident-freeze" {
+  effect   = deny
+  priority = 1
+  active   = true
+  actions  = ["deploy:*"]
+}
+
+// Lower priority allow (evaluated after the deny)
+policy "default-deploy" {
+  effect   = allow
+  priority = 100
+  active   = true
+  actions  = ["deploy:*"]
+}
+```
+
+</Tab>
+</Tabs>
+
+## Obligations and the merge
+
+PBAC obligations are accumulated independently of the allow/deny merge:
+
+- Every matched policy contributes its `Obligations` to `CheckResult.Obligations`.
+- Duplicates are removed (first-occurrence order preserved).
+- Obligations from matched-but-overridden allows still surface — the engine records what *would* have fired even when an explicit deny wins.
+
+So a successful read against a document with an `audit-log`-emitting policy plus a `require-mfa`-emitting policy returns `Allowed=true, Obligations=["audit-log","require-mfa"]`. The calling system reads both and acts on each (write to audit log, prompt for MFA).

@@ -91,6 +91,9 @@ linters:
       enable-all: true
       disable:
         - fieldalignment
+        # shadow flags idiomatic `if err := f(); err != nil { ... }` blocks
+        # whenever an outer `err` is in scope. We keep the convention.
+        - shadow
 
   exclusions:
     presets:

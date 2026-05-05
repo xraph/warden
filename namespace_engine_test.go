@@ -12,8 +12,14 @@ import (
 
 // seedRBACAtNamespace creates a role + permission and assigns it to a subject
 // at the given namespace. Returns the role ID for later use.
-func seedRBACAtNamespace(t *testing.T, s seeder, tenantID, namespacePath, slug, permName, subjectKind, subjectID string) id.RoleID {
+func seedRBACAtNamespace(t *testing.T, s seeder, namespacePath, slug string) {
 	t.Helper()
+	const (
+		tenantID    = "t1"
+		permName    = "doc:read"
+		subjectKind = "user"
+		subjectID   = "u1"
+	)
 	ctx := context.Background()
 	roleID := id.NewRoleID()
 	permID := id.NewPermissionID()
@@ -30,7 +36,7 @@ func seedRBACAtNamespace(t *testing.T, s seeder, tenantID, namespacePath, slug, 
 	}); err != nil {
 		t.Fatalf("CreatePermission: %v", err)
 	}
-	if err := s.AttachPermission(ctx, roleID, permID); err != nil {
+	if err := s.AttachPermission(ctx, roleID, permission.Ref{NamespacePath: namespacePath, Name: permName}); err != nil {
 		t.Fatalf("AttachPermission: %v", err)
 	}
 	if err := s.CreateAssignment(ctx, &assignment.Assignment{
@@ -43,7 +49,6 @@ func seedRBACAtNamespace(t *testing.T, s seeder, tenantID, namespacePath, slug, 
 	}); err != nil {
 		t.Fatalf("CreateAssignment: %v", err)
 	}
-	return roleID
 }
 
 func splitPermName(name string) [2]string {
@@ -58,7 +63,7 @@ func splitPermName(name string) [2]string {
 type seeder interface {
 	CreateRole(ctx context.Context, r *role.Role) error
 	CreatePermission(ctx context.Context, p *permission.Permission) error
-	AttachPermission(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error
+	AttachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error
 	CreateAssignment(ctx context.Context, a *assignment.Assignment) error
 }
 
@@ -69,7 +74,7 @@ func TestNamespace_LocalLookup(t *testing.T) {
 	ctx = WithNamespace(ctx, "engineering")
 	eng, s := newTestEngine(t)
 
-	seedRBACAtNamespace(t, s, "t1", "engineering", "viewer", "doc:read", "user", "u1")
+	seedRBACAtNamespace(t, s, "engineering", "viewer")
 
 	result, err := eng.Check(ctx, &CheckRequest{
 		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
@@ -91,7 +96,7 @@ func TestNamespace_AncestorFallback(t *testing.T) {
 	eng, s := newTestEngine(t)
 
 	// Role/perm/assignment all live at "engineering" (the ancestor).
-	seedRBACAtNamespace(t, s, "t1", "engineering", "eng-viewer", "doc:read", "user", "u1")
+	seedRBACAtNamespace(t, s, "engineering", "eng-viewer")
 
 	// Check happens at "engineering/platform/sre" (deepest descendant).
 	deep := WithNamespace(ctx, "engineering/platform/sre")
@@ -116,7 +121,7 @@ func TestNamespace_SiblingIsolation(t *testing.T) {
 	eng, s := newTestEngine(t)
 
 	// User u1 only has the role at "engineering".
-	seedRBACAtNamespace(t, s, "t1", "engineering", "eng-viewer", "doc:read", "user", "u1")
+	seedRBACAtNamespace(t, s, "engineering", "eng-viewer")
 
 	// Check at the sibling "billing" — should be denied.
 	billingCtx := WithNamespace(ctx, "billing")
@@ -141,7 +146,7 @@ func TestNamespace_AncestorDoesNotInheritFromDescendant(t *testing.T) {
 	eng, s := newTestEngine(t)
 
 	// User u1 has the role only at the deeper namespace.
-	seedRBACAtNamespace(t, s, "t1", "engineering/platform", "platform-only", "doc:read", "user", "u1")
+	seedRBACAtNamespace(t, s, "engineering/platform", "platform-only")
 
 	// Check at the parent namespace — should be denied.
 	engCtx := WithNamespace(ctx, "engineering")
@@ -165,7 +170,7 @@ func TestNamespace_CrossTenantIsolation(t *testing.T) {
 	eng, s := newTestEngine(t)
 
 	// Tenant t1 has the role.
-	seedRBACAtNamespace(t, s, "t1", "engineering", "viewer", "doc:read", "user", "u1")
+	seedRBACAtNamespace(t, s, "engineering", "viewer")
 
 	// Check as tenant t2 at the same namespace — should be denied.
 	t2Ctx := WithTenant(context.Background(), "app1", "t2")
@@ -190,7 +195,7 @@ func TestNamespace_RootRolesVisibleEverywhere(t *testing.T) {
 	eng, s := newTestEngine(t)
 
 	// Role at tenant root.
-	seedRBACAtNamespace(t, s, "t1", "", "super-admin", "doc:read", "user", "u1")
+	seedRBACAtNamespace(t, s, "", "super-admin")
 
 	// Check at a deeply nested namespace.
 	deep := WithNamespace(ctx, "engineering/platform/sre")
@@ -214,7 +219,7 @@ func TestNamespace_CallOptionOverride(t *testing.T) {
 	ctx = WithNamespace(ctx, "billing") // context says billing
 	eng, s := newTestEngine(t)
 
-	seedRBACAtNamespace(t, s, "t1", "engineering", "viewer", "doc:read", "user", "u1")
+	seedRBACAtNamespace(t, s, "engineering", "viewer")
 
 	// Without override: should be denied (context = billing).
 	denied, err := eng.Check(ctx, &CheckRequest{
@@ -250,7 +255,7 @@ func TestNamespace_RequestNamespaceOverridesContext(t *testing.T) {
 	ctx = WithNamespace(ctx, "billing")
 	eng, s := newTestEngine(t)
 
-	seedRBACAtNamespace(t, s, "t1", "engineering", "viewer", "doc:read", "user", "u1")
+	seedRBACAtNamespace(t, s, "engineering", "viewer")
 
 	result, err := eng.Check(ctx, &CheckRequest{
 		Subject:       Subject{Kind: SubjectUser, ID: "u1"},

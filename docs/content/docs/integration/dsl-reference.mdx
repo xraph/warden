@@ -1,0 +1,681 @@
+---
+title: .warden Language Reference
+description: Complete reference for the Warden declarative DSL — every block, field, expression, operator, and convention.
+---
+
+This page is the canonical reference for the `.warden` declarative configuration language. For tooling (CLI, LSP, VS Code) see [DSL & Tooling](/docs/integration/dsl-tooling). For an introduction in context see [Authorization Models](/docs/concepts/authorization-models).
+
+## File anatomy
+
+A `.warden` file has three layers:
+
+```warden
+warden config 1            // 1. magic header
+tenant acme                //    optional scope
+app    api
+
+import "shared/policies.warden"   // 2. optional imports
+
+resource document { ... }         // 3. declarations
+permission "doc:read" (...)
+role viewer { ... }
+policy "incident-freeze" { ... }
+relation document:welcome owner = user:alice
+```
+
+**Magic header** is required and must be the first non-comment, non-whitespace tokens in the file. The integer is the spec version — currently `1`. Future breaking changes increment this number; the loader will run a converter pass for older versions.
+
+**Scope** (`tenant`, `app`) is optional and may be set in any file in a load set. Conflicts between files (one file says `tenant a`, another says `tenant b`) produce a diagnostic. Scope can be supplied programmatically via `ApplyOptions.TenantID` or by CLI flags `--tenant` / `--app`, in which case those override what's in source.
+
+**Encoding** is UTF-8. Line endings are LF or CRLF. Tabs and spaces are equivalent for indentation (the canonical formatter uses 4-space indent).
+
+## Lexical structure
+
+### Tokens
+
+| Kind | Pattern | Example |
+|---|---|---|
+| **Identifier** | `[a-z_][a-zA-Z0-9_-]*` | `viewer`, `eng-platform`, `is_system` |
+| **String** | `"..."` with `\\`, `\"`, `\n`, `\t` escapes | `"Editor (acme)"` |
+| **Integer** | `[0-9]+` | `1`, `100`, `2026` |
+| **Boolean** | `true` \| `false` | `true` |
+| **Punctuation** | `{ } ( ) [ ] , : ; . \| # ! /` | |
+| **Operators** | `= += -> == != <= >= < > + - & =~` | |
+| **Line comment** | `//` to end of line | `// note` |
+| **Block comment** | `/* ... */` (does not nest) | `/* doc */` |
+
+### Identifiers
+
+Identifiers are lowercase by convention. The lexer tolerates uppercase letters in identifiers but the resolver rejects them where strict naming rules apply (role slugs, permission names, etc.). See [Identifier conventions](#identifier-conventions) below.
+
+### Keywords
+
+Reserved words that the lexer picks out of the IDENT stream:
+
+```text
+warden config tenant app namespace import
+resource relation permission role policy
+effect allow deny actions resources subjects
+when negate grants
+name description priority active
+is_system is_default max_members metadata
+or and not in contains starts_with ends_with
+exists ip_in_cidr time_after time_before
+all_of any_of
+not_before not_after obligations
+true false
+```
+
+Identifiers that collide with keywords cannot be used as plain names. For most domain identifiers (slugs, action names) this isn't a concern; the conflict only matters inside permission expressions, where you'd write a relation called `not` or `all_of`.
+
+### Comments
+
+```warden
+// Single-line comment.
+permission "doc:read" (document : read)
+
+/*
+  Block comments do not nest.
+  They span multiple lines.
+*/
+role viewer {}
+```
+
+Comments are skipped before parsing. The formatter preserves them and attaches each comment to the following declaration.
+
+### Variables (template substitution)
+
+Source files can contain `${NAME}` placeholders that are expanded before parsing. Names match `[A-Za-z_][A-Za-z0-9_]*`. Values come from one of three layers (later layers override earlier ones):
+
+1. **Defaults** — passed programmatically via `dsl.WithVariables(...)`.
+2. **Environment** — any env var matching `WARDEN_VAR_<NAME>` becomes `${NAME}`.
+3. **CLI** — `warden lint --var NAME=VALUE …` (repeatable).
+
+```warden
+warden config 1
+tenant ${TENANT}
+
+role admin {
+  name        = "Admin (${ENV})"
+  description = "Tenant ${TENANT} on region ${REGION}"
+}
+```
+
+```bash
+# CLI, with env defaulting:
+WARDEN_VAR_REGION=us-east-1 \
+  warden apply -f config/ \
+    --var TENANT=acme \
+    --var ENV=prod \
+    --store postgres://…
+```
+
+Substitution is purely textual — placeholders inside string literals and inside comments are substituted just like everywhere else. Use `$$` to escape: `$${LITERAL}` produces `${LITERAL}` verbatim with no substitution.
+
+Diagnostics are produced for:
+
+- **Undefined variable** — `${X}` with no matching value. Position points at the `$`.
+- **Unclosed brace** — `${X` without a matching `}` before EOL.
+- **Invalid name** — `${1BAD}` (must match the identifier regex).
+
+Variables are evaluated before the parser sees any tokens, so they can appear anywhere in source — identifier slots, string values, even keyword positions. The applier still validates the resulting tokens, so `tenant ${X}` with `X="..."` (a string) produces a parser error pointing at the substituted text.
+
+## Resource types
+
+A `resource` block declares an entity type that participates in ReBAC. Resource types own **relations** (typed connections to other entities) and **permissions** (named expressions over those relations).
+
+```warden
+resource document {
+  description = "Tenant document"
+
+  relation owner:  user
+  relation editor: user | group#member
+  relation viewer: user | group#member
+  relation parent: folder
+
+  permission read   = viewer or editor or owner or parent->read
+  permission edit   = editor or owner or parent->edit
+  permission delete = owner
+}
+```
+
+**`relation NAME : TYPES`** — `TYPES` is a `|`-separated list of allowed subject types. Each entry is either a bare resource type (`user`) or a [subject set](#subject-sets) (`group#member`).
+
+**`permission NAME = EXPR`** — `EXPR` is a [permission expression](#permission-expressions) over the resource's relations.
+
+**`description = "..."`** — optional human-readable label.
+
+### Subject sets
+
+`group#member` reads as "members of the group". On a check, the engine resolves the relation transitively: a tuple `document:d1 viewer = group:eng#member` matches any subject that has `group:eng member = user:alice`.
+
+### Permission expressions
+
+The right-hand side of `permission X = …` is a small algebra over relations. Pratt-style precedence:
+
+| Operator | Precedence | Meaning |
+|---|---|---|
+| `or` (alias `+`) | 1 (lowest) | union — match if either side matches |
+| `and` (alias `&`) | 2 | intersection — match if both sides match |
+| `not` (aliases `!`, `-`) | 3 | exclusion — match if the operand does not |
+| `RELATION` | atom | direct relation lookup |
+| `RELATION->RELATION` | 4 (highest) | traversal — walk the first relation, then check the second on the result |
+| `(EXPR)` | grouping | parens override precedence |
+
+```warden
+permission read = viewer or editor or owner          // any of three
+permission edit = editor and not banned              // editor AND not banned
+permission share = editor or parent->edit            // direct or via parent
+permission god = (editor or owner) and (not banned)  // explicit grouping
+```
+
+Traversal targets must be valid: in `parent->read`, `parent` must be a relation declared on the current resource, *and* the relation's target type (`folder` in the example) must declare a permission named `read`. The resolver validates this at lint time.
+
+Cycles are bounded at runtime by the engine's `MaxGraphDepth` (default 10).
+
+## Permissions
+
+The `permission` declaration registers a named permission in the catalog. Two forms:
+
+**Long form** (with metadata):
+
+```warden
+permission "doc:read" {
+  description = "Read a document"
+  resource    = "document"
+  action      = "read"
+}
+```
+
+**Shorthand** (most common, links to a resource-type permission):
+
+```warden
+permission "doc:read"  (document : read)
+permission "doc:write" (document : edit)
+```
+
+The shorthand form binds the catalog entry to the `read` (or `edit`) permission expression declared in the `resource document { ... }` block.
+
+Names follow the format `<resource>:<action>`. Resources are snake_case identifiers; actions can include `*` for glob matching at check time.
+
+## Roles
+
+A `role` declaration registers a named role with a slug, optional parent, and a list of granted permissions.
+
+```warden
+role viewer {
+  name        = "Viewer"
+  description = "Read-only access"
+  is_system   = false
+  is_default  = false
+  max_members = 0
+  grants      = ["doc:read", "folder:read"]
+  metadata    = {} // optional, free-form
+}
+
+role editor : viewer {       // inherits from viewer
+  name   = "Editor"
+  grants += ["doc:write"]    // appends to viewer's grants
+}
+
+role admin : editor {
+  name    = "Administrator"
+  grants += ["doc:delete"]
+}
+```
+
+### Fields
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `name` | `STRING` | `""` | Display name (≤64 chars recommended). |
+| `description` | `STRING` | `""` | Free-form. |
+| `is_system` | `BOOL` | `false` | System-managed role; `--prune` will not delete it. |
+| `is_default` | `BOOL` | `false` | Marks the role as the default for new subjects. |
+| `max_members` | `INT` | `0` (no limit) | Soft limit enforced at assignment time. |
+| `grants` | `string_list` | `[]` | Permission names. Use `+=` to append to inherited grants. |
+| `metadata` | `map` | `{}` | Arbitrary key/value pairs. |
+
+### Inheritance
+
+`role editor : viewer` makes `editor` a child of `viewer`. The slug after the colon resolves first in the local namespace, then walks up ancestors. To reach across the namespace tree explicitly, use a leading `/`:
+
+```warden
+namespace "engineering" {
+  role platform-admin : eng-viewer {           // local — eng-viewer in same ns
+  }
+
+  namespace "platform" {
+    role sre : /engineering/platform-admin {   // absolute path
+    }
+  }
+}
+```
+
+The resolver detects cycles in the parent graph and reports them as diagnostics. Inherited permissions cascade at evaluation time — see [authorization models](/docs/concepts/authorization-models).
+
+### Slug rules
+
+Role slugs must match `^[a-z][a-z0-9-]{0,62}$` (kebab-case, ≤63 chars). Slugs are effectively immutable in storage (the API has no `Slug` on `UpdateRoleRequest`).
+
+## Policies
+
+A `policy` declaration is an ABAC or PBAC rule with effect, matchers, conditions, and side-effect signals.
+
+```warden
+policy "business-hours-only" {
+  description = "Allow writes during business hours only"
+  effect      = allow
+  priority    = 100
+  active      = true
+  not_before  = "2026-01-01T00:00:00Z"   // PBAC
+  not_after   = "2026-12-31T23:59:59Z"   // PBAC
+  obligations = ["audit-log"]            // PBAC
+  subjects    = []                       // empty = match any subject
+  actions     = ["write", "delete"]
+  resources   = ["document"]
+  metadata    = {}
+
+  when {
+    context.time time_after  "09:00:00Z"
+    context.time time_before "17:00:00Z"
+    subject.attributes.department == "engineering"
+  }
+}
+```
+
+### Fields
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `description` | `STRING` | `""` | Free-form. |
+| `effect` | `allow` \| `deny` | required | Decision the policy emits when matched. |
+| `priority` | `INT` | `0` | Lower values evaluate first; explicit `deny` always wins regardless. |
+| `active` | `BOOL` | `true` | Manual on/off. PBAC: see also `not_before` / `not_after`. |
+| `not_before` | `STRING` (RFC3339) | unset | PBAC: policy is inactive before this instant. |
+| `not_after` | `STRING` (RFC3339) | unset | PBAC: policy is inactive after this instant. |
+| `obligations` | `string_list` | `[]` | PBAC: named side-effect actions emitted on match. |
+| `subjects` | `string_list` | `[]` | Subject matchers (glob). Empty = any subject. |
+| `actions` | `string_list` | `[]` | Action patterns (glob). |
+| `resources` | `string_list` | `[]` | Resource patterns (glob). |
+| `metadata` | `map` | `{}` | Arbitrary key/value pairs. |
+| `when { ... }` | block | empty | Conditions; see below. |
+
+### `when` blocks
+
+The `when` block contains zero or more conditions. By default, conditions are AND-merged: all must hold for the policy to match. Use `all_of` / `any_of` to override:
+
+```warden
+when {
+  // AND: all three must hold
+  context.ip ip_in_cidr "10.0.0.0/8"
+  context.time time_after "09:00:00Z"
+  subject.attributes.role == "admin"
+}
+
+when {
+  any_of {
+    subject.attributes.department == "engineering"
+    subject.attributes.department == "platform"
+  }
+  context.time time_after "09:00:00Z"   // AND-ed with the any_of above
+}
+```
+
+Conditions are atomic predicates of the form:
+
+```text
+FIELD_PATH OPERATOR LITERAL [negate]
+```
+
+`FIELD_PATH` is a dotted path with optional bracketed segments:
+
+- `subject.id`
+- `subject.attributes.department`
+- `subject.attributes["dept"]`     (bracketed for keys with non-identifier chars)
+- `resource.attributes.tier`
+- `context.ip`
+- `context.time`
+- `action.name`
+
+`negate` flips the condition's result, useful when an operator's negation isn't a separate keyword:
+
+```warden
+when {
+  context.ip ip_in_cidr "10.0.0.0/8" negate   // IP NOT in 10.0.0.0/8
+}
+```
+
+### Condition operators
+
+| Operator | Type | Example |
+|---|---|---|
+| `==` | equality | `subject.attributes.role == "admin"` |
+| `!=` | inequality | `subject.attributes.role != "intern"` |
+| `<`, `>`, `<=`, `>=` | numeric | `subject.attributes.age >= 18` |
+| `in` | membership | `subject.attributes.country in ["US", "CA"]` |
+| `not in` | non-membership | `subject.attributes.env not in ["prod"]` |
+| `contains` | substring | `subject.email contains "@company.com"` |
+| `starts_with` | prefix | `resource.path starts_with "/api/"` |
+| `ends_with` | suffix | `resource.name ends_with ".pdf"` |
+| `=~` | regex | `resource.path =~ "^/v[0-9]+/"` |
+| `exists` | presence | `subject.attributes.mfa_verified exists` |
+| `not exists` | absence | `subject.attributes.banned not exists` |
+| `ip_in_cidr` | network | `context.ip ip_in_cidr "10.0.0.0/8"` |
+| `time_after` | wall-clock comparison | `context.time time_after "09:00:00Z"` |
+| `time_before` | wall-clock comparison | `context.time time_before "17:00:00Z"` |
+
+## Relations
+
+A `relation` declaration writes a single relation tuple — useful for seed data:
+
+```warden
+relation document:welcome owner  = user:alice
+relation document:welcome editor = user:bob
+relation document:welcome viewer = group:eng#member
+```
+
+Form: `relation OBJ_TYPE:OBJ_ID RELATION = SUBJ_TYPE:SUBJ_ID[#SUBJ_RELATION]`.
+
+The optional `#SUBJ_RELATION` suffix creates a [subject set](#subject-sets) — "every member of `group:eng` is a viewer of `document:welcome`".
+
+For runtime relation writes (the typical path), use the engine's `CreateRelation` API or a tuple-write plugin — `relation` declarations are appropriate for fixtures and bootstrap state, not for tracking high-volume tuples.
+
+## Namespaces
+
+Namespaces give cascading scope inheritance: an entity declared at namespace `N` is visible from `N` and every descendant of `N`. Namespaces nest arbitrarily up to the configured max depth (default 8).
+
+> **Conceptual deep-dive.** This section covers DSL syntax. For runtime semantics, scoping a Check call, the ancestor walk, and worked examples, see [Namespaces (Nested Tenancy)](/docs/concepts/namespaces).
+
+```warden
+warden config 1
+tenant acme
+
+permission "audit:read" (audit_log : read)
+
+role super-admin {
+  is_system = true
+  grants    = ["audit:*", "*:*"]
+}
+
+namespace "engineering" {
+  role eng-viewer {
+    name   = "Engineering Viewer"
+    grants = ["docs:read"]
+  }
+
+  namespace "platform" {
+    role platform-admin : eng-viewer {        // inherits from eng-viewer at /engineering
+      name    = "Platform Admin"
+      grants += ["infra:*"]
+    }
+
+    role sre : /engineering/platform-admin {  // absolute cross-block reference
+      name    = "SRE"
+      grants += ["pager:*"]
+    }
+  }
+
+  namespace "frontend" {
+    role frontend-developer : eng-viewer {    // resolves to /engineering/eng-viewer
+      grants += ["ui:*"]
+    }
+  }
+}
+
+namespace "billing" {
+  resource invoice {
+    relation owner: user
+    relation auditor: user
+    permission read   = owner or auditor
+    permission refund = owner
+  }
+
+  role billing-admin {
+    grants = ["invoice:*"]
+  }
+}
+```
+
+### Path syntax
+
+- **Segment**: matches `^[a-z][a-z0-9-]{0,62}$`.
+- **Path separator**: `/`. Storage canonicalizes paths without leading or trailing slashes (root is `""`).
+- **Leading `/`**: only valid in role-parent references — marks an absolute path from the tenant root. `role X : /eng/admin` jumps across the namespace tree.
+- **Reserved segments**: `system`, `admin`, `_root` are reserved.
+
+### Resolution rules
+
+| Lookup | Behavior |
+|---|---|
+| Role at namespace `N` (assignment) | Visible from `N` and all descendants. |
+| Role parent (bare slug) | Resolves at the role's own namespace, then walks ancestors. |
+| Role parent (absolute `/.../...`) | Resolves at the named namespace, no walk. |
+| Permission referenced from a role's `grants` | Resolves at the role's namespace, then walks ancestors. |
+| Resource type referenced from a permission shorthand | Resolves at the permission's namespace, then walks ancestors. |
+| Policy at namespace `N` | Applies to checks in `N` and all descendants. |
+| Relation tuples | Located at a namespace; do **not** cascade. |
+
+Sibling references must use absolute paths — a role declared in `billing` cannot be referenced as a bare slug from `engineering`.
+
+## Imports
+
+```warden
+warden config 1
+import "shared/policies.warden"
+import "shared/system-roles.warden"
+
+role admin : super-admin { ... }   // super-admin declared in the imported file
+```
+
+`import "path"` is a hint to the loader. In practice the directory walk picks up every `.warden` file already, so explicit imports are mainly cosmetic — they document intent and let the resolver flag stale references when a file is removed.
+
+## Multi-file load sets
+
+A directory of `.warden` files forms one logical program. Cross-file references resolve across all files; conflicting declarations error with both file paths and line numbers.
+
+```text
+config/
+├── _shared/
+│   ├── policies.warden            // business-hours, deny-blocklisted-ips
+│   └── system-roles.warden
+├── billing/
+│   ├── resources.warden           // invoice, subscription
+│   └── roles.warden               // billing-admin
+├── documents/
+│   ├── resources.warden
+│   └── roles.warden
+└── main.warden                    // header + scope only
+```
+
+Conflict rules:
+
+| Situation | Behavior |
+|---|---|
+| Two files declare `role viewer` | Error with both paths/lines. |
+| Two files declare `resource document` | Error. |
+| Two files declare `permission "doc:read"` | Error. |
+| Two files declare `policy "X"` | Error. |
+| Two files declare the same `relation document:d1 owner = user:alice` | Silently deduplicated. |
+| Two files set `tenant`/`app` and they disagree | Error; files without scope inherit from those that have it. |
+
+There is no "merge" annotation — to override, change source.
+
+## Scope resolution
+
+The same priority chain as the API:
+
+1. CLI flag — `warden apply --tenant t1 --app app1`.
+2. Forge context — when invoked through the extension.
+3. Environment — `WARDEN_TENANT_ID`, `WARDEN_APP_ID`.
+4. `tenant` / `app` declared in any file in the load set.
+
+**Tenant is optional.** When none of the four sources sets a tenant, apply uses the empty string — the **global scope**. Every entity lands with `tenant_id = ""`, which is also what single-tenant apps see at runtime when they never call `warden.WithTenant`. So a config that omits `tenant` and an app that omits `WithTenant` automatically agree:
+
+```warden
+warden config 1
+// No `tenant` declaration — applies to global scope.
+
+permission "doc:read" (document : read)
+
+role viewer {
+  name   = "Viewer"
+  grants = ["doc:read"]
+}
+```
+
+```bash
+warden apply -f config/ --store sqlite:./warden.db
+# No --tenant flag needed.
+```
+
+For multi-tenant repos, the recommended layout is **one directory per tenant** with the scope declared in that tenant's `main.warden` (or supplied via `--tenant` / `--var TENANT=…` per pipeline). Mixing tenant-scoped and global entities in the same load set is allowed but rare — the global bucket is usually system-wide policies (e.g. a `super-admin` role that exists across every tenant deployment).
+
+## Identifier conventions
+
+Validator-enforced (errors unless noted):
+
+| Element | Rule |
+|---|---|
+| Role slug | `^[a-z][a-z0-9-]{0,62}$` (kebab-case, ≤63 chars) |
+| Permission name | `<resource>:<action>` — resource: `^[a-z][a-z0-9_-]*$`; action: `^[a-z0-9_*-]+$` |
+| Policy name | `^[a-z][a-z0-9-]{0,62}$` |
+| Resource type name | `^[a-z][a-z0-9_]{0,62}$` (snake_case) |
+| Resource-type relation name | `^[a-z][a-z0-9_]{0,32}$` |
+| Display `name = "..."` | non-empty, ≤64 chars |
+| Namespace segment | `^[a-z][a-z0-9-]{0,62}$` |
+| Reserved namespace segments | `system`, `admin`, `_root` |
+| `is_system = true` reserved on slugs containing `system` | warning otherwise |
+
+## Spec versioning
+
+`warden config 1` is the current version. Future breaking changes:
+
+- Loader keeps `convertV<N>ToV<N+1>` AST passes so older files keep parsing.
+- `warden apply` emits a deprecation warning when it converts.
+- Versions are integers; the spec describes shape, not behavior.
+
+## Full grammar (EBNF)
+
+```text
+program       = header { stmt }
+header        = "warden" "config" INT [ "tenant" IDENT ] [ "app" IDENT ]
+
+stmt          = import_stmt
+              | namespace_decl
+              | resource_decl
+              | permission_decl
+              | role_decl
+              | policy_decl
+              | relation_decl
+
+import_stmt   = "import" STRING
+
+(* — Namespaces — *)
+namespace_decl = "namespace" (IDENT | STRING) "{" { stmt } "}"
+
+(* — Resource types — *)
+resource_decl = "resource" IDENT "{" { rt_member } "}"
+rt_member     = "relation" IDENT ":" subject_types
+              | "permission" IDENT "=" expr
+              | "description" "=" STRING
+
+subject_types = subject_type { "|" subject_type }
+subject_type  = IDENT [ "#" IDENT ]                         (* user | group#member *)
+
+(* — Permission expressions — *)
+expr          = or_expr
+or_expr       = and_expr { ("or" | "+") and_expr }
+and_expr      = not_expr { ("and" | "&") not_expr }
+not_expr      = [ "not" | "!" | "-" ] primary
+primary       = "(" expr ")"
+              | traverse
+              | IDENT
+traverse      = IDENT { "->" IDENT }
+
+(* — Permission catalog — *)
+permission_decl = "permission" STRING "{" { kv } "}"
+                | "permission" STRING "(" IDENT ":" IDENT ")"
+
+(* — Roles — *)
+role_decl     = "role" IDENT [ ":" parent_ref ] "{" { role_member } "}"
+parent_ref    = IDENT
+              | "/" IDENT { "/" IDENT }
+role_member   = "name"        "=" STRING
+              | "description" "=" STRING
+              | "is_system"   "=" BOOL
+              | "is_default"  "=" BOOL
+              | "max_members" "=" INT
+              | "grants"      ("=" | "+=") string_list
+              | "metadata"    "=" map_lit
+
+(* — Policies — *)
+policy_decl   = "policy" STRING "{" { policy_member } "}"
+policy_member = "description" "=" STRING
+              | "effect"      "=" ("allow" | "deny")
+              | "priority"    "=" INT
+              | "active"      "=" BOOL
+              | "not_before"  "=" STRING                    (* RFC3339 *)
+              | "not_after"   "=" STRING
+              | "obligations" "=" string_list
+              | "subjects"    "=" string_list
+              | "actions"     "=" string_list
+              | "resources"   "=" string_list
+              | "metadata"    "=" map_lit
+              | "when" "{" { condition } "}"
+
+condition     = field_path operator literal [ "negate" ]
+              | "all_of" "{" { condition } "}"
+              | "any_of" "{" { condition } "}"
+
+field_path    = IDENT { ("." IDENT | "[" STRING "]") }
+
+operator      = "==" | "!=" | "<" | ">" | "<=" | ">=" | "=~"
+              | "in" | "not" "in"
+              | "contains" | "starts_with" | "ends_with"
+              | "exists"   | "not" "exists"
+              | "ip_in_cidr" | "time_after" | "time_before"
+
+(* — Initial relation tuples — *)
+relation_decl = "relation" obj_ref relation_name "=" subj_ref
+obj_ref       = IDENT ":" IDENT
+relation_name = IDENT
+subj_ref      = IDENT ":" IDENT [ "#" IDENT ]
+
+(* — Lexical primitives — *)
+IDENT         = /[a-z_][a-zA-Z0-9_-]*/
+STRING        = '"' ... '"'                                 (* with escapes *)
+INT           = /[0-9]+/
+BOOL          = "true" | "false"
+string_list   = "[" [ STRING { "," STRING } [ "," ] ] "]"
+map_lit       = "{" [ kv { "," kv } ] "}"
+kv            = IDENT "=" literal
+literal       = STRING | INT | BOOL | string_list
+```
+
+## Worked examples
+
+The repository ships a fixture per AuthZ combination under [`_examples/declarative/`](https://github.com/xraph/warden/tree/main/_examples/declarative):
+
+| File | Demonstrates |
+|---|---|
+| `01-rbac-only.warden` | roles + permissions, no resource types or policies |
+| `02-rebac-only.warden` | resource types + relations + expressions, no roles or policies |
+| `03-abac-only.warden` | policies, no roles or resource types |
+| `04-rbac-rebac.warden` | roles whose grants include resource-type permissions resolved via traversal |
+| `05-rbac-abac.warden` | roles plus business-hours policy overlay |
+| `06-full.warden` | all three combined |
+| `07-pbac.warden` | time-bound policies + obligations |
+
+Each fixture is wired into the test suite. Run any of them through the CLI:
+
+```bash
+warden lint _examples/declarative/06-full.warden
+warden apply --dry-run -f _examples/declarative/06-full.warden --store memory:
+```
+
+## Programmatic loading
+
+The CLI is one entry point; the `dsl` package is the other. `dsl.ApplyFile`, `dsl.ApplyDir`, and `dsl.ApplyFS` cover one-file, directory, and `//go:embed` use cases respectively. Diagnostics flow back as `*dsl.DiagnosticError` (extract with `errors.As`).
+
+For the full helper surface — including a worked `//go:embed` example and the lower-level `LoadFS` + `Apply` path — see [DSL & Tooling — Programmatic apply](/docs/integration/dsl-tooling#programmatic-apply).

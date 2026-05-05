@@ -3,32 +3,39 @@ title: Relations & Tuples
 description: Zanzibar-style relationship-based authorization with graph traversal.
 ---
 
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
 ## Relation Tuples
 
 A relation tuple represents a relationship between a subject and an object. It is the fundamental building block of ReBAC.
+
+Every config example on this page comes in two flavours: **Go** (programmatic — call the store directly) and **DSL** (declarative — `.warden` source applied via [`warden apply`](/docs/integration/dsl-tooling#cli) or [`dsl.ApplyFS`](/docs/integration/dsl-tooling#programmatic-apply)). They produce identical tuples in the relations table.
+
+> **What goes in source vs runtime?** Schema declarations (resource types, relation definitions) are config — keep them in `.warden`. Individual relation *tuples* (`document:welcome owner = user:alice`) usually accumulate at runtime as users share documents, join teams, etc. — those are written via the store API. The `relation` declaration in `.warden` is for fixtures and bootstrap state, not high-volume tuple writes.
 
 ### Tuple Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ID` | `id.RelationID` | TypeID (`wrel_...`) |
+| `ID` | `id.RelationID` | TypeID (`rel_...`) — auto-assigned on Create when unset |
 | `ObjectType` | `string` | Type of the object (e.g., "document") |
 | `ObjectID` | `string` | ID of the object |
 | `Relation` | `string` | Relationship name (e.g., "viewer", "editor", "owner") |
 | `SubjectType` | `string` | Type of the subject (e.g., "user", "team") |
 | `SubjectID` | `string` | ID of the subject |
-| `SubjectRelation` | `string` | Optional: relation on the subject (for nested relations) |
+| `SubjectRelation` | `string` | Optional: relation on the subject (for subject sets) |
 
 ### Notation
 
 Tuples are often written in this notation:
 
-```
+```text
 object_type:object_id#relation@subject_type:subject_id
 ```
 
 Examples:
-```
+
+```text
 document:doc-123#viewer@user:user-42
 project:alpha#editor@team:engineering
 team:engineering#member@user:user-42
@@ -37,12 +44,14 @@ folder:root#parent@document:doc-123
 
 ## Creating Tuples
 
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
 ```go
 import "github.com/xraph/warden/relation"
 
-// "user:42 is a viewer of document:123"
+// "user:42 is a viewer of document:123" — ID is auto-assigned by the store on Create.
 t := &relation.Tuple{
-    ID:          id.NewRelationID(),
     ObjectType:  "document",
     ObjectID:    "doc-123",
     Relation:    "viewer",
@@ -52,65 +61,152 @@ t := &relation.Tuple{
 err := store.CreateRelation(ctx, t)
 ```
 
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+// Form: relation OBJ_TYPE:OBJ_ID RELATION = SUBJ_TYPE:SUBJ_ID
+relation document:doc-123 viewer = user:user-42
+```
+
+The DSL form is for fixture / bootstrap tuples — the kind you write once when seeding a tenant. Most tuple writes happen at runtime through `store.CreateRelation`, the API, or a custom plugin.
+
+</Tab>
+</Tabs>
+
 ## Graph Traversal
 
 Warden uses BFS (breadth-first search) to traverse relation graphs and find transitive permissions.
 
 ### Example: Team Membership
 
-```
+```text
 user:42 ──member──▶ team:eng ──editor──▶ project:alpha
 ```
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
 
 ```go
 // Create membership
 store.CreateRelation(ctx, &relation.Tuple{
-    ObjectType: "team", ObjectID: "eng",
-    Relation: "member",
-    SubjectType: "user", SubjectID: "user-42",
+    ObjectType:  "team",
+    ObjectID:    "eng",
+    Relation:    "member",
+    SubjectType: "user",
+    SubjectID:   "user-42",
 })
 
 // Create team's access to project
 store.CreateRelation(ctx, &relation.Tuple{
-    ObjectType: "project", ObjectID: "alpha",
-    Relation: "editor",
-    SubjectType: "team", SubjectID: "eng",
+    ObjectType:  "project",
+    ObjectID:    "alpha",
+    Relation:    "editor",
+    SubjectType: "team",
+    SubjectID:   "eng",
 })
 
 // Check: can user:42 edit project:alpha?
 result, _ := eng.Check(ctx, &warden.CheckRequest{
-    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
-    Action:       "write",
-    ResourceType: "project",
-    ResourceID:   "alpha",
+    Subject:  warden.Subject{Kind: "user", ID: "user-42"},
+    Action:   warden.Action{Name: "write"},
+    Resource: warden.Resource{Type: "project", ID: "alpha"},
 })
 // result.Allowed == true (via transitive relation through team:eng)
 ```
 
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+resource project {
+  relation editor: user | team#member
+  permission write = editor
+}
+
+resource team {
+  relation member: user
+}
+
+// Tuples — could equally be created at runtime.
+relation team:eng    member = user:user-42
+relation project:alpha editor = team:eng#member
+```
+
+The `team:eng#member` subject set means "every member of team:eng" — the engine resolves the membership relation transitively at check time.
+
+</Tab>
+</Tabs>
+
 ### Example: Document Sharing
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
 
 ```go
 // Share document with specific user
 store.CreateRelation(ctx, &relation.Tuple{
-    ObjectType: "document", ObjectID: "doc-456",
-    Relation: "viewer",
-    SubjectType: "user", SubjectID: "user-99",
+    ObjectType:  "document",
+    ObjectID:    "doc-456",
+    Relation:    "viewer",
+    SubjectType: "user",
+    SubjectID:   "user-99",
 })
 
 // Share entire folder with a team
 store.CreateRelation(ctx, &relation.Tuple{
-    ObjectType: "folder", ObjectID: "shared",
-    Relation: "viewer",
-    SubjectType: "team", SubjectID: "marketing",
+    ObjectType:  "folder",
+    ObjectID:    "shared",
+    Relation:    "viewer",
+    SubjectType: "team",
+    SubjectID:   "marketing",
+    SubjectRelation: "member",
 })
 
 // Document belongs to folder
 store.CreateRelation(ctx, &relation.Tuple{
-    ObjectType: "folder", ObjectID: "shared",
-    Relation: "parent",
-    SubjectType: "document", SubjectID: "doc-456",
+    ObjectType:  "document",
+    ObjectID:    "doc-456",
+    Relation:    "parent",
+    SubjectType: "folder",
+    SubjectID:   "shared",
 })
 ```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+resource folder {
+  relation viewer: user | team#member
+  permission read = viewer
+}
+
+resource document {
+  relation viewer: user
+  relation parent: folder
+  permission read = viewer or parent->read
+}
+
+// Direct share + folder share via team#member + document-in-folder.
+relation document:doc-456 viewer = user:user-99
+relation folder:shared    viewer = team:marketing#member
+relation document:doc-456 parent = folder:shared
+```
+
+The `parent->read` traversal lets a document inherit its folder's read permission — anyone who can read the folder can read everything in it.
+
+</Tab>
+</Tabs>
 
 ## Graph Walker Configuration
 
@@ -125,25 +221,26 @@ eng, _ := warden.NewEngine(
 )
 ```
 
-- **Cycle detection** — The walker tracks visited nodes to avoid infinite loops
-- **Max depth** — Limits traversal depth to prevent runaway queries
-- Returns `ErrMaxDepthReached` if the limit is hit without finding a path
-- Returns `ErrCycleDetected` if a cycle is found
+- **Cycle detection** — The walker tracks visited nodes to avoid infinite loops.
+- **Max depth** — Limits traversal depth to prevent runaway queries.
+- Returns `ErrMaxDepthReached` if the limit is hit without finding a path.
+- Returns `ErrCycleDetected` if a cycle is found.
 
 ## Listing Tuples
 
 ```go
 tuples, _ := store.ListRelations(ctx, &relation.ListFilter{
-    ObjectType:  "document",
-    ObjectID:    "doc-123",
-    Relation:    "viewer",
-    Limit:       50,
+    TenantID:   "t1",
+    ObjectType: "document",
+    ObjectID:   "doc-123",
+    Relation:   "viewer",
+    Limit:      50,
 })
 ```
 
 ## Deleting Tuples
 
 ```go
-err := store.DeleteRelationTuple(ctx, "",
+err := store.DeleteRelationTuple(ctx, "t1",
     "document", "doc-123", "viewer", "user", "user-42")
 ```

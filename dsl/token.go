@@ -6,8 +6,8 @@
 // definitions, permission expressions, and ABAC conditions all share the
 // same grammar.
 //
-// See _project_files/WARDEN-DESIGN.md and the canonical plan for the full
-// grammar specification.
+// See the project design doc and the canonical plan for the full grammar
+// specification.
 package dsl
 
 import "fmt"
@@ -114,23 +114,26 @@ const (
 	DESCRIPTION // description
 	PRIORITY    // priority
 	ACTIVE      // active
-	IS_SYSTEM   // is_system
-	IS_DEFAULT  // is_default
-	MAX_MEMBERS // max_members
+	IS_SYSTEM   //nolint:revive // matches DSL keyword spelling
+	IS_DEFAULT  //nolint:revive // matches DSL keyword spelling
+	MAX_MEMBERS //nolint:revive // matches DSL keyword spelling
 	METADATA    // metadata
 	OR          // or
 	AND         // and
 	NOT         // not
 	IN          // in
 	CONTAINS    // contains
-	STARTS_WITH // starts_with
-	ENDS_WITH   // ends_with
+	STARTS_WITH //nolint:revive // matches DSL keyword spelling
+	ENDS_WITH   //nolint:revive // matches DSL keyword spelling
 	EXISTS      // exists
-	IP_IN_CIDR  // ip_in_cidr
-	TIME_AFTER  // time_after
-	TIME_BEFORE // time_before
-	ALL_OF      // all_of
-	ANY_OF      // any_of
+	IP_IN_CIDR  //nolint:revive // matches DSL keyword spelling
+	TIME_AFTER  //nolint:revive // matches DSL keyword spelling
+	TIME_BEFORE //nolint:revive // matches DSL keyword spelling
+	ALL_OF      //nolint:revive // matches DSL keyword spelling
+	ANY_OF      //nolint:revive // matches DSL keyword spelling
+	NOT_BEFORE  //nolint:revive // matches DSL keyword spelling
+	NOT_AFTER   //nolint:revive // matches DSL keyword spelling
+	OBLIGATIONS // obligations (PBAC: named side-effect actions)
 )
 
 // keywords maps keyword spellings to their TokenKind.
@@ -176,6 +179,9 @@ var keywords = map[string]TokenKind{
 	"time_before": TIME_BEFORE,
 	"all_of":      ALL_OF,
 	"any_of":      ANY_OF,
+	"not_before":  NOT_BEFORE,
+	"not_after":   NOT_AFTER,
+	"obligations": OBLIGATIONS,
 	"true":        BOOL,
 	"false":       BOOL,
 }

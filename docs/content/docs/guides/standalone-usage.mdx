@@ -43,26 +43,21 @@ func main() {
         log.Fatal(err)
     }
 
-    // 3. Set up roles and permissions
-    now := time.Now()
+    // 3. Set up roles and permissions. IDs and timestamps are
+    // auto-assigned by the store on Create.
     perm := &permission.Permission{
-        ID: id.NewPermissionID(), Name: "Read",
-        Resource: "document", Action: "read",
-        CreatedAt: now, UpdatedAt: now,
+        Name: "doc:read", Resource: "document", Action: "read",
     }
     _ = st.CreatePermission(ctx, perm)
 
-    r := &role.Role{
-        ID: id.NewRoleID(), Name: "Viewer", Slug: "viewer",
-        CreatedAt: now, UpdatedAt: now,
-    }
+    r := &role.Role{Name: "Viewer", Slug: "viewer"}
     _ = st.CreateRole(ctx, r)
-    _ = st.AttachPermission(ctx, r.ID, perm.ID)
+    _ = st.AttachPermission(ctx, r.ID, permission.Ref{Name: "doc:read"})
 
     _ = st.CreateAssignment(ctx, &assignment.Assignment{
-        ID: id.NewAssignmentID(), RoleID: r.ID,
-        SubjectKind: "user", SubjectID: "user-1",
-        CreatedAt: now,
+        RoleID:      r.ID,
+        SubjectKind: "user",
+        SubjectID:   "user-1",
     })
 
     // 4. Check authorization

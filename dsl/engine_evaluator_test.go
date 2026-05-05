@@ -65,17 +65,17 @@ resource doc {
 	ctx := warden.WithTenant(context.Background(), "", "t1")
 
 	// Alice can read d1 via parent->view traversal.
-	checkAllowed(t, eng, ctx, "alice", "read", "doc", "d1", true,
+	checkAllowed(ctx, t, eng, "alice", "d1", true,
 		"alice should read d1 via parent->view")
 
 	// Bob can read d2 directly via `viewer`.
-	checkAllowed(t, eng, ctx, "bob", "read", "doc", "d2", true,
+	checkAllowed(ctx, t, eng, "bob", "d2", true,
 		"bob should read d2 directly")
 
 	// Carol can read neither.
-	checkAllowed(t, eng, ctx, "carol", "read", "doc", "d1", false,
+	checkAllowed(ctx, t, eng, "carol", "d1", false,
 		"carol has no relation to d1")
-	checkAllowed(t, eng, ctx, "carol", "read", "doc", "d2", false,
+	checkAllowed(ctx, t, eng, "carol", "d2", false,
 		"carol has no relation to d2")
 }
 
@@ -94,13 +94,13 @@ func mustTuple(t *testing.T, s *memory.Store, tenant, objType, objID, rel, subjT
 	}
 }
 
-func checkAllowed(t *testing.T, eng *warden.Engine, ctx context.Context,
-	subject, action, resType, resID string, want bool, msg string) {
+func checkAllowed(ctx context.Context, t *testing.T, eng *warden.Engine,
+	subject, resID string, want bool, msg string) {
 	t.Helper()
 	result, err := eng.Check(ctx, &warden.CheckRequest{
 		Subject:  warden.Subject{Kind: warden.SubjectUser, ID: subject},
-		Action:   warden.Action{Name: action},
-		Resource: warden.Resource{Type: resType, ID: resID},
+		Action:   warden.Action{Name: "read"},
+		Resource: warden.Resource{Type: "doc", ID: resID},
 	})
 	if err != nil {
 		t.Fatalf("Check: %v", err)

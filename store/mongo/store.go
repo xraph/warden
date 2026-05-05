@@ -113,11 +113,15 @@ func migrationIndexes() map[string][]mongod.IndexModel {
 		},
 		colRolePermissions: {
 			{
-				Keys:    bson.D{{Key: "role_id", Value: 1}, {Key: "permission_id", Value: 1}},
+				Keys: bson.D{
+					{Key: "role_id", Value: 1},
+					{Key: "perm_namespace_path", Value: 1},
+					{Key: "perm_name", Value: 1},
+				},
 				Options: options.Index().SetUnique(true),
 			},
 			{Keys: bson.D{{Key: "role_id", Value: 1}}},
-			{Keys: bson.D{{Key: "permission_id", Value: 1}}},
+			{Keys: bson.D{{Key: "perm_namespace_path", Value: 1}, {Key: "perm_name", Value: 1}}},
 		},
 		colAssignments: {
 			{
@@ -182,9 +186,16 @@ func migrationIndexes() map[string][]mongod.IndexModel {
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateRole(ctx context.Context, r *role.Role) error {
+	if r.ID.IsNil() {
+		r.ID = id.NewRoleID()
+	}
 	t := now()
-	r.CreatedAt = t
-	r.UpdatedAt = t
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = t
+	}
+	if r.UpdatedAt.IsZero() {
+		r.UpdatedAt = t
+	}
 	m := roleToModel(r)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
 		return fmt.Errorf("warden: create role: %w", err)
@@ -314,27 +325,49 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 	return count, nil
 }
 
-func (s *Store) ListRolePermissions(ctx context.Context, roleID id.RoleID) ([]id.PermissionID, error) {
-	var models []rolePermissionModel
-	if err := s.mdb.NewFind(&models).
+// ListRolePermissions walks the junction's natural keys (perm_namespace_path,
+// perm_name) into the permissions collection, scoped to the role's tenant.
+// Mongo doesn't have JOINs, so we do the lookup in two steps: junction
+// rows for this role, then a single permissions Find with $in.
+func (s *Store) ListRolePermissions(ctx context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
+	var rps []rolePermissionModel
+	if err := s.mdb.NewFind(&rps).
 		Filter(bson.M{"role_id": roleID.String()}).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list role permissions: %w", err)
 	}
-	result := make([]id.PermissionID, 0, len(models))
-	for _, m := range models {
-		pid, err := id.ParsePermissionID(m.PermissionID)
-		if err == nil {
-			result = append(result, pid)
-		}
+	if len(rps) == 0 {
+		return nil, nil
+	}
+	// Resolve role tenant for the second-stage filter.
+	rrec, err := s.GetRole(ctx, roleID)
+	if err != nil || rrec == nil {
+		return nil, nil
+	}
+
+	// Build $or list over (namespace_path, name) pairs, AND-merged with tenant.
+	or := make([]bson.M, 0, len(rps))
+	for _, rp := range rps {
+		or = append(or, bson.M{"namespace_path": rp.PermNamespacePath, "name": rp.PermName})
+	}
+	var pms []permissionModel
+	if err := s.mdb.NewFind(&pms).
+		Filter(bson.M{"tenant_id": rrec.TenantID, "$or": or}).
+		Scan(ctx); err != nil {
+		return nil, fmt.Errorf("warden: list role permissions (resolve): %w", err)
+	}
+	result := make([]*permission.Permission, 0, len(pms))
+	for i := range pms {
+		result = append(result, permissionFromModel(&pms[i]))
 	}
 	return result, nil
 }
 
-func (s *Store) AttachPermission(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error {
+func (s *Store) AttachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error {
 	m := &rolePermissionModel{
-		RoleID:       roleID.String(),
-		PermissionID: permID.String(),
+		RoleID:            roleID.String(),
+		PermNamespacePath: ref.NamespacePath,
+		PermName:          ref.Name,
 	}
 	_, err := s.mdb.NewInsert(m).Exec(ctx)
 	if err != nil {
@@ -346,9 +379,13 @@ func (s *Store) AttachPermission(ctx context.Context, roleID id.RoleID, permID i
 	return nil
 }
 
-func (s *Store) DetachPermission(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error {
+func (s *Store) DetachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error {
 	_, err := s.mdb.NewDelete((*rolePermissionModel)(nil)).
-		Filter(bson.M{"role_id": roleID.String(), "permission_id": permID.String()}).
+		Filter(bson.M{
+			"role_id":             roleID.String(),
+			"perm_namespace_path": ref.NamespacePath,
+			"perm_name":           ref.Name,
+		}).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: detach permission: %w", err)
@@ -356,7 +393,7 @@ func (s *Store) DetachPermission(ctx context.Context, roleID id.RoleID, permID i
 	return nil
 }
 
-func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, permIDs []id.PermissionID) error {
+func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, refs []permission.Ref) error {
 	// Delete all existing role permissions.
 	_, err := s.mdb.NewDelete((*rolePermissionModel)(nil)).
 		Many().
@@ -366,13 +403,13 @@ func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, permID
 		return fmt.Errorf("warden: clear role permissions: %w", err)
 	}
 
-	// Insert new permissions.
-	if len(permIDs) > 0 {
-		models := make([]rolePermissionModel, len(permIDs))
-		for i, pid := range permIDs {
+	if len(refs) > 0 {
+		models := make([]rolePermissionModel, len(refs))
+		for i, ref := range refs {
 			models[i] = rolePermissionModel{
-				RoleID:       roleID.String(),
-				PermissionID: pid.String(),
+				RoleID:            roleID.String(),
+				PermNamespacePath: ref.NamespacePath,
+				PermName:          ref.Name,
 			}
 		}
 		if _, err := s.mdb.NewInsert(&models).Exec(ctx); err != nil {
@@ -413,9 +450,16 @@ func (s *Store) DeleteRolesByTenant(ctx context.Context, tenantID string) error 
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreatePermission(ctx context.Context, p *permission.Permission) error {
+	if p.ID.IsNil() {
+		p.ID = id.NewPermissionID()
+	}
 	t := now()
-	p.CreatedAt = t
-	p.UpdatedAt = t
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = t
+	}
+	if p.UpdatedAt.IsZero() {
+		p.UpdatedAt = t
+	}
 	m := permissionToModel(p)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
 		return fmt.Errorf("warden: create permission: %w", err)
@@ -546,33 +590,7 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 }
 
 func (s *Store) ListPermissionsByRole(ctx context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
-	// Query the role_permissions collection for permission IDs.
-	var rpModels []rolePermissionModel
-	if err := s.mdb.NewFind(&rpModels).
-		Filter(bson.M{"role_id": roleID.String()}).
-		Scan(ctx); err != nil {
-		return nil, fmt.Errorf("warden: list permissions by role: %w", err)
-	}
-	if len(rpModels) == 0 {
-		return []*permission.Permission{}, nil
-	}
-
-	permIDs := make([]string, len(rpModels))
-	for i, rp := range rpModels {
-		permIDs[i] = rp.PermissionID
-	}
-
-	var models []permissionModel
-	if err := s.mdb.NewFind(&models).
-		Filter(bson.M{"_id": bson.M{"$in": permIDs}}).
-		Scan(ctx); err != nil {
-		return nil, fmt.Errorf("warden: list permissions by role: %w", err)
-	}
-	result := make([]*permission.Permission, len(models))
-	for i := range models {
-		result[i] = permissionFromModel(&models[i])
-	}
-	return result, nil
+	return s.ListRolePermissions(ctx, roleID)
 }
 
 func (s *Store) ListPermissionsBySubject(ctx context.Context, tenantID, subjectKind, subjectID string) ([]*permission.Permission, error) {
@@ -596,7 +614,7 @@ func (s *Store) ListPermissionsBySubject(ctx context.Context, tenantID, subjectK
 		roleIDs[i] = a.RoleID
 	}
 
-	// Step 2: Find all permission IDs for those roles.
+	// Step 2: Find all (perm_namespace_path, perm_name) refs for those roles.
 	var rpModels []rolePermissionModel
 	if err := s.mdb.NewFind(&rpModels).
 		Filter(bson.M{"role_id": bson.M{"$in": roleIDs}}).
@@ -607,26 +625,28 @@ func (s *Store) ListPermissionsBySubject(ctx context.Context, tenantID, subjectK
 		return []*permission.Permission{}, nil
 	}
 
-	// Deduplicate.
+	// Deduplicate by (namespace_path, name).
 	seen := make(map[string]struct{})
-	permIDs := make([]string, 0, len(rpModels))
+	or := make([]bson.M, 0, len(rpModels))
 	for _, rp := range rpModels {
-		if _, exists := seen[rp.PermissionID]; !exists {
-			seen[rp.PermissionID] = struct{}{}
-			permIDs = append(permIDs, rp.PermissionID)
+		key := rp.PermNamespacePath + "\x00" + rp.PermName
+		if _, exists := seen[key]; exists {
+			continue
 		}
+		seen[key] = struct{}{}
+		or = append(or, bson.M{"namespace_path": rp.PermNamespacePath, "name": rp.PermName})
 	}
 
-	// Step 3: Load the permissions.
+	// Step 3: Load the permissions in this tenant matching the natural keys.
 	var models []permissionModel
 	if err := s.mdb.NewFind(&models).
-		Filter(bson.M{"_id": bson.M{"$in": permIDs}}).
+		Filter(bson.M{"tenant_id": tenantID, "$or": or}).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list permissions by subject: %w", err)
 	}
-	result := make([]*permission.Permission, len(models))
+	result := make([]*permission.Permission, 0, len(models))
 	for i := range models {
-		result[i] = permissionFromModel(&models[i])
+		result = append(result, permissionFromModel(&models[i]))
 	}
 	return result, nil
 }
@@ -647,7 +667,12 @@ func (s *Store) DeletePermissionsByTenant(ctx context.Context, tenantID string) 
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateAssignment(ctx context.Context, a *assignment.Assignment) error {
-	a.CreatedAt = now()
+	if a.ID.IsNil() {
+		a.ID = id.NewAssignmentID()
+	}
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = now()
+	}
 	m := assignmentToModel(a)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
 		return fmt.Errorf("warden: create assignment: %w", err)
@@ -876,7 +901,12 @@ func (s *Store) DeleteAssignmentsByTenant(ctx context.Context, tenantID string) 
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateRelation(ctx context.Context, t *relation.Tuple) error {
-	t.CreatedAt = now()
+	if t.ID.IsNil() {
+		t.ID = id.NewRelationID()
+	}
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = now()
+	}
 	m := relationToModel(t)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
 		return fmt.Errorf("warden: create relation: %w", err)
@@ -1100,9 +1130,16 @@ func (s *Store) DeleteRelationsByTenant(ctx context.Context, tenantID string) er
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreatePolicy(ctx context.Context, p *policy.Policy) error {
+	if p.ID.IsNil() {
+		p.ID = id.NewPolicyID()
+	}
 	t := now()
-	p.CreatedAt = t
-	p.UpdatedAt = t
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = t
+	}
+	if p.UpdatedAt.IsZero() {
+		p.UpdatedAt = t
+	}
 	m := policyToModel(p)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
 		return fmt.Errorf("warden: create policy: %w", err)
@@ -1279,9 +1316,16 @@ func (s *Store) DeletePoliciesByTenant(ctx context.Context, tenantID string) err
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateResourceType(ctx context.Context, rt *resourcetype.ResourceType) error {
+	if rt.ID.IsNil() {
+		rt.ID = id.NewResourceTypeID()
+	}
 	t := now()
-	rt.CreatedAt = t
-	rt.UpdatedAt = t
+	if rt.CreatedAt.IsZero() {
+		rt.CreatedAt = t
+	}
+	if rt.UpdatedAt.IsZero() {
+		rt.UpdatedAt = t
+	}
 	m := resourceTypeToModel(rt)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
 		return fmt.Errorf("warden: create resource type: %w", err)
@@ -1409,7 +1453,12 @@ func (s *Store) DeleteResourceTypesByTenant(ctx context.Context, tenantID string
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateCheckLog(ctx context.Context, e *checklog.Entry) error {
-	e.CreatedAt = now()
+	if e.ID.IsNil() {
+		e.ID = id.NewCheckLogID()
+	}
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = now()
+	}
 	m := checkLogToModel(e)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
 		return fmt.Errorf("warden: create check log: %w", err)

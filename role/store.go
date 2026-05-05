@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/permission"
 )
 
 // Store defines persistence operations for roles.
@@ -29,17 +30,22 @@ type Store interface {
 	// CountRoles returns the number of roles matching the filter.
 	CountRoles(ctx context.Context, filter *ListFilter) (int64, error)
 
-	// ListRolePermissions returns permission IDs attached to a role.
-	ListRolePermissions(ctx context.Context, roleID id.RoleID) ([]id.PermissionID, error)
+	// ListRolePermissions returns the full Permission records granted to a
+	// role, resolved via JOIN against warden_permissions. Returning the full
+	// records avoids the engine's previous N+1 GetPermission loop in the
+	// RBAC evaluator.
+	ListRolePermissions(ctx context.Context, roleID id.RoleID) ([]*permission.Permission, error)
 
-	// AttachPermission links a permission to a role.
-	AttachPermission(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error
+	// AttachPermission links a permission to a role by natural key.
+	// The (NamespacePath, Name) pair uniquely identifies a permission within
+	// the role's tenant.
+	AttachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error
 
-	// DetachPermission removes a permission from a role.
-	DetachPermission(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error
+	// DetachPermission removes a permission grant from a role.
+	DetachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error
 
-	// SetRolePermissions replaces all permissions for a role.
-	SetRolePermissions(ctx context.Context, roleID id.RoleID, permIDs []id.PermissionID) error
+	// SetRolePermissions replaces all permission grants for a role.
+	SetRolePermissions(ctx context.Context, roleID id.RoleID, refs []permission.Ref) error
 
 	// ListChildRoles returns direct child roles of a parent within a tenant.
 	// Children are inherently per-tenant since slugs are unique per tenant.

@@ -129,6 +129,20 @@ type PolicyDeleted interface {
 	OnPolicyDeleted(ctx context.Context, polID id.PolicyID) error
 }
 
+// PolicyObligationFired is called for every obligation emitted during a
+// Check evaluation — once per (policy, obligation_name) pair. Plugins
+// implementing this hook can react to side-effect signals like
+// "audit-log", "require-mfa", or "notify-security" without having to scan
+// CheckResult.Obligations themselves.
+//
+// Fired after the engine has merged decisions across RBAC / ReBAC / ABAC,
+// so the obligation list is already deduplicated. policyID identifies the
+// matched policy that produced the obligation; obligation is the named
+// action to perform.
+type PolicyObligationFired interface {
+	OnPolicyObligationFired(ctx context.Context, polID id.PolicyID, obligation string, req, result any) error
+}
+
 // ──────────────────────────────────────────────────
 // Shutdown hook
 // ──────────────────────────────────────────────────

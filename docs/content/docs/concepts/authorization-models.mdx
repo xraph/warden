@@ -1,53 +1,116 @@
 ---
 title: Authorization Models
-description: Understanding RBAC, ABAC, and ReBAC and when to use each.
+description: Understanding RBAC, ABAC, ReBAC, and PBAC and when to use each.
 ---
 
-Warden supports three authorization models that can be used independently or combined in a single `Check()` call.
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+Warden supports four authorization models that can be used independently or combined in a single `Check()` call:
+
+- **RBAC** — Role-Based Access Control (roles + permissions + assignments)
+- **ABAC** — Attribute-Based Access Control (policies with conditional matchers)
+- **ReBAC** — Relationship-Based Access Control (Zanzibar-style relation tuples)
+- **PBAC** — Policy-Based Access Control (ABAC plus time-bound windows and obligations)
+
+Every config example on this page comes in two flavours: **Go** (call the store directly) and **DSL** (write `.warden` source and apply via [`warden apply`](/docs/integration/dsl-tooling#cli) or [`dsl.ApplyFS`](/docs/integration/dsl-tooling#programmatic-apply)). They produce identical state.
 
 ## RBAC — Role-Based Access Control
 
 RBAC is the most common authorization model. Users are assigned roles, and roles have permissions.
 
-```
+```text
 User → Role → Permission → (Resource, Action)
 ```
 
 **Entities:**
+
 - **Role** — A named group of permissions (e.g., "admin", "editor", "viewer")
 - **Permission** — A (resource, action) pair (e.g., "document:read", "user:delete")
 - **Assignment** — Links a subject to a role, optionally scoped to a resource
 
 **When to use:** When you have well-defined roles with predictable permission sets. Most applications start here.
 
-```go
-// Create role with permissions
-role := &role.Role{ID: id.NewRoleID(), Name: "Editor", Slug: "editor"}
-perm := &permission.Permission{ID: id.NewPermissionID(), Resource: "document", Action: "write"}
-store.CreateRole(ctx, role)
-store.CreatePermission(ctx, perm)
-store.AttachPermission(ctx, role.ID, perm.ID)
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
 
-// Assign role to user
+```go
+// Create role with permissions. IDs are auto-assigned by the store
+// on Create; the in-place mutation means role.ID is populated when
+// the call returns, ready for downstream uses.
+r := &role.Role{Name: "Editor", Slug: "editor"}
+p := &permission.Permission{Name: "document:write", Resource: "document", Action: "write"}
+store.CreateRole(ctx, r)
+store.CreatePermission(ctx, p)
+store.AttachPermission(ctx, r.ID, permission.Ref{Name: "document:write"})
+
+// Assign role to user (assignments are runtime-only; not in the DSL).
 store.CreateAssignment(ctx, &assignment.Assignment{
-    ID: id.NewAssignmentID(), RoleID: role.ID,
-    SubjectKind: "user", SubjectID: "user-42",
+    RoleID:      r.ID,
+    SubjectKind: "user",
+    SubjectID:   "user-42",
 })
 ```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+permission "document:write" {
+  resource = "document"
+  action   = "write"
+}
+
+role editor {
+  name   = "Editor"
+  grants = ["document:write"]
+}
+```
+
+> Assignments aren't expressible in the DSL — they describe runtime data (who has which role), not configuration. Apply the DSL once for setup, then create assignments via `store.CreateAssignment` whenever subjects are provisioned.
+
+</Tab>
+</Tabs>
 
 ### Role Hierarchy
 
 Roles can have parents. A child role inherits all permissions from its parent:
 
-```
+```text
 admin (all permissions)
   └── editor (document:write, document:read)
         └── viewer (document:read)
 ```
 
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
+```go
+admin  := &role.Role{Name: "Admin",  Slug: "admin"}
+editor := &role.Role{Name: "Editor", Slug: "editor", ParentSlug: "admin"}
+viewer := &role.Role{Name: "Viewer", Slug: "viewer", ParentSlug: "editor"}
+```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+role admin            { name = "Admin"  }
+role editor : admin   { name = "Editor" }
+role viewer : editor  { name = "Viewer" }
+```
+
+</Tab>
+</Tabs>
+
 ### Resource-Scoped Assignments
 
-Assignments can be scoped to specific resources:
+Assignments can be scoped to specific resources (runtime-only — no DSL form):
 
 ```go
 // User is editor ONLY for project-123
@@ -64,22 +127,26 @@ store.CreateAssignment(ctx, &assignment.Assignment{
 
 ABAC evaluates policies with conditions based on attributes of the request context.
 
-```
+```text
 Policy + Conditions → (subjects, actions, resources) → allow/deny
 ```
 
 **Entities:**
+
 - **Policy** — A rule with effect (allow/deny), subject/action/resource matchers, and conditions
-- **Condition** — A field/operator/value comparison (e.g., `ip_address in_cidr 10.0.0.0/8`)
+- **Condition** — A field/operator/value comparison (e.g., `ip_address ip_in_cidr 10.0.0.0/8`)
 
 **When to use:** When authorization depends on dynamic attributes like time of day, IP address, department, or custom metadata.
 
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
 ```go
 p := &policy.Policy{
-    ID:        id.NewPolicyID(),
-    Name:      "Deny Outside Office Hours",
+    Name:      "deny-outside-office-hours",
     Effect:    policy.EffectDeny,
-    Subjects:  []string{"*"},
+    IsActive:  true,
+    Priority:  100,
     Actions:   []string{"write"},
     Resources: []string{"document:*"},
     Conditions: []policy.Condition{{
@@ -87,44 +154,69 @@ p := &policy.Policy{
         Operator: policy.OpTimeAfter,
         Value:    "18:00",
     }},
-    IsActive: true,
-    Priority: 100,
 }
 ```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+policy "deny-outside-office-hours" {
+  effect    = deny
+  active    = true
+  priority  = 100
+  actions   = ["write"]
+  resources = ["document:*"]
+
+  when {
+    time time_after "18:00"
+  }
+}
+```
+
+</Tab>
+</Tabs>
 
 ### Supported Operators
 
 | Operator | Description | Example |
 |----------|-------------|---------|
-| `eq` | Equals | `department eq engineering` |
-| `neq` | Not equals | `role neq intern` |
-| `in` | In list | `country in [US,CA,UK]` |
-| `not_in` | Not in list | `env not_in [prod]` |
-| `contains` | String contains | `email contains @company.com` |
-| `starts_with` | Starts with | `path starts_with /api/` |
-| `gt` / `lt` | Greater/less than | `risk_score gt 80` |
-| `ip_in_cidr` | IP in CIDR range | `ip ip_in_cidr 10.0.0.0/8` |
-| `time_after` / `time_before` | Time comparison | `time time_after 09:00` |
-| `regex` | Regex match | `path regex ^/api/v[0-9]+` |
+| `==` / `!=` | Equals / not equals | `subject.attributes.department == "engineering"` |
+| `in` / `not in` | In / not in list | `subject.attributes.country in ["US", "CA", "UK"]` |
+| `contains` | String contains | `subject.email contains "@company.com"` |
+| `starts_with` / `ends_with` | Prefix / suffix | `resource.path starts_with "/api/"` |
+| `>` / `<` / `>=` / `<=` | Numeric comparison | `subject.attributes.risk_score > 80` |
+| `ip_in_cidr` | IP in CIDR range | `context.ip ip_in_cidr "10.0.0.0/8"` |
+| `time_after` / `time_before` | Time comparison | `context.time time_after "09:00"` |
+| `=~` | Regex match | `resource.path =~ "^/api/v[0-9]+"` |
+| `exists` / `not exists` | Field presence | `subject.attributes.mfa_verified exists` |
+
+The Go side uses `policy.Op*` constants; the DSL spells them as keywords. See [Policies & Conditions](/docs/authorization/policies-conditions#operators-reference) for the full table.
 
 ## ReBAC — Relationship-Based Access Control
 
 ReBAC (inspired by Google Zanzibar) models authorization as a graph of relationships between objects.
 
-```
+```text
 subject#relation@object → transitive graph traversal
 ```
 
 **Entities:**
-- **Relation Tuple** — A (object_type, object_id, relation, subject_type, subject_id) record
+
 - **Resource Type** — Defines valid relations and permissions for an object type
+- **Relation Tuple** — A (object_type, object_id, relation, subject_type, subject_id) record
 
 **When to use:** When authorization depends on relationships between objects (document sharing, org membership, folder hierarchy).
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
 
 ```go
 // "user:42 is a viewer of document:123"
 store.CreateRelation(ctx, &relation.Tuple{
-    ID:          id.NewRelationID(),
     ObjectType:  "document",
     ObjectID:    "doc-123",
     Relation:    "viewer",
@@ -134,7 +226,6 @@ store.CreateRelation(ctx, &relation.Tuple{
 
 // "team:engineering is an editor of project:alpha"
 store.CreateRelation(ctx, &relation.Tuple{
-    ID:          id.NewRelationID(),
     ObjectType:  "project",
     ObjectID:    "project-alpha",
     Relation:    "editor",
@@ -143,24 +234,112 @@ store.CreateRelation(ctx, &relation.Tuple{
 })
 ```
 
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+resource document {
+  relation viewer: user
+  permission read = viewer
+}
+
+resource project {
+  relation editor: team#member
+  permission write = editor
+}
+
+// Initial tuples — usually high-volume tuples are written at runtime
+// via store.CreateRelation, not in source.
+relation document:doc-123      viewer = user:user-42
+relation project:project-alpha editor = team:team-eng#member
+```
+
+</Tab>
+</Tabs>
+
 ### Transitive Relations
 
 ReBAC automatically follows transitive paths:
 
-```
+```text
 user:42 ──member──▶ team:eng ──editor──▶ project:alpha
 ```
 
 A check for "can user:42 edit project:alpha?" traverses the graph and finds the path through team:eng.
 
+## PBAC — Policy-Based Access Control
+
+PBAC builds on ABAC. Policies use the same `policy.Policy` type, evaluator, and storage shape — PBAC adds two orthogonal capabilities:
+
+1. **Time-bound policies** via `NotBefore` / `NotAfter`. Outside the window the policy is treated as `IsActive=false`. Either bound is optional.
+2. **Obligations** — named side-effect actions emitted in `CheckResult.Obligations` whenever the policy matches. Common values: `audit-log`, `require-mfa`, `notify-security`.
+
+**When to use:** when policies need to activate for a scheduled window (incident freezes, Q2 access grants) or when matching needs to trigger downstream actions without changing the allow/deny outcome.
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
+```go
+notAfter := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+p := &policy.Policy{
+    Name:        "incident-freeze",
+    Effect:      policy.EffectDeny,
+    Priority:    1,
+    IsActive:    true,
+    NotAfter:    &notAfter, // policy expires at 2026-06-01
+    Actions:     []string{"deploy:*"},
+    Obligations: []string{"notify-oncall", "audit-log"},
+}
+```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+policy "incident-freeze" {
+  effect      = deny
+  priority    = 1
+  active      = true
+  not_after   = "2026-06-01T00:00:00Z"
+  actions     = ["deploy:*"]
+  obligations = ["notify-oncall", "audit-log"]
+}
+```
+
+</Tab>
+</Tabs>
+
+After a `Check()`:
+
+- `CheckResult.Obligations` contains the deduplicated list of obligations from every matched policy (allow OR deny).
+- Each obligation also fires the `PolicyObligationFired` plugin hook so audit / Chronicle / dispatcher plugins can react without scanning the result.
+
+See [Policies & Conditions](/docs/authorization/policies-conditions) for the full reference and the [.warden Language Reference](/docs/integration/dsl-reference) for the DSL syntax.
+
 ## Combining Models
 
 Warden evaluates all enabled models on every `Check()` call and merges results:
 
-```
+```text
 1. Explicit DENY from any model  → DENIED
 2. ALLOW from any model          → ALLOWED
 3. No match                      → DENIED (default deny)
 ```
 
-This means ABAC deny policies act as guardrails on top of RBAC and ReBAC grants.
+ABAC/PBAC deny policies act as guardrails on top of RBAC and ReBAC grants. Obligations from every matched policy flow through to the final result regardless of which decision wins — they're side-effect signals, not part of the merge calculus.
+
+## Scoping the Models
+
+Every model evaluation is scoped by `(tenant_id, namespace_path)`:
+
+- **Tenant** — a hard wall. No model ever crosses tenants. See [Multi-Tenancy](/docs/concepts/multi-tenancy).
+- **Namespace** — a hierarchy *inside* a tenant. Roles, permissions, policies, and resource types declared at namespace `N` are visible from `N` and every descendant. Relation tuples don't cascade — they sit at exactly one namespace. See [Namespaces](/docs/concepts/namespaces).
+
+Single-team deployments can ignore both — entities at empty `tenant_id` and empty `namespace_path` are the natural default.

@@ -1,0 +1,24 @@
+// Top-level fixture for the //go:embed test suite.
+//
+// The tenant is supplied via a $${...} placeholder so the test can also
+// exercise variable substitution through the embed-aware helper.
+
+warden config 1
+tenant ${TENANT}
+
+permission "doc:read"  (document : read)
+permission "doc:write" (document : edit)
+
+resource document {
+  relation owner:  user
+  relation viewer: user
+
+  permission read = viewer or owner
+  permission edit = owner
+}
+
+role viewer {
+  name        = "Viewer (${REGION})"
+  description = "Read-only documents"
+  grants      = ["doc:read"]
+}

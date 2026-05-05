@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +19,7 @@ func TestCLI_Lint(t *testing.T) {
 	// Use the multi-file fixture relative to module root.
 	root := moduleRoot(t)
 	fixture := filepath.Join(root, "dsl", "testdata", "multi-file")
-	cmd := exec.Command(bin, "lint", fixture)
+	cmd := exec.CommandContext(context.Background(), bin, "lint", fixture)
 	cmd.Dir = root
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -36,7 +37,7 @@ func TestCLI_ApplyMemory(t *testing.T) {
 	bin := buildBin(t)
 	root := moduleRoot(t)
 	fixture := filepath.Join(root, "dsl", "testdata", "multi-file")
-	cmd := exec.Command(bin, "apply", "-f", fixture, "--store", "memory:")
+	cmd := exec.CommandContext(context.Background(), bin, "apply", "-f", fixture, "--store", "memory:")
 	cmd.Dir = root
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -65,7 +66,7 @@ func TestCLI_ApplySQLiteIdempotent(t *testing.T) {
 	dsn := "sqlite:" + db
 
 	for i := 0; i < 2; i++ {
-		cmd := exec.Command(bin, "apply", "-f", fixture, "--store", dsn)
+		cmd := exec.CommandContext(context.Background(), bin, "apply", "-f", fixture, "--store", dsn)
 		cmd.Dir = root
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
@@ -96,7 +97,7 @@ func TestCLI_LintInvalidExitsNonZero(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("warden config 1\nrole editor : ghost {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, "lint", bad)
+	cmd := exec.CommandContext(context.Background(), bin, "lint", bad)
 	if err := cmd.Run(); err == nil {
 		t.Fatal("expected non-zero exit on lint failure")
 	}
@@ -109,7 +110,7 @@ func buildBin(t *testing.T) string {
 	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "warden")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/xraph/warden/cmd/warden")
+	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", bin, "github.com/xraph/warden/cmd/warden")
 	cmd.Dir = moduleRoot(t)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -120,7 +121,7 @@ func buildBin(t *testing.T) string {
 
 func moduleRoot(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("go", "env", "GOMOD")
+	cmd := exec.CommandContext(context.Background(), "go", "env", "GOMOD")
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)

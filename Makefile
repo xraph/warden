@@ -1,4 +1,4 @@
-.PHONY: help build run test clean fmt lint lint-fix vet tidy deps install dev hot check coverage b r t c f l lf v check-deps templ templ-watch
+.PHONY: help build run test clean fmt lint lint-fix vet tidy deps install dev hot check coverage b r t c f l lf v check-deps templ templ-watch vscode-build vscode-install vscode-uninstall release-snapshot release-check
 
 # Default target
 .DEFAULT_GOAL := help
@@ -10,6 +10,14 @@ BUILD_DIR=./bin
 GO=go
 GOFLAGS=-v
 LDFLAGS=-ldflags "-s -w"
+
+# VS Code CLI used by the vscode-* targets. Override on the command line if
+# you use a fork or have multiple installations:
+#
+#   make vscode-install CODE=code-insiders
+#   make vscode-install CODE=cursor
+#   make vscode-install CODE=/abs/path/to/code
+CODE ?= code
 
 # Colors for output
 RED=\033[0;31m
@@ -52,6 +60,15 @@ help:
 	@echo "$(GREEN)Documentation:$(NC)"
 	@echo "  make docs           - Serve documentation locally"
 	@echo "  make docs-build     - Build documentation"
+	@echo ""
+	@echo "$(GREEN)Editor Support (contributor dev — Marketplace is the canonical install):$(NC)"
+	@echo "  make vscode-build      - Build the VS Code extension into a .vsix"
+	@echo "  make vscode-install    - Install your local build (for testing pre-release changes)"
+	@echo "  make vscode-uninstall  - Remove the installed local build"
+	@echo ""
+	@echo "$(GREEN)Release:$(NC)"
+	@echo "  make release-check     - Validate .goreleaser.yml configuration"
+	@echo "  make release-snapshot  - Build a snapshot release locally (no publish)"
 	@echo ""
 	@echo "$(GREEN)Code Generation:$(NC)"
 	@echo "  make templ        - Generate templ files"
@@ -229,6 +246,90 @@ templ-watch:
 	@echo "$(BLUE)Watching templ files...$(NC)"
 	@command -v templ >/dev/null 2>&1 || { echo "$(RED)templ not found. Install: go install github.com/a-h/templ/cmd/templ@latest$(NC)"; exit 1; }
 	templ generate --watch ./dashboard/...
+
+## vscode-build: Build the VS Code extension into a .vsix package
+##
+## Uses npm to match the CI pipeline (.github/workflows/vscode-extension.yml).
+## bun works equivalently if you prefer — `cd editor/vscode-warden && bun run package`.
+vscode-build:
+	@echo "$(BLUE)Building Warden VS Code extension...$(NC)"
+	@command -v npm >/dev/null 2>&1 || { echo "$(RED)npm not found — install Node.js (>=20) from https://nodejs.org$(NC)"; exit 1; }
+	@cd editor/vscode-warden && \
+	  if [ ! -d node_modules ]; then echo "$(YELLOW)Installing deps...$(NC)"; npm ci --silent; fi && \
+	  npm run compile --silent && \
+	  npx --yes @vscode/vsce package --no-dependencies --out vscode-warden.vsix
+	@echo "$(GREEN)✓ Built editor/vscode-warden/vscode-warden.vsix$(NC)"
+
+# resolve-code: shell snippet that locates a usable code-CLI binary.
+# Tries (in order):
+#   1. $(CODE) on PATH — honours user override (CODE=code-insiders, CODE=cursor, etc.)
+#   2. Standard macOS app-bundle paths for VS Code, Insiders, Cursor, VSCodium
+# Sets $$CLI to the resolved binary path, or empty if nothing matched.
+# Path-with-spaces ("Visual Studio Code.app") is quoted throughout.
+define RESOLVE_CODE
+CLI=""; \
+if command -v $(CODE) >/dev/null 2>&1; then \
+  CLI="$$(command -v $(CODE))"; \
+else \
+  for cand in \
+    "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
+    "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code" \
+    "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" \
+    "/Applications/VSCodium.app/Contents/Resources/app/bin/codium" \
+  ; do \
+    if [ -x "$$cand" ]; then CLI="$$cand"; break; fi; \
+  done; \
+fi
+endef
+
+## vscode-install: Build and install the VS Code extension into your local VS Code
+vscode-install: vscode-build
+	@$(RESOLVE_CODE); \
+	if [ -z "$$CLI" ]; then \
+	  echo "$(RED)Could not locate the VS Code CLI.$(NC)"; \
+	  echo "  Tried: $(BLUE)$(CODE)$(NC) on PATH, plus the standard macOS app bundles for VS Code / Insiders / Cursor / VSCodium."; \
+	  echo "  Fix: install the shell command — $(BLUE)Cmd+Shift+P → Shell Command: Install 'code' command in PATH$(NC)"; \
+	  echo "       or override: $(BLUE)make vscode-install CODE=code-insiders$(NC)  (also: cursor, /abs/path/to/code)"; \
+	  exit 1; \
+	fi; \
+	echo "$(BLUE)Installing via $$CLI ...$(NC)"; \
+	"$$CLI" --install-extension editor/vscode-warden/vscode-warden.vsix --force
+	@echo "$(GREEN)✓ Installed. Reload VS Code to pick it up: Cmd+Shift+P → 'Developer: Reload Window'$(NC)"
+	@echo "  Make sure $(BLUE)warden$(NC) (or $(BLUE)warden-lsp$(NC)) is on your PATH for live diagnostics/completion."
+
+## vscode-uninstall: Remove the locally installed Warden VS Code extension
+vscode-uninstall:
+	@$(RESOLVE_CODE); \
+	if [ -z "$$CLI" ]; then \
+	  echo "$(RED)Could not locate the VS Code CLI.$(NC)"; \
+	  echo "  Override with $(BLUE)make vscode-uninstall CODE=/abs/path/to/code$(NC)"; \
+	  exit 1; \
+	fi; \
+	"$$CLI" --uninstall-extension xraph.vscode-warden && \
+	  echo "$(GREEN)✓ Uninstalled xraph.vscode-warden$(NC)"
+
+## release-check: Validate .goreleaser.yml configuration
+release-check:
+	@echo "$(BLUE)Validating .goreleaser.yml...$(NC)"
+	@command -v goreleaser >/dev/null 2>&1 || { echo "$(RED)goreleaser not found.$(NC)"; \
+	  echo "  Install: $(BLUE)brew install goreleaser$(NC)  or  $(BLUE)go install github.com/goreleaser/goreleaser/v2@latest$(NC)"; exit 1; }
+	@goreleaser check
+	@echo "$(GREEN)✓ Configuration valid$(NC)"
+
+## release-snapshot: Build a snapshot release locally for smoke-testing
+##
+## Produces dist/ with multi-platform archives (linux/darwin/windows × amd64/arm64),
+## a checksums.txt, and a release manifest. Nothing is published.
+##
+## Requires goreleaser:
+##   brew install goreleaser
+##   # or: go install github.com/goreleaser/goreleaser/v2@latest
+release-snapshot:
+	@command -v goreleaser >/dev/null 2>&1 || { echo "$(RED)goreleaser not found.$(NC)"; \
+	  echo "  Install: $(BLUE)brew install goreleaser$(NC)  or  $(BLUE)go install github.com/goreleaser/goreleaser/v2@latest$(NC)"; exit 1; }
+	@echo "$(BLUE)Building snapshot release...$(NC)"
+	goreleaser release --snapshot --clean --skip=publish
+	@echo "$(GREEN)✓ Snapshot built in dist/ — inspect with 'ls dist/'$(NC)"
 
 ## all: Run templ generate, check, test, and build
 all: templ check test build

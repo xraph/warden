@@ -7,7 +7,6 @@ import (
 	"log"
 
 	"github.com/xraph/warden"
-	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/relation"
 	"github.com/xraph/warden/store/memory"
 )
@@ -22,24 +21,35 @@ func main() {
 	}
 
 	// Direct relation: Alice is a viewer of doc-1.
+	// IDs are auto-assigned by the store on Create.
 	_ = s.CreateRelation(ctx, &relation.Tuple{
-		ID: id.NewRelationID(), TenantID: "t1",
-		ObjectType: "document", ObjectID: "doc-1", Relation: "read",
-		SubjectType: "user", SubjectID: "alice",
+		TenantID:    "t1",
+		ObjectType:  "document",
+		ObjectID:    "doc-1",
+		Relation:    "read",
+		SubjectType: "user",
+		SubjectID:   "alice",
 	})
 
 	// Transitive relation via folder:
 	//   document:doc-2#read -> folder:engineering#read (subject set)
 	//   folder:engineering#read -> user:bob
 	_ = s.CreateRelation(ctx, &relation.Tuple{
-		ID: id.NewRelationID(), TenantID: "t1",
-		ObjectType: "document", ObjectID: "doc-2", Relation: "read",
-		SubjectType: "folder", SubjectID: "engineering", SubjectRelation: "read",
+		TenantID:        "t1",
+		ObjectType:      "document",
+		ObjectID:        "doc-2",
+		Relation:        "read",
+		SubjectType:     "folder",
+		SubjectID:       "engineering",
+		SubjectRelation: "read",
 	})
 	_ = s.CreateRelation(ctx, &relation.Tuple{
-		ID: id.NewRelationID(), TenantID: "t1",
-		ObjectType: "folder", ObjectID: "engineering", Relation: "read",
-		SubjectType: "user", SubjectID: "bob",
+		TenantID:    "t1",
+		ObjectType:  "folder",
+		ObjectID:    "engineering",
+		Relation:    "read",
+		SubjectType: "user",
+		SubjectID:   "bob",
 	})
 
 	// Alice can read doc-1 (direct relation).

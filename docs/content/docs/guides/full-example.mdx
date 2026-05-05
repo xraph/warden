@@ -39,42 +39,36 @@ func main() {
 ## Step 1: RBAC — Roles and Permissions
 
 ```go
+    // IDs and CreatedAt/UpdatedAt timestamps are auto-assigned by the
+    // store on Create — no boilerplate. The pointer is mutated in
+    // place, so role.ID is populated by the time the call returns.
+
     // Create permissions
     readPerm := &permission.Permission{
-        ID: id.NewPermissionID(), Name: "Read Documents",
-        Resource: "document", Action: "read",
-        CreatedAt: time.Now(), UpdatedAt: time.Now(),
+        Name: "doc:read", Resource: "document", Action: "read",
     }
     writePerm := &permission.Permission{
-        ID: id.NewPermissionID(), Name: "Write Documents",
-        Resource: "document", Action: "write",
-        CreatedAt: time.Now(), UpdatedAt: time.Now(),
+        Name: "doc:write", Resource: "document", Action: "write",
     }
     _ = st.CreatePermission(ctx, readPerm)
     _ = st.CreatePermission(ctx, writePerm)
 
     // Create roles
-    viewerRole := &role.Role{
-        ID: id.NewRoleID(), Name: "Viewer", Slug: "viewer",
-        CreatedAt: time.Now(), UpdatedAt: time.Now(),
-    }
-    editorRole := &role.Role{
-        ID: id.NewRoleID(), Name: "Editor", Slug: "editor",
-        CreatedAt: time.Now(), UpdatedAt: time.Now(),
-    }
+    viewerRole := &role.Role{Name: "Viewer", Slug: "viewer"}
+    editorRole := &role.Role{Name: "Editor", Slug: "editor"}
     _ = st.CreateRole(ctx, viewerRole)
     _ = st.CreateRole(ctx, editorRole)
 
-    // Attach permissions
-    _ = st.AttachPermission(ctx, viewerRole.ID, readPerm.ID)
-    _ = st.AttachPermission(ctx, editorRole.ID, readPerm.ID)
-    _ = st.AttachPermission(ctx, editorRole.ID, writePerm.ID)
+    // Attach permissions by name (not typeid).
+    _ = st.AttachPermission(ctx, viewerRole.ID, permission.Ref{Name: "doc:read"})
+    _ = st.AttachPermission(ctx, editorRole.ID, permission.Ref{Name: "doc:read"})
+    _ = st.AttachPermission(ctx, editorRole.ID, permission.Ref{Name: "doc:write"})
 
     // Assign viewer role to user
     _ = st.CreateAssignment(ctx, &assignment.Assignment{
-        ID: id.NewAssignmentID(), RoleID: viewerRole.ID,
-        SubjectKind: "user", SubjectID: "alice",
-        CreatedAt: time.Now(),
+        RoleID:      viewerRole.ID,
+        SubjectKind: "user",
+        SubjectID:   "alice",
     })
 ```
 
@@ -83,15 +77,19 @@ func main() {
 ```go
     // Deny writes after business hours
     _ = st.CreatePolicy(ctx, &policy.Policy{
-        ID: id.NewPolicyID(), Name: "Business Hours Only",
-        Effect: policy.EffectDeny, Priority: 10, IsActive: true, Version: 1,
-        Subjects: []string{"*"}, Actions: []string{"write", "delete"},
+        Name:      "Business Hours Only",
+        Effect:    policy.EffectDeny,
+        Priority:  10,
+        IsActive:  true,
+        Version:   1,
+        Subjects:  []string{"*"},
+        Actions:   []string{"write", "delete"},
         Resources: []string{"*"},
         Conditions: []policy.Condition{{
-            ID: id.NewConditionID(), Field: "time",
-            Operator: policy.OpTimeAfter, Value: "18:00",
+            Field:    "time",
+            Operator: policy.OpTimeAfter,
+            Value:    "18:00",
         }},
-        CreatedAt: time.Now(), UpdatedAt: time.Now(),
     })
 ```
 
@@ -100,11 +98,11 @@ func main() {
 ```go
     // Bob can view doc-456 via direct relation
     _ = st.CreateRelation(ctx, &relation.Tuple{
-        ID: id.NewRelationID(),
-        ObjectType: "document", ObjectID: "doc-456",
-        Relation: "viewer",
-        SubjectType: "user", SubjectID: "bob",
-        CreatedAt: time.Now(),
+        ObjectType:  "document",
+        ObjectID:    "doc-456",
+        Relation:    "viewer",
+        SubjectType: "user",
+        SubjectID:   "bob",
     })
 ```
 

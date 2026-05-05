@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/xraph/warden"
-	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/policy"
 	"github.com/xraph/warden/store/memory"
 )
@@ -22,9 +21,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// IDs are auto-assigned by the store on Create.
+
 	// Allow admins to do anything.
 	_ = s.CreatePolicy(ctx, &policy.Policy{
-		ID: id.NewPolicyID(), TenantID: "t1", Name: "admin-allow",
+		TenantID: "t1", Name: "admin-allow",
 		Effect: policy.EffectAllow, IsActive: true,
 		Subjects: []policy.SubjectMatch{{Kind: "user"}},
 		Actions:  []string{"*"},
@@ -35,7 +36,7 @@ func main() {
 
 	// Deny access from internal IPs.
 	_ = s.CreatePolicy(ctx, &policy.Policy{
-		ID: id.NewPolicyID(), TenantID: "t1", Name: "deny-internal",
+		TenantID: "t1", Name: "deny-internal",
 		Effect: policy.EffectDeny, IsActive: true,
 		Actions: []string{"*"},
 		Conditions: []policy.Condition{
@@ -46,7 +47,7 @@ func main() {
 	// Time-limited access.
 	future := time.Now().Add(time.Hour).Format(time.RFC3339)
 	_ = s.CreatePolicy(ctx, &policy.Policy{
-		ID: id.NewPolicyID(), TenantID: "t1", Name: "time-limited",
+		TenantID: "t1", Name: "time-limited",
 		Effect: policy.EffectAllow, IsActive: true,
 		Actions: []string{"read"},
 		Conditions: []policy.Condition{

@@ -101,7 +101,7 @@ func (e *EngineEvaluator) EvalPermission(
 // findResourceType walks the namespace ancestor chain looking for a
 // resource type with the given name. Returns the resource type and the
 // namespace it was found at.
-func (e *EngineEvaluator) findResourceType(ctx context.Context, tenantID, ns, name string) (*resourcetype.ResourceType, string) {
+func (e *EngineEvaluator) findResourceType(ctx context.Context, tenantID, ns, name string) (rt *resourcetype.ResourceType, namespace string) {
 	for _, candidate := range warden.AncestorNamespaces(ns) {
 		filterNS := candidate
 		rts, err := e.store.ListResourceTypes(ctx, &resourcetype.ListFilter{

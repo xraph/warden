@@ -1,24 +1,31 @@
 ---
 title: Policies & Conditions
-description: ABAC policies with conditional access rules.
+description: ABAC and PBAC policies with conditional access rules, time-bound windows, and obligations.
 ---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 
 ## Policies
 
-A policy is an ABAC rule that matches requests by subject, action, and resource, then applies conditions to decide whether to allow or deny.
+A policy is an ABAC rule that matches requests by subject, action, and resource, then applies conditions to decide whether to allow or deny. PBAC extends ABAC with time-bound windows (`NotBefore` / `NotAfter`) and obligations (named side-effect signals).
+
+Every config example on this page comes in two flavours: **Go** (programmatic — call the store directly) and **DSL** (declarative — `.warden` source applied via [`warden apply`](/docs/integration/dsl-tooling#cli) or [`dsl.ApplyFS`](/docs/integration/dsl-tooling#programmatic-apply)). They produce identical state.
 
 ### Policy Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ID` | `id.PolicyID` | TypeID (`wpol_...`) |
+| `ID` | `id.PolicyID` | TypeID (`wpol_...`) — auto-assigned on Create when unset |
 | `Name` | `string` | Display name |
 | `Description` | `string` | Human-readable description |
 | `Effect` | `Effect` | `allow` or `deny` |
 | `Priority` | `int` | Lower number = higher priority |
-| `IsActive` | `bool` | Only active policies are evaluated |
+| `IsActive` | `bool` | Manual on/off toggle — only active policies are evaluated |
+| `NotBefore` | `*time.Time` | PBAC: policy is inactive before this instant (optional) |
+| `NotAfter` | `*time.Time` | PBAC: policy is inactive after this instant (optional) |
+| `Obligations` | `[]string` | PBAC: named side-effect actions emitted on match |
 | `Version` | `int` | Auto-incremented on update |
-| `Subjects` | `[]string` | Subject matchers (glob patterns) |
+| `Subjects` | `[]SubjectMatch` | Subject matchers |
 | `Actions` | `[]string` | Action matchers (glob patterns) |
 | `Resources` | `[]string` | Resource matchers (glob patterns) |
 | `Conditions` | `[]Condition` | All conditions must be true |
@@ -26,23 +33,26 @@ A policy is an ABAC rule that matches requests by subject, action, and resource,
 
 ### Create a Policy
 
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
 ```go
 import "github.com/xraph/warden/policy"
 
+// IDs and CreatedAt/UpdatedAt timestamps are auto-assigned by the
+// store on Create — set them only when you need a specific value.
 p := &policy.Policy{
-    ID:          id.NewPolicyID(),
-    Name:        "Internal Network Only",
+    Name:        "internal-network-only",
     Description: "Allow access only from internal IP ranges",
     Effect:      policy.EffectAllow,
     Priority:    10,
     IsActive:    true,
     Version:     1,
-    Subjects:    []string{"user:*"},
+    Subjects:    []policy.SubjectMatch{{Kind: "user"}},
     Actions:     []string{"read", "write"},
     Resources:   []string{"document:*"},
     Conditions: []policy.Condition{
         {
-            ID:       id.NewConditionID(),
             Field:    "ip_address",
             Operator: policy.OpIPInCIDR,
             Value:    "10.0.0.0/8",
@@ -52,124 +62,383 @@ p := &policy.Policy{
 err := store.CreatePolicy(ctx, p)
 ```
 
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+policy "internal-network-only" {
+  description = "Allow access only from internal IP ranges"
+  effect      = allow
+  priority    = 10
+  active      = true
+  actions     = ["read", "write"]
+  resources   = ["document:*"]
+
+  when {
+    ip_address ip_in_cidr "10.0.0.0/8"
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
 ## Conditions
 
-Conditions are evaluated against the `Context` map in a `CheckRequest`. All conditions in a policy must be true for the policy to apply (AND logic).
+Conditions are evaluated against the `Context` map in a `CheckRequest`. By default all conditions in a `when` block are AND-ed; use `all_of` / `any_of` to override.
 
 ### Condition Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ID` | `id.ConditionID` | TypeID (`wcnd_...`) |
-| `Field` | `string` | Key in request context map |
+| `ID` | `id.ConditionID` | TypeID (`wcnd_...`) — auto-assigned on Create when unset |
+| `Field` | `string` | Dotted path into the request (e.g. `subject.attributes.dept`) |
 | `Operator` | `Operator` | Comparison operator |
 | `Value` | `any` | Expected value |
+| `Negate` | `bool` | Flips the result |
 
 ### Operators Reference
 
-**String Operators:**
-```go
-policy.OpEq        // field == value
-policy.OpNeq       // field != value
-policy.OpContains  // field contains value
-policy.OpStartsWith // field starts with value
-policy.OpRegex     // field matches regex
-```
+The same operators surface in both flavours — Go uses the `policy.Op*` constants, the DSL spells them as keywords:
 
-**Collection Operators:**
-```go
-policy.OpIn     // field in [value1, value2, ...]
-policy.OpNotIn  // field not in [value1, value2, ...]
-```
-
-**Numeric Operators:**
-```go
-policy.OpGT  // field > value
-policy.OpLT  // field < value
-```
-
-**Network Operators:**
-```go
-policy.OpIPInCIDR  // IP address within CIDR range
-```
-
-**Time Operators:**
-```go
-policy.OpTimeAfter  // current time after value
-policy.OpTimeBefore // current time before value
-```
+| Category | Go constant | DSL keyword |
+|---|---|---|
+| **String** | `OpEq` / `OpNeq` | `==` / `!=` |
+|  | `OpContains` | `contains` |
+|  | `OpStartsWith` / `OpEndsWith` | `starts_with` / `ends_with` |
+|  | `OpRegex` | `=~` |
+| **Collection** | `OpIn` / `OpNotIn` | `in` / `not in` |
+| **Numeric** | `OpGT` / `OpLT` / `OpGTE` / `OpLTE` | `>` / `<` / `>=` / `<=` |
+| **Network** | `OpIPInCIDR` | `ip_in_cidr` |
+| **Time** | `OpTimeAfter` / `OpTimeBefore` | `time_after` / `time_before` |
+| **Presence** | `OpExists` / `OpNotExists` | `exists` / `not exists` |
 
 ## Policy Matching
 
 ### Subject Matchers
 
 ```go
-Subjects: []string{"user:*"}      // All users
-Subjects: []string{"user:42"}     // Specific user
-Subjects: []string{"api_key:*"}   // All API keys
-Subjects: []string{"*"}           // Everyone
+Subjects: []policy.SubjectMatch{{Kind: "user"}}              // All users
+Subjects: []policy.SubjectMatch{{Kind: "user", ID: "u-42"}}  // Specific user
+Subjects: []policy.SubjectMatch{{Kind: "api_key"}}           // All API keys
+// Empty Subjects slice means: match any subject.
 ```
 
 ### Action Matchers
 
 ```go
-Actions: []string{"read"}         // Specific action
-Actions: []string{"read", "write"} // Multiple actions
-Actions: []string{"*"}            // All actions
+Actions: []string{"read"}            // Specific action
+Actions: []string{"read", "write"}   // Multiple actions
+Actions: []string{"*"}               // All actions
 ```
 
 ### Resource Matchers
 
 ```go
-Resources: []string{"document:*"}     // All documents
-Resources: []string{"document:doc-1"} // Specific document
-Resources: []string{"*"}              // All resources
+Resources: []string{"document:*"}      // All documents
+Resources: []string{"document:doc-1"}  // Specific document
+Resources: []string{"*"}               // All resources
 ```
 
 ## Examples
 
 ### Deny After Business Hours
 
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
 ```go
 &policy.Policy{
-    Name:      "Business Hours Only",
+    Name:      "business-hours-only",
     Effect:    policy.EffectDeny,
-    Subjects:  []string{"*"},
     Actions:   []string{"write", "delete"},
     Resources: []string{"*"},
+    IsActive:  true,
     Conditions: []policy.Condition{
         {Field: "time", Operator: policy.OpTimeAfter, Value: "18:00"},
     },
 }
 ```
 
+</Tab>
+<Tab value="DSL">
+
+```warden
+policy "business-hours-only" {
+  effect    = deny
+  active    = true
+  actions   = ["write", "delete"]
+  resources = ["*"]
+
+  when {
+    time time_after "18:00"
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
 ### Allow Only From Trusted IPs
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
 
 ```go
 &policy.Policy{
-    Name:      "VPN Required for Admin",
-    Effect:    policy.EffectDeny,
-    Subjects:  []string{"user:*"},
-    Actions:   []string{"*"},
+    Name:     "vpn-required-for-admin",
+    Effect:   policy.EffectDeny,
+    Subjects: []policy.SubjectMatch{{Kind: "user"}},
+    Actions:  []string{"*"},
     Resources: []string{"admin:*"},
+    IsActive: true,
     Conditions: []policy.Condition{
-        {Field: "ip_address", Operator: policy.OpIPInCIDR, Value: "0.0.0.0/0"},
-        // Combined with a separate allow policy for 10.0.0.0/8
+        // Negated: deny when NOT in 10.0.0.0/8.
+        {Field: "ip_address", Operator: policy.OpIPInCIDR, Value: "10.0.0.0/8", Negate: true},
     },
 }
 ```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+policy "vpn-required-for-admin" {
+  effect    = deny
+  active    = true
+  actions   = ["*"]
+  resources = ["admin:*"]
+
+  when {
+    ip_address ip_in_cidr "10.0.0.0/8" negate
+  }
+}
+```
+
+</Tab>
+</Tabs>
 
 ### Department-Based Access
 
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
 ```go
 &policy.Policy{
-    Name:      "Engineering Only",
+    Name:      "engineering-only",
     Effect:    policy.EffectAllow,
-    Subjects:  []string{"user:*"},
+    Subjects:  []policy.SubjectMatch{{Kind: "user"}},
     Actions:   []string{"read", "write"},
     Resources: []string{"code:*"},
+    IsActive:  true,
     Conditions: []policy.Condition{
-        {Field: "department", Operator: policy.OpEq, Value: "engineering"},
+        {Field: "subject.attributes.department", Operator: policy.OpEq, Value: "engineering"},
     },
 }
 ```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+policy "engineering-only" {
+  effect    = allow
+  active    = true
+  actions   = ["read", "write"]
+  resources = ["code:*"]
+
+  when {
+    subject.attributes.department == "engineering"
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+## PBAC — Time-Bound Policies & Obligations
+
+PBAC adds two orthogonal capabilities on top of plain ABAC. Same `policy.Policy` type, same evaluator, same storage table — three new fields.
+
+### Time-Bound Policies
+
+`NotBefore` and `NotAfter` define a half-open effective window. Outside it, the engine skips the policy as if `IsActive=false`. Either bound may be nil ("no limit on that side").
+
+`Policy.EffectiveAt(t time.Time) bool` is the single source of truth:
+
+```go
+func (p *Policy) EffectiveAt(t time.Time) bool {
+    if !p.IsActive {
+        return false
+    }
+    if p.NotBefore != nil && t.Before(*p.NotBefore) {
+        return false
+    }
+    if p.NotAfter != nil && t.After(*p.NotAfter) {
+        return false
+    }
+    return true
+}
+```
+
+#### Incident Freeze
+
+Deny all deploys until 2026-06-01.
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
+```go
+notAfter := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+&policy.Policy{
+    Name:     "incident-freeze",
+    Effect:   policy.EffectDeny,
+    Priority: 1,
+    IsActive: true,
+    NotAfter: &notAfter,
+    Actions:  []string{"deploy:*"},
+}
+```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+policy "incident-freeze" {
+  effect    = deny
+  priority  = 1
+  active    = true
+  not_after = "2026-06-01T00:00:00Z"
+  actions   = ["deploy:*"]
+}
+```
+
+</Tab>
+</Tabs>
+
+#### Scheduled Grant
+
+Allow data exports during Q2 2026 only.
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
+```go
+notBefore := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+notAfter  := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+&policy.Policy{
+    Name:      "q2-export-window",
+    Effect:    policy.EffectAllow,
+    IsActive:  true,
+    NotBefore: &notBefore,
+    NotAfter:  &notAfter,
+    Actions:   []string{"export"},
+    Resources: []string{"dataset:*"},
+}
+```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+policy "q2-export-window" {
+  effect     = allow
+  active     = true
+  not_before = "2026-04-01T00:00:00Z"
+  not_after  = "2026-07-01T00:00:00Z"
+  actions    = ["export"]
+  resources  = ["dataset:*"]
+}
+```
+
+</Tab>
+</Tabs>
+
+The default evaluator uses `time.Now()`. Tests inject a fixed clock:
+
+```go
+fixed := func() time.Time { return time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC) }
+eng, _ := warden.NewEngine(
+    warden.WithStore(store),
+    warden.WithEvaluator(warden.NewConditionEvaluator(fixed)),
+)
+```
+
+### Obligations
+
+Obligations are named side-effect actions a policy emits when it matches. They flow through to `CheckResult.Obligations` (deduplicated across every matched policy, allow OR deny) and fire the `PolicyObligationFired` plugin hook once per obligation.
+
+Obligations don't change the allow/deny decision — they're signals to the calling system.
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
+```go
+&policy.Policy{
+    Name:        "after-hours-mfa",
+    Effect:      policy.EffectAllow,
+    IsActive:    true,
+    Actions:     []string{"write", "delete"},
+    Obligations: []string{"require-mfa", "audit-log"},
+    Conditions: []policy.Condition{
+        {Field: "context.time", Operator: policy.OpTimeBefore, Value: "09:00:00Z"},
+        {Field: "context.time", Operator: policy.OpTimeAfter, Value: "17:00:00Z"},
+    },
+}
+```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+policy "after-hours-mfa" {
+  effect      = allow
+  active      = true
+  actions     = ["write", "delete"]
+  obligations = ["require-mfa", "audit-log"]
+
+  when {
+    context.time time_before "09:00:00Z"
+    context.time time_after  "17:00:00Z"
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+After `eng.Check(...)`:
+
+```go
+result, _ := eng.Check(ctx, req)
+for _, ob := range result.Obligations {
+    switch ob {
+    case "require-mfa":
+        if !req.Context["mfa_verified"].(bool) {
+            return errors.New("re-authentication required")
+        }
+    case "audit-log":
+        // Already handled by an audit plugin via PolicyObligationFired.
+    }
+}
+```
+
+### Plugin Hook
+
+```go
+type PolicyObligationFired interface {
+    OnPolicyObligationFired(
+        ctx context.Context,
+        polID id.PolicyID,
+        obligation string,
+        req, result any,   // *warden.CheckRequest / *warden.CheckResult
+    ) error
+}
+```
+
+Fired once per obligation in the deduplicated post-merge result. Errors returned from the hook are logged but never block the pipeline. Chronicle / audit / dispatcher plugins implement this to react without scanning `CheckResult.Obligations` themselves.
+
+`not_before` / `not_after` accept RFC3339 timestamps (with or without nanoseconds). The resolver flags windows where `not_after < not_before` as a diagnostic. See the [language reference](/docs/integration/dsl-reference#policies) for the full policy block grammar.

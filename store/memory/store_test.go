@@ -144,9 +144,12 @@ func TestRolePermissionAttach(t *testing.T) {
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: perm1, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: perm2, TenantID: "t1", Name: "doc:write", Resource: "doc", Action: "write"})
 
+	refRead := permission.Ref{Name: "doc:read"}
+	refWrite := permission.Ref{Name: "doc:write"}
+
 	// Attach
-	_ = s.AttachPermission(ctx, roleID, perm1)
-	_ = s.AttachPermission(ctx, roleID, perm2)
+	_ = s.AttachPermission(ctx, roleID, refRead)
+	_ = s.AttachPermission(ctx, roleID, refWrite)
 
 	perms, _ := s.ListRolePermissions(ctx, roleID)
 	if len(perms) != 2 {
@@ -160,18 +163,20 @@ func TestRolePermissionAttach(t *testing.T) {
 	}
 
 	// Detach
-	_ = s.DetachPermission(ctx, roleID, perm1)
+	_ = s.DetachPermission(ctx, roleID, refRead)
 	perms, _ = s.ListRolePermissions(ctx, roleID)
 	if len(perms) != 1 {
 		t.Fatalf("expected 1 permission after detach, got %d", len(perms))
 	}
 
 	// SetRolePermissions (replace all)
-	_ = s.SetRolePermissions(ctx, roleID, []id.PermissionID{perm1})
+	_ = s.SetRolePermissions(ctx, roleID, []permission.Ref{refRead})
 	perms, _ = s.ListRolePermissions(ctx, roleID)
 	if len(perms) != 1 {
 		t.Fatalf("expected 1 permission after set, got %d", len(perms))
 	}
+	_ = perm1
+	_ = perm2
 }
 
 func TestAssignmentCRUD(t *testing.T) {

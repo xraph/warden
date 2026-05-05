@@ -230,6 +230,151 @@ func init() {
 			},
 		},
 		&migrate.Migration{
+			Name:    "role_permissions_natural_key",
+			Version: "20260101000003",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				db := mexec.DB().Database()
+				rps := db.Collection(colRolePermissions)
+				perms := db.Collection(colPermissions)
+
+				// Backfill: for each junction doc, look up the permission's
+				// namespace_path and name, write them onto the junction doc,
+				// and unset permission_id.
+				cur, err := rps.Find(ctx, bson.M{"permission_id": bson.M{"$exists": true}})
+				if err != nil {
+					return fmt.Errorf("warden: scan junction: %w", err)
+				}
+				defer func() { _ = cur.Close(ctx) }()
+				for cur.Next(ctx) {
+					var doc struct {
+						RoleID       string `bson:"role_id"`
+						PermissionID string `bson:"permission_id"`
+					}
+					if err := cur.Decode(&doc); err != nil {
+						return fmt.Errorf("warden: decode junction: %w", err)
+					}
+					var perm struct {
+						NamespacePath string `bson:"namespace_path"`
+						Name          string `bson:"name"`
+					}
+					if err := perms.FindOne(ctx, bson.M{"_id": doc.PermissionID}).Decode(&perm); err != nil {
+						continue // orphan grant; skip
+					}
+					if _, err := rps.UpdateOne(ctx,
+						bson.M{"role_id": doc.RoleID, "permission_id": doc.PermissionID},
+						bson.M{
+							"$set":   bson.M{"perm_namespace_path": perm.NamespacePath, "perm_name": perm.Name},
+							"$unset": bson.M{"permission_id": ""},
+						},
+					); err != nil {
+						return fmt.Errorf("warden: backfill junction: %w", err)
+					}
+				}
+				if err := cur.Err(); err != nil {
+					return fmt.Errorf("warden: iterate junction: %w", err)
+				}
+
+				// Drop orphan rows that couldn't be backfilled (permission_id
+				// pointed at a deleted permission). Without this, multiple
+				// orphans per role collide on (role_id, null, null) when the
+				// new unique compound index is built.
+				if _, err := rps.DeleteMany(ctx, bson.M{"perm_name": bson.M{"$exists": false}}); err != nil {
+					return fmt.Errorf("warden: drop orphan junction: %w", err)
+				}
+
+				// Drop old indexes.
+				_ = rps.Indexes().DropOne(ctx, "role_id_1_permission_id_1") //nolint:errcheck // idempotent drop, ok if missing
+				_ = rps.Indexes().DropOne(ctx, "permission_id_1")           //nolint:errcheck // idempotent drop, ok if missing
+
+				// New unique compound + secondary indexes.
+				if _, err := rps.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{
+						{Key: "role_id", Value: 1},
+						{Key: "perm_namespace_path", Value: 1},
+						{Key: "perm_name", Value: 1},
+					},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return fmt.Errorf("warden: create junction unique index: %w", err)
+				}
+				if _, err := rps.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{{Key: "perm_namespace_path", Value: 1}, {Key: "perm_name", Value: 1}},
+				}); err != nil {
+					return fmt.Errorf("warden: create junction lookup index: %w", err)
+				}
+				return nil
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				db := mexec.DB().Database()
+				rps := db.Collection(colRolePermissions)
+				roles := db.Collection(colRoles)
+				perms := db.Collection(colPermissions)
+
+				cur, err := rps.Find(ctx, bson.M{"perm_name": bson.M{"$exists": true}})
+				if err != nil {
+					return err
+				}
+				defer func() { _ = cur.Close(ctx) }()
+				for cur.Next(ctx) {
+					var doc struct {
+						RoleID            string `bson:"role_id"`
+						PermNamespacePath string `bson:"perm_namespace_path"`
+						PermName          string `bson:"perm_name"`
+					}
+					if err := cur.Decode(&doc); err != nil {
+						return err
+					}
+					var rrec struct {
+						TenantID string `bson:"tenant_id"`
+					}
+					if err := roles.FindOne(ctx, bson.M{"_id": doc.RoleID}).Decode(&rrec); err != nil {
+						continue
+					}
+					var prec struct {
+						ID string `bson:"_id"`
+					}
+					if err := perms.FindOne(ctx, bson.M{
+						"tenant_id":      rrec.TenantID,
+						"namespace_path": doc.PermNamespacePath,
+						"name":           doc.PermName,
+					}).Decode(&prec); err != nil {
+						continue
+					}
+					if _, err := rps.UpdateOne(ctx,
+						bson.M{"role_id": doc.RoleID, "perm_namespace_path": doc.PermNamespacePath, "perm_name": doc.PermName},
+						bson.M{
+							"$set":   bson.M{"permission_id": prec.ID},
+							"$unset": bson.M{"perm_namespace_path": "", "perm_name": ""},
+						},
+					); err != nil {
+						return err
+					}
+				}
+
+				_ = rps.Indexes().DropOne(ctx, "role_id_1_perm_namespace_path_1_perm_name_1") //nolint:errcheck // idempotent drop, ok if missing
+				_ = rps.Indexes().DropOne(ctx, "perm_namespace_path_1_perm_name_1")           //nolint:errcheck // idempotent drop, ok if missing
+				_, err = rps.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys:    bson.D{{Key: "role_id", Value: 1}, {Key: "permission_id", Value: 1}},
+					Options: options.Index().SetUnique(true),
+				})
+				if err != nil {
+					return err
+				}
+				_, err = rps.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{{Key: "permission_id", Value: 1}},
+				})
+				return err
+			},
+		},
+		&migrate.Migration{
 			Name:    "namespaces",
 			Version: "20260101000002",
 			Up: func(ctx context.Context, exec migrate.Executor) error {
@@ -345,7 +490,7 @@ func init() {
 					return fmt.Errorf("warden: drop parent_id field: %w", err)
 				}
 
-				_ = coll.Indexes().DropOne(ctx, "parent_id_1")
+				_ = coll.Indexes().DropOne(ctx, "parent_id_1") //nolint:errcheck // idempotent drop, ok if missing
 
 				_, err = coll.Indexes().CreateOne(ctx, mongo.IndexModel{
 					Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "parent_slug", Value: 1}},
@@ -391,10 +536,65 @@ func init() {
 					return fmt.Errorf("warden: drop parent_slug field: %w", err)
 				}
 
-				_ = coll.Indexes().DropOne(ctx, "tenant_id_1_parent_slug_1")
+				_ = coll.Indexes().DropOne(ctx, "tenant_id_1_parent_slug_1") //nolint:errcheck // idempotent drop, ok if missing
 
 				_, err = coll.Indexes().CreateOne(ctx, mongo.IndexModel{
 					Keys: bson.D{{Key: "parent_id", Value: 1}},
+				})
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "policy_pbac",
+			Version: "20260101000004",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				policies := mexec.DB().Database().Collection(colPolicies)
+
+				// Backfill: ensure every existing policy has obligations: [], not_before: null, not_after: null.
+				if _, err := policies.UpdateMany(ctx,
+					bson.M{"obligations": bson.M{"$exists": false}},
+					bson.M{"$set": bson.M{"obligations": bson.A{}}},
+				); err != nil {
+					return fmt.Errorf("warden: backfill obligations: %w", err)
+				}
+				if _, err := policies.UpdateMany(ctx,
+					bson.M{"not_before": bson.M{"$exists": false}},
+					bson.M{"$set": bson.M{"not_before": nil}},
+				); err != nil {
+					return fmt.Errorf("warden: backfill not_before: %w", err)
+				}
+				if _, err := policies.UpdateMany(ctx,
+					bson.M{"not_after": bson.M{"$exists": false}},
+					bson.M{"$set": bson.M{"not_after": nil}},
+				); err != nil {
+					return fmt.Errorf("warden: backfill not_after: %w", err)
+				}
+
+				_, err := policies.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "namespace_path", Value: 1},
+						{Key: "not_before", Value: 1},
+					},
+					Options: options.Index().
+						SetName("idx_warden_policies_window").
+						SetSparse(true),
+				})
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				policies := mexec.DB().Database().Collection(colPolicies)
+				_ = policies.Indexes().DropOne(ctx, "idx_warden_policies_window") //nolint:errcheck // idempotent drop, ok if missing
+				_, err := policies.UpdateMany(ctx, bson.M{}, bson.M{
+					"$unset": bson.M{"not_before": "", "not_after": "", "obligations": ""},
 				})
 				return err
 			},

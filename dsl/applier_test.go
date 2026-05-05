@@ -250,13 +250,42 @@ role current {
 	}
 }
 
-func TestApply_MissingTenantErrors(t *testing.T) {
-	prog, _ := Parse("test.warden", []byte("warden config 1\n"))
-	eng, _ := newTestEngine(t)
-	if _, err := Apply(context.Background(), eng, prog, ApplyOptions{}); err == nil {
-		t.Fatal("expected missing-tenant error")
-	} else if !strings.Contains(err.Error(), "tenant") {
-		t.Fatalf("expected tenant error, got %v", err)
+// TestApply_NoTenantAppliesToGlobalScope pins the optional-tenant
+// behavior: source without a `tenant` declaration and no
+// opts.TenantID applies cleanly to the empty-string tenant (global
+// scope). Single-tenant apps that never call warden.WithTenant rely
+// on this — every Check the engine runs uses an empty tenant_id too,
+// so it all matches.
+func TestApply_NoTenantAppliesToGlobalScope(t *testing.T) {
+	prog, _ := Parse("test.warden", []byte(`
+warden config 1
+
+permission "doc:read" (document : read)
+
+role viewer {
+  name   = "Viewer"
+  grants = ["doc:read"]
+}
+`))
+	ctx := context.Background()
+	eng, s := newTestEngine(t)
+
+	res, err := Apply(ctx, eng, prog, ApplyOptions{})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(res.Created) == 0 {
+		t.Fatal("expected entries created")
+	}
+
+	// The role landed under tenant "" (global). Confirm by reading via
+	// the same scope.
+	r, err := s.GetRoleBySlug(ctx, "", "viewer")
+	if err != nil {
+		t.Fatalf("GetRoleBySlug(\"\"): %v", err)
+	}
+	if r.TenantID != "" {
+		t.Errorf("role.TenantID = %q, want empty (global scope)", r.TenantID)
 	}
 }
 

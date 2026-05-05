@@ -3,8 +3,22 @@ package postgres
 import (
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// isUniqueViolation reports whether err is a postgres unique_violation
+// (SQLSTATE 23505). Used by the Create* methods to map index/constraint
+// violations to the typed warden duplicate sentinels.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+	return false
+}
 
 // jsonbSlice is a generic JSONB-backed slice for PostgreSQL. It implements
 // database/sql/driver.Valuer and sql.Scanner for transparent serialization

@@ -3,11 +3,60 @@ title: Getting Started
 description: Install Warden and run your first authorization check.
 ---
 
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
 ## Installation
+
+### Library
 
 ```bash
 go get github.com/xraph/warden
 ```
+
+### CLI (`warden` and `warden-lsp`)
+
+The `warden` CLI applies `.warden` configs to a store; `warden-lsp` powers the editor extensions. Three options:
+
+<Tabs items={["go install", "Pre-built binary", "From source"]}>
+
+```bash tab="go install"
+go install github.com/xraph/warden/cmd/warden@latest
+go install github.com/xraph/warden/cmd/warden-lsp@latest
+```
+
+```bash tab="Pre-built binary"
+# Pick a platform from https://github.com/xraph/warden/releases/latest
+curl -L -o warden.tar.gz \
+  https://github.com/xraph/warden/releases/latest/download/warden-<version>-<os>-<arch>.tar.gz
+
+# Verify the checksum
+curl -L -o checksums.txt \
+  https://github.com/xraph/warden/releases/latest/download/checksums.txt
+shasum -a 256 -c checksums.txt --ignore-missing
+
+tar -xzf warden.tar.gz
+sudo mv warden warden-lsp /usr/local/bin/
+warden version
+```
+
+```bash tab="From source"
+git clone https://github.com/xraph/warden.git
+cd warden
+make build
+./bin/warden version
+```
+
+</Tabs>
+
+Each pre-built archive contains **both** `warden` and `warden-lsp`. Available for `linux`, `darwin`, `windows` × `amd64`, `arm64`.
+
+### VS Code extension
+
+```bash
+code --install-extension xraph.vscode-warden
+```
+
+The extension provides syntax highlighting, completion, hover, go-to-definition, and live diagnostics for `.warden` files. See the [DSL tooling guide](./integration/dsl-tooling) for editor configuration.
 
 ## Step 1: Create a Store
 
@@ -41,10 +90,13 @@ import (
     "github.com/xraph/warden/permission"
 )
 
+// IDs are auto-assigned by the store on Create. The in-place mutation
+// means r.ID and perm.ID are populated when the calls return — handy
+// for downstream uses like AttachPermission below.
+
 // Create a permission
 perm := &permission.Permission{
-    ID:       id.NewPermissionID(),
-    Name:     "Read Documents",
+    Name:     "doc:read",
     Resource: "document",
     Action:   "read",
 }
@@ -52,14 +104,13 @@ _ = st.CreatePermission(ctx, perm)
 
 // Create a role
 r := &role.Role{
-    ID:   id.NewRoleID(),
     Name: "Viewer",
     Slug: "viewer",
 }
 _ = st.CreateRole(ctx, r)
 
 // Attach permission to role
-_ = st.AttachPermission(ctx, r.ID, perm.ID)
+_ = st.AttachPermission(ctx, r.ID, permission.Ref{Name: "doc:read"})
 ```
 
 ## Step 4: Assign the Role
@@ -68,7 +119,6 @@ _ = st.AttachPermission(ctx, r.ID, perm.ID)
 import "github.com/xraph/warden/assignment"
 
 ass := &assignment.Assignment{
-    ID:          id.NewAssignmentID(),
     RoleID:      r.ID,
     SubjectKind: "user",
     SubjectID:   "user-42",
@@ -99,14 +149,12 @@ if result.Allowed {
 import "github.com/xraph/warden/policy"
 
 p := &policy.Policy{
-    ID:        id.NewPolicyID(),
     Name:      "Office Hours Only",
     Effect:    policy.EffectDeny,
     Subjects:  []string{"*"},
     Actions:   []string{"*"},
     Resources: []string{"document:*"},
     Conditions: []policy.Condition{{
-        ID:       id.NewConditionID(),
         Field:    "time",
         Operator: policy.OpTimeBefore,
         Value:    "09:00",
@@ -122,7 +170,6 @@ _ = st.CreatePolicy(ctx, p)
 import "github.com/xraph/warden/relation"
 
 tuple := &relation.Tuple{
-    ID:          id.NewRelationID(),
     ObjectType:  "document",
     ObjectID:    "doc-123",
     Relation:    "viewer",
@@ -161,9 +208,69 @@ eng, _ := warden.NewEngine(
 )
 ```
 
+## Step 8: Use the Declarative DSL (Optional)
+
+Programmatic seeding works for examples, but production setups define roles, permissions, policies, and relations as source-controlled `.warden` files.
+
+```bash
+go install github.com/xraph/warden/cmd/warden@latest
+```
+
+```warden
+# config/main.warden
+warden config 1
+tenant t1                              # optional — omit for single-tenant apps
+
+permission "doc:read" (document : read)
+
+role viewer {
+  name   = "Viewer"
+  grants = ["doc:read"]
+}
+
+role editor : viewer {
+  name   = "Editor"
+  grants += ["doc:write"]
+}
+```
+
+```bash
+warden lint config/                       # static checks, no DB
+warden apply -f config/ --store sqlite:./warden.db
+```
+
+The `tenant` declaration is optional. Single-tenant apps that never call `warden.WithTenant` should omit it — every entity lands in the global scope (`tenant_id = ""`), which is what the engine looks up at Check time too.
+
+The same CLI ships a language server (`warden lsp`) used by the VS Code extension and Neovim/Helix configs for diagnostics, completion, hover, and go-to-definition. See [DSL & Tooling](/docs/integration/dsl-tooling).
+
+### Or embed the config
+
+If you'd rather ship the config inside your binary instead of distributing files alongside it, use `//go:embed` and `dsl.ApplyFS`:
+
+```go
+//go:embed all:config
+var configFS embed.FS
+
+func main() {
+    eng, _ := warden.NewEngine(warden.WithStore(memory.New()))
+
+    _, err := dsl.ApplyFS(ctx, eng, configFS, "config",
+        dsl.ApplyOptions{TenantID: "acme"},
+        dsl.WithVariables(dsl.Variables{"REGION": os.Getenv("AWS_REGION")}),
+    )
+    // handle err …
+}
+```
+
+Same load-resolve-apply pipeline as the CLI, exposed as a library. Full reference and a runnable example: [DSL & Tooling — Programmatic apply](/docs/integration/dsl-tooling#programmatic-apply).
+
 ## Next Steps
 
 - [Architecture](/docs/architecture) — Understand the engine internals
-- [Authorization Models](/docs/concepts/authorization-models) — Deep dive into RBAC, ABAC, and ReBAC
+- [Authorization Models](/docs/concepts/authorization-models) — Deep dive into RBAC, ABAC, ReBAC, and PBAC
+- [Namespaces](/docs/concepts/namespaces) — Nested tenancy with cascading scope inheritance
+- [.warden Language Reference](/docs/integration/dsl-reference) — Every block, field, expression, operator, and convention
+- [DSL & Tooling](/docs/integration/dsl-tooling) — CLI, LSP, VS Code extension, and template variables
+- [Policies & Conditions](/docs/authorization/policies-conditions) — Time-bound policies and obligations (PBAC)
 - [Forge Extension](/docs/integration/forge-extension) — Use Warden as a Forge extension
 - [REST API](/docs/api-reference/rest-api) — Manage entities via HTTP

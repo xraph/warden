@@ -7,6 +7,8 @@ description: How Warden isolates authorization data per tenant.
 
 Every Warden operation is scoped to a tenant. This ensures that roles, permissions, policies, and relations from one tenant cannot leak to another.
 
+> **Need a hierarchy *inside* one tenant?** See [Namespaces](/docs/concepts/namespaces) — the second scope dimension layered on top of `tenant_id`. Tenants are a hard wall; namespaces are a soft hierarchy with cascading inheritance for org charts that aren't flat.
+
 ### With Forge
 
 When running inside Forge, tenant context is automatically available via `forge.ScopeFrom(ctx)`:
@@ -47,12 +49,55 @@ The engine extracts tenant scope from context before every operation:
 
 ```go
 result, err := eng.Check(ctx, &warden.CheckRequest{
-    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
-    Action:       "read",
-    ResourceType: "document",
+    Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "user-42"},
+    Action:   warden.Action{Name: "read"},
+    Resource: warden.Resource{Type: "document", ID: "doc-123"},
 })
 // Only evaluates roles, policies, and relations for the current tenant
 ```
+
+### DSL: tenant declared in source
+
+The same scope can be set in `.warden` source via the `tenant` header (or `--tenant` / `--var TENANT=...` at apply time):
+
+```warden
+warden config 1
+tenant ${TENANT}    // bound at apply time via --var TENANT=acme
+
+role admin { name = "Admin" }
+```
+
+Apply across environments without rebuilding the source:
+
+```bash
+warden apply -f config/ --var TENANT=acme    --store $PROD_DSN
+warden apply -f config/ --var TENANT=staging --store $STAGE_DSN
+```
+
+The applier wires this scope into every entity it creates — roles, permissions, policies, resource types, and relation tuples all land in the named tenant. See [Variables](/docs/integration/dsl-reference#variables-template-substitution) for the full template substitution rules.
+
+### Single-Tenant Apps: Skip the Tenant Entirely
+
+Tenant scope is **optional** on both sides. When an app never calls `warden.WithTenant` and the DSL omits the `tenant` header, every entity lands in the **global scope** (`tenant_id = ""`) and every Check uses the same empty scope — they match cleanly.
+
+```warden
+warden config 1
+// No `tenant` declaration — applies to the global scope.
+
+permission "doc:read" (document : read)
+
+role viewer {
+  name   = "Viewer"
+  grants = ["doc:read"]
+}
+```
+
+```bash
+warden apply -f config/ --store sqlite:./warden.db
+# No --tenant flag — entities are written with tenant_id = "".
+```
+
+This is the right path for single-tenant deployments. Multi-tenant apps should always pass a tenant explicitly (via source, `--tenant`, or `--var`) so entities never accidentally land in the global bucket.
 
 ### Cross-Tenant Prevention
 

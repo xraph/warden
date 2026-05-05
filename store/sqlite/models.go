@@ -165,9 +165,10 @@ func permissionFromModel(m *permissionModel) (*permission.Permission, error) {
 // ──────────────────────────────────────────────────
 
 type rolePermissionModel struct {
-	grove.BaseModel `grove:"table:warden_role_permissions"`
-	RoleID          string `grove:"role_id,pk"`
-	PermissionID    string `grove:"permission_id,pk"`
+	grove.BaseModel   `grove:"table:warden_role_permissions"`
+	RoleID            string `grove:"role_id,pk"`
+	PermNamespacePath string `grove:"perm_namespace_path,pk"`
+	PermName          string `grove:"perm_name,pk"`
 }
 
 // ──────────────────────────────────────────────────
@@ -318,23 +319,26 @@ func relationFromModel(m *relationModel) (*relation.Tuple, error) {
 
 type policyModel struct {
 	grove.BaseModel `grove:"table:warden_policies"`
-	ID              string     `grove:"id,pk"`
-	TenantID        string     `grove:"tenant_id,notnull"`
-	NamespacePath   string     `grove:"namespace_path,notnull"`
-	AppID           string     `grove:"app_id,notnull"`
-	Name            string     `grove:"name,notnull"`
-	Description     string     `grove:"description"`
-	Effect          string     `grove:"effect,notnull"`
-	Priority        int        `grove:"priority,notnull"`
-	IsActive        bool       `grove:"is_active,notnull"`
-	Version         int        `grove:"version,notnull"`
-	Subjects        string     `grove:"subjects"`   // JSON text
-	Actions         string     `grove:"actions"`    // JSON text
-	Resources       string     `grove:"resources"`  // JSON text
-	Conditions      string     `grove:"conditions"` // JSON text
-	Metadata        string     `grove:"metadata"`   // JSON text
-	CreatedAt       sqliteTime `grove:"created_at,notnull"`
-	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
+	ID              string      `grove:"id,pk"`
+	TenantID        string      `grove:"tenant_id,notnull"`
+	NamespacePath   string      `grove:"namespace_path,notnull"`
+	AppID           string      `grove:"app_id,notnull"`
+	Name            string      `grove:"name,notnull"`
+	Description     string      `grove:"description"`
+	Effect          string      `grove:"effect,notnull"`
+	Priority        int         `grove:"priority,notnull"`
+	IsActive        bool        `grove:"is_active,notnull"`
+	NotBefore       *sqliteTime `grove:"not_before"`
+	NotAfter        *sqliteTime `grove:"not_after"`
+	Obligations     string      `grove:"obligations"` // JSON text
+	Version         int         `grove:"version,notnull"`
+	Subjects        string      `grove:"subjects"`   // JSON text
+	Actions         string      `grove:"actions"`    // JSON text
+	Resources       string      `grove:"resources"`  // JSON text
+	Conditions      string      `grove:"conditions"` // JSON text
+	Metadata        string      `grove:"metadata"`   // JSON text
+	CreatedAt       sqliteTime  `grove:"created_at,notnull"`
+	UpdatedAt       sqliteTime  `grove:"updated_at,notnull"`
 }
 
 func policyToModel(p *policy.Policy) (*policyModel, error) {
@@ -358,7 +362,11 @@ func policyToModel(p *policy.Policy) (*policyModel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal policy metadata: %w", err)
 	}
-	return &policyModel{
+	obligations, err := json.Marshal(orEmptyStrings(p.Obligations))
+	if err != nil {
+		return nil, fmt.Errorf("marshal policy obligations: %w", err)
+	}
+	m := &policyModel{
 		ID:            p.ID.String(),
 		TenantID:      p.TenantID,
 		NamespacePath: p.NamespacePath,
@@ -369,6 +377,7 @@ func policyToModel(p *policy.Policy) (*policyModel, error) {
 		Priority:      p.Priority,
 		IsActive:      p.IsActive,
 		Version:       p.Version,
+		Obligations:   string(obligations),
 		Subjects:      string(subjects),
 		Actions:       string(actions),
 		Resources:     string(resources),
@@ -376,7 +385,16 @@ func policyToModel(p *policy.Policy) (*policyModel, error) {
 		Metadata:      string(metadata),
 		CreatedAt:     sqliteTime(p.CreatedAt),
 		UpdatedAt:     sqliteTime(p.UpdatedAt),
-	}, nil
+	}
+	if p.NotBefore != nil {
+		v := sqliteTime(*p.NotBefore)
+		m.NotBefore = &v
+	}
+	if p.NotAfter != nil {
+		v := sqliteTime(*p.NotAfter)
+		m.NotAfter = &v
+	}
+	return m, nil
 }
 
 func policyFromModel(m *policyModel) (*policy.Policy, error) {
@@ -412,7 +430,13 @@ func policyFromModel(m *policyModel) (*policy.Policy, error) {
 			return nil, fmt.Errorf("unmarshal policy metadata: %w", err)
 		}
 	}
-	return &policy.Policy{
+	var obligations []string
+	if m.Obligations != "" {
+		if err := json.Unmarshal([]byte(m.Obligations), &obligations); err != nil {
+			return nil, fmt.Errorf("unmarshal policy obligations: %w", err)
+		}
+	}
+	out := &policy.Policy{
 		ID:            pid,
 		TenantID:      m.TenantID,
 		NamespacePath: m.NamespacePath,
@@ -422,6 +446,7 @@ func policyFromModel(m *policyModel) (*policy.Policy, error) {
 		Effect:        policy.Effect(m.Effect),
 		Priority:      m.Priority,
 		IsActive:      m.IsActive,
+		Obligations:   obligations,
 		Version:       m.Version,
 		Subjects:      subjects,
 		Actions:       actions,
@@ -430,7 +455,26 @@ func policyFromModel(m *policyModel) (*policy.Policy, error) {
 		Metadata:      metadata,
 		CreatedAt:     time.Time(m.CreatedAt),
 		UpdatedAt:     time.Time(m.UpdatedAt),
-	}, nil
+	}
+	if m.NotBefore != nil {
+		v := time.Time(*m.NotBefore)
+		out.NotBefore = &v
+	}
+	if m.NotAfter != nil {
+		v := time.Time(*m.NotAfter)
+		out.NotAfter = &v
+	}
+	return out, nil
+}
+
+// orEmptyStrings returns []string{} when src is nil so JSON marshals as
+// `[]` rather than `null`. Keeps round-trip semantics consistent with
+// columns that have a `[]` default in SQL.
+func orEmptyStrings(src []string) []string {
+	if src == nil {
+		return []string{}
+	}
+	return src
 }
 
 // ──────────────────────────────────────────────────

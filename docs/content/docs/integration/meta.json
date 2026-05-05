@@ -1,4 +1,10 @@
 {
   "title": "Integration",
-  "pages": ["forge-extension", "middleware", "plugin-system"]
+  "pages": [
+    "forge-extension",
+    "middleware",
+    "plugin-system",
+    "dsl-tooling",
+    "dsl-reference"
+  ]
 }

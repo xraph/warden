@@ -1,26 +1,30 @@
 ---
 title: "Warden: Composable Authorization Engine"
-description: "Warden is a Go library that unifies RBAC, ABAC, and ReBAC authorization behind a single Check API."
+description: "Warden is a Go library that unifies RBAC, ABAC, ReBAC, and PBAC authorization behind a single Check API."
 ---
 
 import { Cards, Card } from "fumadocs-ui/components/card";
 
 Warden is a composable permissions and authorization engine for Go. It answers the fundamental question: **"Is this subject allowed to perform this action on this resource?"**
 
-Warden combines three authorization models into a unified engine:
+Warden combines four authorization models into a unified engine:
 
 - **RBAC** — Role-Based Access Control with hierarchical roles, permissions, and assignments
 - **ABAC** — Attribute-Based Access Control with policy conditions (IP ranges, time windows, custom attributes)
 - **ReBAC** — Relationship-Based Access Control (Zanzibar-style) with relation tuples and graph traversal
+- **PBAC** — Policy-Based Access Control with time-bound windows and named obligations (`audit-log`, `require-mfa`, …)
 
 ## Key Features
 
-- **Unified Check API** — A single `Check()` call evaluates RBAC, ABAC, and ReBAC together
+- **Unified Check API** — A single `Check()` call evaluates RBAC, ABAC, ReBAC, and PBAC together
 - **Decision Priority** — Explicit deny always wins over allow, which wins over default deny
+- **Obligations** — PBAC side-effect signals flow through `CheckResult.Obligations` and the `PolicyObligationFired` plugin hook
 - **Type-Safe IDs** — TypeID-based identifiers for all entities (`wrol_`, `wprm_`, `wasn_`, `wpol_`, `wrel_`)
-- **Multi-Tenant** — Every operation is scoped to a tenant via context
-- **Pluggable Stores** — Memory, PostgreSQL, and SQLite backends
+- **Multi-Tenant + Namespaces** — Every operation is scoped to a tenant; [nested namespaces](/docs/concepts/namespaces) give cascading scope inheritance for org charts that aren't flat
+- **Pluggable Stores** — Memory, PostgreSQL, SQLite, and MongoDB backends
 - **Plugin System** — Lifecycle hooks for audit logging, metrics, and custom integrations
+- **Declarative DSL** — `.warden` files for defining roles, permissions, policies, resource types, and relations as source-controlled config
+- **First-Class Tooling** — `warden` CLI (`lint`, `apply`, `diff`, `fmt`, `export`, `lsp`), language server, and VS Code extension
 - **Forge Integration** — First-class Forge extension with DI, middleware, and OpenAPI routes
 - **Standalone Mode** — Use without Forge as a plain Go library
 
@@ -48,6 +52,9 @@ if result.Allowed {
 <Cards>
   <Card title="Getting Started" href="/docs/getting-started" description="Install Warden and run your first authorization check in under 5 minutes." />
   <Card title="Architecture" href="/docs/architecture" description="Understand how the engine, evaluator, and graph walker work together." />
-  <Card title="Authorization Models" href="/docs/concepts/authorization-models" description="Learn about RBAC, ABAC, and ReBAC and when to use each." />
-  <Card title="Store Backends" href="/docs/stores/memory" description="Choose between memory, PostgreSQL, and SQLite stores." />
+  <Card title="Authorization Models" href="/docs/concepts/authorization-models" description="Learn about RBAC, ABAC, ReBAC, and PBAC and when to use each." />
+  <Card title="Namespaces" href="/docs/concepts/namespaces" description="Nested scoping inside a tenant — cascading inheritance for org charts that aren't flat." />
+  <Card title=".warden Language Reference" href="/docs/integration/dsl-reference" description="Every block, field, expression, operator, and convention in the DSL." />
+  <Card title="DSL & Tooling" href="/docs/integration/dsl-tooling" description="The CLI, language server, VS Code extension, and template variables." />
+  <Card title="Store Backends" href="/docs/stores/memory" description="Choose between memory, PostgreSQL, SQLite, and MongoDB stores." />
 </Cards>

@@ -1,0 +1,248 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Warden DSL",
+  "scopeName": "source.warden",
+  "fileTypes": ["warden"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#header" },
+    { "include": "#declarations" },
+    { "include": "#expressions" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.warden",
+          "begin": "//",
+          "end": "$"
+        },
+        {
+          "name": "comment.block.warden",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+
+    "header": {
+      "patterns": [
+        {
+          "name": "meta.header.warden",
+          "match": "^\\s*(warden)\\s+(config)\\s+(\\d+)",
+          "captures": {
+            "1": { "name": "keyword.control.warden" },
+            "2": { "name": "keyword.control.warden" },
+            "3": { "name": "constant.numeric.integer.warden" }
+          }
+        },
+        {
+          "name": "meta.scope.warden",
+          "match": "^\\s*(tenant|app)\\s+([a-z][a-z0-9_-]*)",
+          "captures": {
+            "1": { "name": "keyword.control.warden" },
+            "2": { "name": "entity.name.section.warden" }
+          }
+        }
+      ]
+    },
+
+    "declarations": {
+      "patterns": [
+        { "include": "#namespace-block" },
+        { "include": "#resource-block" },
+        { "include": "#permission-decl" },
+        { "include": "#role-block" },
+        { "include": "#policy-block" },
+        { "include": "#relation-decl" },
+        { "include": "#import-stmt" }
+      ]
+    },
+
+    "namespace-block": {
+      "begin": "\\b(namespace)\\s+(\"[^\"]*\"|[a-z][a-z0-9_-]*)\\s*\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.warden" },
+        "2": { "name": "entity.name.namespace.warden" }
+      },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#declarations" }
+      ]
+    },
+
+    "resource-block": {
+      "begin": "\\b(resource)\\s+([a-z][a-z0-9_]*)\\s*\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.warden" },
+        "2": { "name": "entity.name.type.resource.warden" }
+      },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#relation-def" },
+        { "include": "#resource-permission" },
+        { "include": "#field-assign" },
+        { "include": "#expressions" }
+      ]
+    },
+
+    "relation-def": {
+      "match": "\\b(relation)\\s+([a-z][a-z0-9_]*)\\s*:\\s*",
+      "captures": {
+        "1": { "name": "keyword.control.warden" },
+        "2": { "name": "entity.name.tag.relation.warden" }
+      }
+    },
+
+    "resource-permission": {
+      "match": "\\b(permission)\\s+([a-z][a-z0-9_]*)\\s*=",
+      "captures": {
+        "1": { "name": "keyword.control.warden" },
+        "2": { "name": "entity.name.function.permission.warden" }
+      }
+    },
+
+    "permission-decl": {
+      "match": "\\b(permission)\\s+(\"[^\"]+\")",
+      "captures": {
+        "1": { "name": "keyword.control.warden" },
+        "2": { "name": "string.quoted.double.warden" }
+      }
+    },
+
+    "role-block": {
+      "begin": "\\b(role)\\s+([a-z][a-z0-9-]*)(?:\\s*:\\s*(/?[a-z][a-z0-9/_-]*))?\\s*\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.warden" },
+        "2": { "name": "entity.name.class.role.warden" },
+        "3": { "name": "entity.other.inherited-class.warden" }
+      },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#field-assign" },
+        { "include": "#string-list" }
+      ]
+    },
+
+    "policy-block": {
+      "begin": "\\b(policy)\\s+(\"[^\"]+\")\\s*\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.warden" },
+        "2": { "name": "string.quoted.double.warden" }
+      },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#when-block" },
+        { "include": "#field-assign" },
+        { "include": "#string-list" }
+      ]
+    },
+
+    "when-block": {
+      "begin": "\\b(when|all_of|any_of)\\s*\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.warden" }
+      },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#when-block" },
+        { "include": "#condition" }
+      ]
+    },
+
+    "condition": {
+      "patterns": [
+        {
+          "match": "\\b(==|!=|<=|>=|<|>|=~|in|not\\s+in|exists|not\\s+exists|contains|starts_with|ends_with|ip_in_cidr|time_after|time_before)\\b",
+          "name": "keyword.operator.comparison.warden"
+        },
+        {
+          "match": "\\b(negate)\\b",
+          "name": "keyword.control.warden"
+        },
+        { "include": "#literals" }
+      ]
+    },
+
+    "relation-decl": {
+      "match": "\\b(relation)\\s+([a-z][a-z0-9_]*):([a-zA-Z0-9_-]+)\\s+([a-z][a-z0-9_]*)\\s*=\\s*([a-z][a-z0-9_]*):([a-zA-Z0-9_-]+)(?:#([a-z][a-z0-9_]*))?",
+      "captures": {
+        "1": { "name": "keyword.control.warden" },
+        "2": { "name": "entity.name.type.warden" },
+        "3": { "name": "string.unquoted.warden" },
+        "4": { "name": "entity.name.tag.relation.warden" },
+        "5": { "name": "entity.name.type.warden" },
+        "6": { "name": "string.unquoted.warden" },
+        "7": { "name": "entity.name.tag.relation.warden" }
+      }
+    },
+
+    "import-stmt": {
+      "match": "\\b(import)\\s+(\"[^\"]*\")",
+      "captures": {
+        "1": { "name": "keyword.control.warden" },
+        "2": { "name": "string.quoted.double.warden" }
+      }
+    },
+
+    "field-assign": {
+      "match": "\\b(name|description|priority|active|effect|actions|resources|subjects|grants|is_system|is_default|max_members|metadata)\\s*(\\+?=)",
+      "captures": {
+        "1": { "name": "variable.other.member.warden" },
+        "2": { "name": "keyword.operator.assignment.warden" }
+      }
+    },
+
+    "expressions": {
+      "patterns": [
+        {
+          "match": "\\b(or|and|not)\\b",
+          "name": "keyword.operator.logical.warden"
+        },
+        {
+          "match": "->",
+          "name": "keyword.operator.traversal.warden"
+        },
+        { "include": "#literals" }
+      ]
+    },
+
+    "string-list": {
+      "begin": "\\[",
+      "end": "\\]",
+      "patterns": [
+        { "include": "#literals" }
+      ]
+    },
+
+    "literals": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.warden",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.warden", "match": "\\\\." }
+          ]
+        },
+        {
+          "name": "constant.numeric.integer.warden",
+          "match": "\\b\\d+\\b"
+        },
+        {
+          "name": "constant.language.boolean.warden",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.allow-deny.warden",
+          "match": "\\b(allow|deny)\\b"
+        }
+      ]
+    }
+  }
+}

@@ -35,9 +35,14 @@ var (
 type Store struct {
 	mu sync.RWMutex
 
-	roles           map[string]*role.Role
-	permissions     map[string]*permission.Permission
-	rolePermissions map[string]map[string]struct{} // roleID -> set of permIDs
+	roles       map[string]*role.Role
+	permissions map[string]*permission.Permission
+	// rolePermissions maps a role's typeid to the set of permission.Ref keys
+	// it grants. Each ref key is `namespace_path \x00 name` — a single
+	// natural-key string. The engine reads these and resolves each to a full
+	// Permission record via the s.permissions map (keyed by typeid; matched
+	// by tenant + namespace + name).
+	rolePermissions map[string]map[string]struct{}
 	assignments     map[string]*assignment.Assignment
 	relations       map[string]*relation.Tuple
 	policies        map[string]*policy.Policy
@@ -73,6 +78,16 @@ func (s *Store) Close() error { return nil }
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateRole(_ context.Context, r *role.Role) error {
+	if r.ID.IsNil() {
+		r.ID = id.NewRoleID()
+	}
+	now := time.Now().UTC()
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = now
+	}
+	if r.UpdatedAt.IsZero() {
+		r.UpdatedAt = now
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.roles {
@@ -167,51 +182,75 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 	return int64(len(list)), nil
 }
 
-func (s *Store) ListRolePermissions(_ context.Context, roleID id.RoleID) ([]id.PermissionID, error) {
+// permRefKey encodes a (namespace_path, name) pair as a single map key.
+// The NUL byte makes this unambiguous since namespace path and name are
+// both ASCII-safe (validated by the resolver).
+func permRefKey(ref permission.Ref) string {
+	return ref.NamespacePath + "\x00" + ref.Name
+}
+
+func decodePermRefKey(k string) permission.Ref {
+	for i := 0; i < len(k); i++ {
+		if k[i] == 0 {
+			return permission.Ref{NamespacePath: k[:i], Name: k[i+1:]}
+		}
+	}
+	return permission.Ref{Name: k}
+}
+
+func (s *Store) ListRolePermissions(_ context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	perms, ok := s.rolePermissions[roleID.String()]
+	refs, ok := s.rolePermissions[roleID.String()]
 	if !ok {
 		return nil, nil
 	}
-	result := make([]id.PermissionID, 0, len(perms))
-	for pid := range perms {
-		parsed, err := id.ParsePermissionID(pid)
-		if err == nil {
-			result = append(result, parsed)
+	// Resolve role tenant for the JOIN.
+	r, ok := s.roles[roleID.String()]
+	if !ok {
+		return nil, nil
+	}
+	result := make([]*permission.Permission, 0, len(refs))
+	for k := range refs {
+		ref := decodePermRefKey(k)
+		for _, p := range s.permissions {
+			if p.TenantID == r.TenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
+				result = append(result, copyPermission(p))
+				break
+			}
 		}
 	}
 	return result, nil
 }
 
-func (s *Store) AttachPermission(_ context.Context, roleID id.RoleID, permID id.PermissionID) error {
+func (s *Store) AttachPermission(_ context.Context, roleID id.RoleID, ref permission.Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rk := roleID.String()
 	if s.rolePermissions[rk] == nil {
 		s.rolePermissions[rk] = make(map[string]struct{})
 	}
-	s.rolePermissions[rk][permID.String()] = struct{}{}
+	s.rolePermissions[rk][permRefKey(ref)] = struct{}{}
 	return nil
 }
 
-func (s *Store) DetachPermission(_ context.Context, roleID id.RoleID, permID id.PermissionID) error {
+func (s *Store) DetachPermission(_ context.Context, roleID id.RoleID, ref permission.Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if perms, ok := s.rolePermissions[roleID.String()]; ok {
-		delete(perms, permID.String())
+	if refs, ok := s.rolePermissions[roleID.String()]; ok {
+		delete(refs, permRefKey(ref))
 	}
 	return nil
 }
 
-func (s *Store) SetRolePermissions(_ context.Context, roleID id.RoleID, permIDs []id.PermissionID) error {
+func (s *Store) SetRolePermissions(_ context.Context, roleID id.RoleID, refs []permission.Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	perms := make(map[string]struct{}, len(permIDs))
-	for _, pid := range permIDs {
-		perms[pid.String()] = struct{}{}
+	set := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		set[permRefKey(ref)] = struct{}{}
 	}
-	s.rolePermissions[roleID.String()] = perms
+	s.rolePermissions[roleID.String()] = set
 	return nil
 }
 
@@ -244,6 +283,16 @@ func (s *Store) DeleteRolesByTenant(_ context.Context, tenantID string) error {
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreatePermission(_ context.Context, p *permission.Permission) error {
+	if p.ID.IsNil() {
+		p.ID = id.NewPermissionID()
+	}
+	now := time.Now().UTC()
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
+	}
+	if p.UpdatedAt.IsZero() {
+		p.UpdatedAt = now
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.permissions {
@@ -339,14 +388,22 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 func (s *Store) ListPermissionsByRole(_ context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	perms, ok := s.rolePermissions[roleID.String()]
+	refs, ok := s.rolePermissions[roleID.String()]
+	if !ok {
+		return nil, nil
+	}
+	r, ok := s.roles[roleID.String()]
 	if !ok {
 		return nil, nil
 	}
 	var result []*permission.Permission
-	for pid := range perms {
-		if p, ok := s.permissions[pid]; ok {
-			result = append(result, copyPermission(p))
+	for k := range refs {
+		ref := decodePermRefKey(k)
+		for _, p := range s.permissions {
+			if p.TenantID == r.TenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
+				result = append(result, copyPermission(p))
+				break
+			}
 		}
 	}
 	return result, nil
@@ -362,18 +419,24 @@ func (s *Store) ListPermissionsBySubject(_ context.Context, tenantID, subjectKin
 			roleIDs[a.RoleID.String()] = struct{}{}
 		}
 	}
-	// Gather permissions from those roles.
+	// Gather permissions from those roles, deduplicating by ref.
 	seen := make(map[string]struct{})
 	var result []*permission.Permission
 	for rid := range roleIDs {
-		if perms, ok := s.rolePermissions[rid]; ok {
-			for pid := range perms {
-				if _, dup := seen[pid]; dup {
-					continue
-				}
-				seen[pid] = struct{}{}
-				if p, ok := s.permissions[pid]; ok {
+		refs, ok := s.rolePermissions[rid]
+		if !ok {
+			continue
+		}
+		for k := range refs {
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			ref := decodePermRefKey(k)
+			for _, p := range s.permissions {
+				if p.TenantID == tenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
 					result = append(result, copyPermission(p))
+					break
 				}
 			}
 		}
@@ -384,12 +447,17 @@ func (s *Store) ListPermissionsBySubject(_ context.Context, tenantID, subjectKin
 func (s *Store) DeletePermissionsByTenant(_ context.Context, tenantID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Collect refs for permissions in this tenant so we can scrub the junction.
+	scrub := make(map[string]struct{})
 	for k, p := range s.permissions {
 		if p.TenantID == tenantID {
+			scrub[permRefKey(permission.Ref{NamespacePath: p.NamespacePath, Name: p.Name})] = struct{}{}
 			delete(s.permissions, k)
-			for _, perms := range s.rolePermissions {
-				delete(perms, k)
-			}
+		}
+	}
+	for _, refs := range s.rolePermissions {
+		for k := range scrub {
+			delete(refs, k)
 		}
 	}
 	return nil
@@ -400,6 +468,12 @@ func (s *Store) DeletePermissionsByTenant(_ context.Context, tenantID string) er
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateAssignment(_ context.Context, a *assignment.Assignment) error {
+	if a.ID.IsNil() {
+		a.ID = id.NewAssignmentID()
+	}
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now().UTC()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.assignments {
@@ -570,6 +644,12 @@ func (s *Store) DeleteAssignmentsByTenant(_ context.Context, tenantID string) er
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateRelation(_ context.Context, t *relation.Tuple) error {
+	if t.ID.IsNil() {
+		t.ID = id.NewRelationID()
+	}
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now().UTC()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.relations[t.ID.String()] = copyTuple(t)
@@ -706,6 +786,16 @@ func (s *Store) DeleteRelationsByTenant(_ context.Context, tenantID string) erro
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreatePolicy(_ context.Context, p *policy.Policy) error {
+	if p.ID.IsNil() {
+		p.ID = id.NewPolicyID()
+	}
+	now := time.Now().UTC()
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
+	}
+	if p.UpdatedAt.IsZero() {
+		p.UpdatedAt = now
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.policies {
@@ -834,6 +924,16 @@ func (s *Store) DeletePoliciesByTenant(_ context.Context, tenantID string) error
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateResourceType(_ context.Context, rt *resourcetype.ResourceType) error {
+	if rt.ID.IsNil() {
+		rt.ID = id.NewResourceTypeID()
+	}
+	now := time.Now().UTC()
+	if rt.CreatedAt.IsZero() {
+		rt.CreatedAt = now
+	}
+	if rt.UpdatedAt.IsZero() {
+		rt.UpdatedAt = now
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.resourceTypes {
@@ -928,6 +1028,12 @@ func (s *Store) DeleteResourceTypesByTenant(_ context.Context, tenantID string) 
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateCheckLog(_ context.Context, e *checklog.Entry) error {
+	if e.ID.IsNil() {
+		e.ID = id.NewCheckLogID()
+	}
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = time.Now().UTC()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.checkLogs[e.ID.String()] = copyCheckLog(e)
@@ -1093,6 +1199,18 @@ func copyPolicy(p *policy.Policy) *policy.Policy {
 	if p.Conditions != nil {
 		c.Conditions = make([]policy.Condition, len(p.Conditions))
 		copy(c.Conditions, p.Conditions)
+	}
+	if p.Obligations != nil {
+		c.Obligations = make([]string, len(p.Obligations))
+		copy(c.Obligations, p.Obligations)
+	}
+	if p.NotBefore != nil {
+		v := *p.NotBefore
+		c.NotBefore = &v
+	}
+	if p.NotAfter != nil {
+		v := *p.NotAfter
+		c.NotAfter = &v
 	}
 	return &c
 }

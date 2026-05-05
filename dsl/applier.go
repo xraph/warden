@@ -43,13 +43,17 @@ type ApplyResult struct {
 
 // Apply materializes the program against the engine's store. It is
 // idempotent — applying the same program twice produces the same state.
+//
+// Tenant scope is optional. When neither opts.TenantID nor `tenant`
+// in source is set, every entity is written with an empty `tenant_id`
+// — the **global scope**. Single-tenant apps that never call
+// `warden.WithTenant` see this as the natural default; multi-tenant
+// apps should always pass a tenant explicitly to avoid accidentally
+// landing entities in the global bucket.
 func Apply(ctx context.Context, eng *warden.Engine, prog *Program, opts ApplyOptions) (*ApplyResult, error) {
 	tenantID := firstNonEmpty(opts.TenantID, prog.Tenant)
-	if tenantID == "" {
-		return nil, fmt.Errorf("warden dsl: tenant ID is required (set via opts.TenantID or `tenant <id>` in source)")
-	}
 	if errs := Resolve(prog); len(errs) > 0 {
-		return nil, &diagnosticError{errs: errs}
+		return nil, &DiagnosticError{Diags: errs}
 	}
 
 	now := opts.Now
@@ -96,7 +100,7 @@ type applier struct {
 		UpdatePermission(ctx context.Context, p *permission.Permission) error
 		DeletePermission(ctx context.Context, permID id.PermissionID) error
 		ListPermissions(ctx context.Context, filter *permission.ListFilter) ([]*permission.Permission, error)
-		SetRolePermissions(ctx context.Context, roleID id.RoleID, permIDs []id.PermissionID) error
+		SetRolePermissions(ctx context.Context, roleID id.RoleID, refs []permission.Ref) error
 		// Policies
 		CreatePolicy(ctx context.Context, p *policy.Policy) error
 		GetPolicyByName(ctx context.Context, tenantID, name string) (*policy.Policy, error)
@@ -139,10 +143,7 @@ func (a *applier) run(prog *Program) error {
 	if err := a.applyPolicies(prog); err != nil {
 		return err
 	}
-	if err := a.applyRelations(prog); err != nil {
-		return err
-	}
-	return nil
+	return a.applyRelations(prog)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -164,9 +165,9 @@ func (a *applier) applyResourceTypes(prog *Program) error {
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
-		existing, _ := a.store.GetResourceTypeByName(a.ctx, a.tenantID, rt.Name)
+		existing, _ := a.store.GetResourceTypeByName(a.ctx, a.tenantID, rt.Name) //nolint:errcheck // missing → create
 		if existing == nil {
-			desired.ID = id.NewResourceTypeID()
+			// ID is auto-assigned by the store on CreateResourceType.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ resource_type/%s/%s", rt.NamespacePath, rt.Name))
 			if !a.dryRun {
 				if err := a.store.CreateResourceType(a.ctx, desired); err != nil {
@@ -285,9 +286,9 @@ func (a *applier) applyPermissions(prog *Program) error {
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
-		existing, _ := a.store.GetPermissionByName(a.ctx, a.tenantID, p.Name)
+		existing, _ := a.store.GetPermissionByName(a.ctx, a.tenantID, p.Name) //nolint:errcheck // missing → create
 		if existing == nil {
-			desired.ID = id.NewPermissionID()
+			// ID is auto-assigned by the store on CreatePermission.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ permission/%s/%s", p.NamespacePath, p.Name))
 			if !a.dryRun {
 				if err := a.store.CreatePermission(a.ctx, desired); err != nil {
@@ -359,9 +360,9 @@ func (a *applier) applyRoles(prog *Program) error {
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
-		existing, _ := a.store.GetRoleBySlug(a.ctx, a.tenantID, r.Slug)
+		existing, _ := a.store.GetRoleBySlug(a.ctx, a.tenantID, r.Slug) //nolint:errcheck // missing → create
 		if existing == nil {
-			desired.ID = id.NewRoleID()
+			// ID is auto-assigned by the store on CreateRole.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ role/%s/%s", r.NamespacePath, r.Slug))
 			if !a.dryRun {
 				if err := a.store.CreateRole(a.ctx, desired); err != nil {
@@ -466,22 +467,29 @@ func (a *applier) applyRolePermissions(prog *Program) error {
 		// Re-fetch the role to get its ID (just-created or pre-existing).
 		stored, err := a.store.GetRoleBySlug(a.ctx, a.tenantID, r.Slug)
 		if err != nil || stored == nil {
-			return fmt.Errorf("role %s not found after apply: %v", r.Slug, err)
+			return fmt.Errorf("role %s not found after apply: %w", r.Slug, err)
 		}
-		permIDs := make([]id.PermissionID, 0, len(r.Grants))
+		// Phase A.5: junction is keyed by natural keys, so the applier no
+		// longer needs to resolve perm name → typeid. We still call
+		// GetPermissionByName as an existence check so a missing perm fails
+		// fast at apply time rather than silently writing an orphan grant.
+		refs := make([]permission.Ref, 0, len(r.Grants))
 		for _, name := range r.Grants {
+			if isGlob(name) {
+				// Glob permissions are matched at Check time without a
+				// concrete attachment row. Skip.
+				continue
+			}
 			perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, name)
 			if err != nil || perm == nil {
-				if isGlob(name) {
-					// Glob permissions are matched at Check time without a
-					// concrete attachment row. Skip.
-					continue
-				}
 				return fmt.Errorf("role %s grants unknown permission %q", r.Slug, name)
 			}
-			permIDs = append(permIDs, perm.ID)
+			refs = append(refs, permission.Ref{
+				NamespacePath: perm.NamespacePath,
+				Name:          perm.Name,
+			})
 		}
-		if err := a.store.SetRolePermissions(a.ctx, stored.ID, permIDs); err != nil {
+		if err := a.store.SetRolePermissions(a.ctx, stored.ID, refs); err != nil {
 			return fmt.Errorf("set permissions for role %s: %w", r.Slug, err)
 		}
 	}
@@ -509,6 +517,9 @@ func (a *applier) applyPolicies(prog *Program) error {
 			Effect:        policy.Effect(p.Effect),
 			Priority:      p.Priority,
 			IsActive:      p.Active,
+			NotBefore:     p.NotBefore,
+			NotAfter:      p.NotAfter,
+			Obligations:   p.Obligations,
 			Version:       1,
 			Actions:       p.Actions,
 			Resources:     p.Resources,
@@ -516,9 +527,9 @@ func (a *applier) applyPolicies(prog *Program) error {
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
-		existing, _ := a.store.GetPolicyByName(a.ctx, a.tenantID, p.Name)
+		existing, _ := a.store.GetPolicyByName(a.ctx, a.tenantID, p.Name) //nolint:errcheck // missing → create
 		if existing == nil {
-			desired.ID = id.NewPolicyID()
+			// ID is auto-assigned by the store on CreatePolicy.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ policy/%s/%s", p.NamespacePath, p.Name))
 			if !a.dryRun {
 				if err := a.store.CreatePolicy(a.ctx, desired); err != nil {
@@ -569,6 +580,12 @@ func policyEquivalent(a, b *policy.Policy) bool {
 		a.Priority != b.Priority || a.IsActive != b.IsActive {
 		return false
 	}
+	if !timePtrEqual(a.NotBefore, b.NotBefore) || !timePtrEqual(a.NotAfter, b.NotAfter) {
+		return false
+	}
+	if strings.Join(a.Obligations, ",") != strings.Join(b.Obligations, ",") {
+		return false
+	}
 	if strings.Join(a.Actions, ",") != strings.Join(b.Actions, ",") {
 		return false
 	}
@@ -590,6 +607,16 @@ func policyEquivalent(a, b *policy.Policy) bool {
 		}
 	}
 	return true
+}
+
+func timePtrEqual(a, b *time.Time) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Equal(*b)
 }
 
 func flattenConditions(in []*Condition) []policy.Condition {
@@ -637,8 +664,8 @@ func (a *applier) applyRelations(prog *Program) error {
 		// Idempotency: the relation tuple table has a UNIQUE constraint on
 		// the full tuple, so creating an existing tuple is a no-op (driver-
 		// dependent: we ignore the error class for now).
+		// ID is auto-assigned by the store on CreateRelation.
 		t := &relation.Tuple{
-			ID:              id.NewRelationID(),
 			TenantID:        a.tenantID,
 			NamespacePath:   r.NamespacePath,
 			AppID:           a.appID,
@@ -651,7 +678,7 @@ func (a *applier) applyRelations(prog *Program) error {
 			CreatedAt:       a.now,
 		}
 		// Check if the tuple already exists.
-		existing, _ := a.store.ListRelations(a.ctx, &relation.ListFilter{
+		existing, _ := a.store.ListRelations(a.ctx, &relation.ListFilter{ //nolint:errcheck // empty list → create
 			TenantID:        a.tenantID,
 			NamespacePath:   nil, // exact-match below via SubjectRelation comparison
 			ObjectType:      r.ObjectType,
@@ -686,14 +713,27 @@ func (a *applier) applyRelations(prog *Program) error {
 // Helpers.
 // ─────────────────────────────────────────────────────────────────────────
 
-// diagnosticError wraps a slice of resolver/parser diagnostics in an error.
-type diagnosticError struct {
-	errs []*Diagnostic
+// DiagnosticError is the error type Apply / ApplyFile / ApplyDir /
+// ApplyFS return when source-level errors prevent application. Use
+// errors.As to extract the underlying diagnostics:
+//
+//	var derr *dsl.DiagnosticError
+//	if errors.As(err, &derr) {
+//	    for _, d := range derr.Diagnostics() {
+//	        fmt.Println(d) // file:line:col: message
+//	    }
+//	}
+//
+// The Error() representation joins every diagnostic with a newline so
+// printing the error directly produces a multi-line list suitable for
+// CI logs.
+type DiagnosticError struct {
+	Diags []*Diagnostic
 }
 
-func (e *diagnosticError) Error() string {
+func (e *DiagnosticError) Error() string {
 	var b strings.Builder
-	for i, d := range e.errs {
+	for i, d := range e.Diags {
 		if i > 0 {
 			b.WriteString("\n")
 		}
@@ -703,7 +743,7 @@ func (e *diagnosticError) Error() string {
 }
 
 // Diagnostics returns the underlying diagnostics for inspection.
-func (e *diagnosticError) Diagnostics() []*Diagnostic { return e.errs }
+func (e *DiagnosticError) Diagnostics() []*Diagnostic { return e.Diags }
 
 // FormatExpr renders an expression AST back to its canonical textual form.
 // Used by the applier to store ResourceType.Permissions[].Expression.

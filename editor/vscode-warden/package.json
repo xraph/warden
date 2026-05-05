@@ -1,0 +1,105 @@
+{
+  "name": "vscode-warden",
+  "displayName": "Warden",
+  "description": "Authorization DSL — syntax highlighting, completion, diagnostics, formatting, hover, and go-to-definition for .warden files.",
+  "version": "0.1.0",
+  "publisher": "xraph",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xraph/warden"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "warden",
+    "authorization",
+    "rbac",
+    "abac",
+    "rebac",
+    "pbac",
+    "permissions"
+  ],
+  "activationEvents": [
+    "onLanguage:warden"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "warden",
+        "aliases": [
+          "Warden",
+          "warden"
+        ],
+        "extensions": [
+          ".warden"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/warden.svg",
+          "dark": "./icons/warden.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "warden",
+        "scopeName": "source.warden",
+        "path": "./syntaxes/warden.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Warden",
+      "properties": {
+        "warden.lsp.command": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["warden", "lsp"],
+          "description": "Command and arguments used to spawn the language server. Defaults to `warden lsp` (single-binary). Use `[\"warden-lsp\"]` if you installed the standalone shim, or `[\"/abs/path/to/warden\", \"lsp\"]` to override the PATH lookup."
+        },
+        "warden.lsp.trace": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace LSP communication for debugging. 'verbose' includes full message bodies."
+        },
+        "warden.lsp.disable": {
+          "type": "boolean",
+          "default": false,
+          "description": "Disable the language server. Syntax highlighting still works; hover/completion/diagnostics will not."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.21.0",
+    "ovsx": "^0.10.0",
+    "typescript": "^5.4.0"
+  },
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "compile": "npm run sync-grammar && esbuild src/extension.ts --bundle --outfile=out/extension.js --platform=node --target=node18 --external:vscode --format=cjs",
+    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --platform=node --target=node18 --external:vscode --format=cjs --watch",
+    "sync-grammar": "node -e \"require('fs').copyFileSync('../warden.tmLanguage.json', 'syntaxes/warden.tmLanguage.json')\"",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package --no-dependencies",
+    "publish:marketplace": "vsce publish --no-dependencies",
+    "publish:ovsx": "ovsx publish *.vsix"
+  }
+}

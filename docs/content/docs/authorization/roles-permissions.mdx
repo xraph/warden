@@ -3,6 +3,10 @@ title: Roles & Permissions
 description: Managing roles, permissions, and role assignments for RBAC.
 ---
 
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+Every config example on this page comes in two flavours: **Go** (programmatic — call the store directly) and **DSL** (declarative — write `.warden` source and apply it via [`warden apply`](/docs/integration/dsl-tooling#cli) or [`dsl.ApplyFS`](/docs/integration/dsl-tooling#programmatic-apply)). They produce identical state.
+
 ## Roles
 
 A role is a named collection of permissions that can be assigned to subjects.
@@ -11,11 +15,11 @@ A role is a named collection of permissions that can be assigned to subjects.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ID` | `id.RoleID` | TypeID (`wrol_...`) |
+| `ID` | `id.RoleID` | TypeID (`role_...`) — auto-assigned on Create when unset |
 | `Name` | `string` | Display name |
-| `Slug` | `string` | URL-safe identifier (unique) |
+| `Slug` | `string` | URL-safe identifier (unique per tenant) |
 | `Description` | `string` | Human-readable description |
-| `ParentID` | `*id.RoleID` | Parent role for inheritance |
+| `ParentSlug` | `string` | Parent role slug for inheritance — empty means no parent |
 | `IsSystem` | `bool` | System roles cannot be deleted |
 | `IsDefault` | `bool` | Auto-assigned to new subjects |
 | `MaxMembers` | `int` | Maximum assignments (0 = unlimited) |
@@ -23,27 +27,69 @@ A role is a named collection of permissions that can be assigned to subjects.
 
 ### Create a Role
 
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
 ```go
+// IDs and CreatedAt/UpdatedAt timestamps are auto-assigned by the
+// store on Create — set them only when you need a specific value
+// (idempotent inserts, fixtures, etc.).
 r := &role.Role{
-    ID:          id.NewRoleID(),
     Name:        "Editor",
     Slug:        "editor",
     Description: "Can read and write documents",
-    CreatedAt:   time.Now(),
-    UpdatedAt:   time.Now(),
 }
 err := store.CreateRole(ctx, r)
+// r.ID is now populated.
 ```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+role editor {
+  name        = "Editor"
+  description = "Can read and write documents"
+}
+```
+
+Apply with `warden apply -f config/ --store sqlite:./warden.db` or programmatically via `dsl.ApplyFS`.
+
+</Tab>
+</Tabs>
 
 ### Role Hierarchy
 
-Roles can inherit permissions from parent roles:
+Roles can inherit permissions from parent roles via slug:
+
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
 
 ```go
-admin := &role.Role{ID: id.NewRoleID(), Name: "Admin", Slug: "admin"}
-editor := &role.Role{ID: id.NewRoleID(), Name: "Editor", Slug: "editor", ParentID: &admin.ID}
-viewer := &role.Role{ID: id.NewRoleID(), Name: "Viewer", Slug: "viewer", ParentID: &editor.ID}
+admin  := &role.Role{Name: "Admin",  Slug: "admin"}
+editor := &role.Role{Name: "Editor", Slug: "editor", ParentSlug: "admin"}
+viewer := &role.Role{Name: "Viewer", Slug: "viewer", ParentSlug: "editor"}
 ```
+
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+role admin  { name = "Admin"  }
+role editor : admin  { name = "Editor" }
+role viewer : editor { name = "Viewer" }
+```
+
+The `:` syntax declares the parent slug. Cross-namespace inheritance uses an absolute path (`role x : /other-ns/admin`).
+
+</Tab>
+</Tabs>
 
 When checking permissions, Warden walks up the role hierarchy to collect all inherited permissions.
 
@@ -55,8 +101,8 @@ A permission represents a single (resource, action) authorization grant.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ID` | `id.PermissionID` | TypeID (`wprm_...`) |
-| `Name` | `string` | Display name |
+| `ID` | `id.PermissionID` | TypeID (`perm_...`) — auto-assigned on Create when unset |
+| `Name` | `string` | `<resource>:<action>` natural key |
 | `Resource` | `string` | Resource type (e.g., "document") |
 | `Action` | `string` | Action verb (e.g., "read", "write") |
 | `Description` | `string` | Human-readable description |
@@ -65,21 +111,75 @@ A permission represents a single (resource, action) authorization grant.
 
 ### Create a Permission
 
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
 ```go
 p := &permission.Permission{
-    ID:       id.NewPermissionID(),
-    Name:     "Read Documents",
+    Name:     "doc:read",
     Resource: "document",
     Action:   "read",
 }
 err := store.CreatePermission(ctx, p)
 ```
 
+</Tab>
+<Tab value="DSL">
+
+```warden
+warden config 1
+tenant t1
+
+// Shorthand form — link to a resource-type permission expression.
+permission "doc:read" (document : read)
+
+// Long form with metadata.
+permission "doc:write" {
+  description = "Edit a document"
+  resource    = "document"
+  action      = "write"
+}
+```
+
+</Tab>
+</Tabs>
+
 ### Attach to Role
 
+<Tabs items={["Go", "DSL"]}>
+<Tab value="Go">
+
+Attach by name (the permission's natural key) — no permission ID lookup needed:
+
 ```go
-err := store.AttachPermission(ctx, roleID, permID)
+err := store.AttachPermission(ctx, roleID, permission.Ref{Name: "doc:read"})
 ```
+
+</Tab>
+<Tab value="DSL">
+
+In `.warden` source, attachments live inside the role's `grants` field:
+
+```warden
+warden config 1
+tenant t1
+
+permission "doc:read"  (document : read)
+permission "doc:write" (document : edit)
+
+role viewer {
+  grants = ["doc:read"]
+}
+
+role editor : viewer {
+  grants += ["doc:write"]   // appends to inherited grants
+}
+```
+
+The `+=` form appends to the parent's grants; `=` replaces. Glob patterns (`doc:*`) work in either form.
+
+</Tab>
+</Tabs>
 
 ### Glob Matching
 
@@ -96,11 +196,13 @@ Permission matching supports wildcards:
 
 An assignment links a subject (user, API key, service) to a role.
 
+> **Runtime-only.** Assignments are not expressible in `.warden` source — that file describes the *configuration* (roles, permissions, policies, resource types, relations) but not the runtime data of *who has which role*. Assignments are created via the store API or HTTP endpoints when subjects are provisioned.
+
 ### Assignment Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ID` | `id.AssignmentID` | TypeID (`wasn_...`) |
+| `ID` | `id.AssignmentID` | TypeID (`asgn_...`) — auto-assigned on Create when unset |
 | `RoleID` | `id.RoleID` | The role to assign |
 | `SubjectKind` | `string` | Subject type ("user", "api_key", "service") |
 | `SubjectID` | `string` | Subject identifier |
@@ -113,11 +215,11 @@ An assignment links a subject (user, API key, service) to a role.
 ```go
 // User is an editor everywhere
 ass := &assignment.Assignment{
-    ID:          id.NewAssignmentID(),
     RoleID:      editorRole.ID,
     SubjectKind: "user",
     SubjectID:   "user-42",
 }
+_ = store.CreateAssignment(ctx, ass)
 ```
 
 ### Resource-Scoped Assignment
@@ -125,7 +227,6 @@ ass := &assignment.Assignment{
 ```go
 // User is an editor only for project-123
 ass := &assignment.Assignment{
-    ID:           id.NewAssignmentID(),
     RoleID:       editorRole.ID,
     SubjectKind:  "user",
     SubjectID:    "user-42",
@@ -139,7 +240,6 @@ ass := &assignment.Assignment{
 ```go
 expires := time.Now().Add(24 * time.Hour)
 ass := &assignment.Assignment{
-    ID:          id.NewAssignmentID(),
     RoleID:      adminRole.ID,
     SubjectKind: "user",
     SubjectID:   "user-42",
@@ -161,5 +261,5 @@ assignments, _ := store.ListAssignments(ctx, &assignment.ListFilter{
 })
 
 // List permissions for a role
-perms, _ := store.ListPermissionsForRole(ctx, roleID)
+perms, _ := store.ListRolePermissions(ctx, roleID)
 ```

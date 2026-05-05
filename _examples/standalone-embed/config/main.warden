@@ -1,0 +1,39 @@
+// Embedded sample config — applied on boot via dsl.ApplyFS.
+//
+// Tenant + region come from variables so the same binary can serve
+// multiple environments without rebuilding.
+
+warden config 1
+tenant ${TENANT}
+
+// ── Resource type ──────────────────────────────────────────────
+resource document {
+  relation owner:  user
+  relation editor: user | group#member
+  relation viewer: user | group#member
+
+  permission read   = viewer or editor or owner
+  permission edit   = editor or owner
+  permission delete = owner
+}
+
+// ── Permission catalog ─────────────────────────────────────────
+permission "doc:read"   (document : read)
+permission "doc:write"  (document : edit)
+permission "doc:delete" (document : delete)
+
+// ── Roles ──────────────────────────────────────────────────────
+role viewer {
+  name   = "Viewer (${REGION})"
+  grants = ["doc:read"]
+}
+
+role editor : viewer {
+  name   = "Editor (${REGION})"
+  grants += ["doc:write"]
+}
+
+role admin : editor {
+  name   = "Administrator (${REGION})"
+  grants += ["doc:delete"]
+}
