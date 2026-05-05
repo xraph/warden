@@ -442,5 +442,97 @@ CREATE INDEX IF NOT EXISTS idx_warden_clogs_created ON warden_check_logs (create
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "namespace_scoped_uniqueness",
+			Version: "20260201000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+-- warden_roles: drop (tenant_id, slug); add (tenant_id, namespace_path, slug).
+-- The old constraint was created without an explicit name, so its auto-name
+-- follows Postgres's default <table>_<col>_..._<col>_key pattern.
+--
+-- The role_parent_slug migration (20260101000001) added a self-referencing
+-- FK that targets the old (tenant_id, slug) unique. We drop the FK, swap
+-- the unique constraint, then re-add the FK widened with namespace_path
+-- (parent must live in the same namespace as the child — cross-namespace
+-- inheritance isn't supported).
+ALTER TABLE warden_roles
+    DROP CONSTRAINT IF EXISTS warden_roles_parent_fk;
+
+ALTER TABLE warden_roles
+    DROP CONSTRAINT IF EXISTS warden_roles_tenant_id_slug_key;
+ALTER TABLE warden_roles
+    ADD CONSTRAINT warden_roles_scope_slug_key
+    UNIQUE (tenant_id, namespace_path, slug);
+
+ALTER TABLE warden_roles
+    ADD CONSTRAINT warden_roles_parent_fk
+    FOREIGN KEY (tenant_id, namespace_path, parent_slug)
+    REFERENCES warden_roles(tenant_id, namespace_path, slug)
+    ON DELETE SET NULL
+    ON UPDATE CASCADE
+    DEFERRABLE INITIALLY DEFERRED;
+
+-- warden_permissions: drop (tenant_id, name); add (tenant_id, namespace_path, name).
+ALTER TABLE warden_permissions
+    DROP CONSTRAINT IF EXISTS warden_permissions_tenant_id_name_key;
+ALTER TABLE warden_permissions
+    ADD CONSTRAINT warden_permissions_scope_name_key
+    UNIQUE (tenant_id, namespace_path, name);
+
+-- warden_policies: drop (tenant_id, name); add (tenant_id, namespace_path, name).
+ALTER TABLE warden_policies
+    DROP CONSTRAINT IF EXISTS warden_policies_tenant_id_name_key;
+ALTER TABLE warden_policies
+    ADD CONSTRAINT warden_policies_scope_name_key
+    UNIQUE (tenant_id, namespace_path, name);
+
+-- warden_resource_types: drop (tenant_id, name); add (tenant_id, namespace_path, name).
+ALTER TABLE warden_resource_types
+    DROP CONSTRAINT IF EXISTS warden_resource_types_tenant_id_name_key;
+ALTER TABLE warden_resource_types
+    ADD CONSTRAINT warden_resource_types_scope_name_key
+    UNIQUE (tenant_id, namespace_path, name);
+
+-- warden_assignments: drop the old (tenant_id, role_id, subject_kind, subject_id,
+-- resource_type, resource_id) key; add namespace_path to it. Postgres truncates
+-- auto-names to 63 bytes, hence the slightly cropped default name on the DROP.
+ALTER TABLE warden_assignments
+    DROP CONSTRAINT IF EXISTS warden_assignments_tenant_id_role_id_subject_kind_subject_i_key;
+ALTER TABLE warden_assignments
+    ADD CONSTRAINT warden_assignments_scope_key
+    UNIQUE (tenant_id, namespace_path, role_id, subject_kind, subject_id, resource_type, resource_id);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_roles            DROP CONSTRAINT IF EXISTS warden_roles_parent_fk;
+ALTER TABLE warden_roles            DROP CONSTRAINT IF EXISTS warden_roles_scope_slug_key;
+ALTER TABLE warden_roles            ADD  CONSTRAINT warden_roles_tenant_id_slug_key UNIQUE (tenant_id, slug);
+ALTER TABLE warden_roles
+    ADD CONSTRAINT warden_roles_parent_fk
+    FOREIGN KEY (tenant_id, parent_slug)
+    REFERENCES warden_roles(tenant_id, slug)
+    ON DELETE SET NULL
+    ON UPDATE CASCADE
+    DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE warden_permissions      DROP CONSTRAINT IF EXISTS warden_permissions_scope_name_key;
+ALTER TABLE warden_permissions      ADD  CONSTRAINT warden_permissions_tenant_id_name_key UNIQUE (tenant_id, name);
+
+ALTER TABLE warden_policies         DROP CONSTRAINT IF EXISTS warden_policies_scope_name_key;
+ALTER TABLE warden_policies         ADD  CONSTRAINT warden_policies_tenant_id_name_key UNIQUE (tenant_id, name);
+
+ALTER TABLE warden_resource_types   DROP CONSTRAINT IF EXISTS warden_resource_types_scope_name_key;
+ALTER TABLE warden_resource_types   ADD  CONSTRAINT warden_resource_types_tenant_id_name_key UNIQUE (tenant_id, name);
+
+ALTER TABLE warden_assignments      DROP CONSTRAINT IF EXISTS warden_assignments_scope_key;
+ALTER TABLE warden_assignments      ADD  CONSTRAINT warden_assignments_tenant_id_role_id_subject_kind_subject_i_key
+    UNIQUE (tenant_id, role_id, subject_kind, subject_id, resource_type, resource_id);
+`)
+				return err
+			},
+		},
 	)
 }

@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/xraph/grove"
@@ -55,11 +54,16 @@ func adminDSN(t *testing.T) string {
 	containerOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
+		// BasicWaitStrategies waits for both the postgres "ready"
+		// log line (twice — once during init, once after restart) and
+		// the listening port. The module's Run() requires the caller
+		// to supply some wait strategy; without one, startup errors
+		// with "no wait strategy supplied".
 		c, err := tcpostgres.Run(ctx, "postgres:16-alpine",
 			tcpostgres.WithDatabase("warden_admin"),
 			tcpostgres.WithUsername("warden"),
 			tcpostgres.WithPassword("warden"),
-			testcontainers.WithWaitStrategyAndDeadline(60*time.Second),
+			tcpostgres.BasicWaitStrategies(),
 		)
 		if err != nil {
 			containerErr = fmt.Errorf("start postgres container: %w", err)

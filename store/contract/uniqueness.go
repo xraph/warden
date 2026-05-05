@@ -144,6 +144,13 @@ func runPolicyUniqueness(t *testing.T, mk MakeStore) {
 			return &policy.Policy{
 				ID: id.NewPolicyID(), TenantID: "t1", NamespacePath: "/app",
 				Name: "no-after-hours", Effect: policy.EffectDeny,
+				// Postgres has NOT NULL JSONB columns for these slices; supply
+				// empty rather than nil so the marshaler emits "[]" not NULL.
+				Subjects:    []policy.SubjectMatch{},
+				Actions:     []string{},
+				Resources:   []string{},
+				Conditions:  []policy.Condition{},
+				Obligations: []string{},
 			}
 		}
 		if err := s.CreatePolicy(ctx, mkPol()); err != nil {
@@ -168,6 +175,10 @@ func runResourceTypeUniqueness(t *testing.T, mk MakeStore) {
 			return &resourcetype.ResourceType{
 				ID: id.NewResourceTypeID(), TenantID: "t1", NamespacePath: "/app",
 				Name: "doc",
+				// Postgres has NOT NULL JSONB columns; supply empty
+				// slices so the marshaler emits "[]" not NULL.
+				Relations:   []resourcetype.RelationDef{},
+				Permissions: []resourcetype.PermissionDef{},
 			}
 		}
 		if err := s.CreateResourceType(ctx, mkRT()); err != nil {
