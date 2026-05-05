@@ -111,15 +111,16 @@ func (s *Store) GetRole(ctx context.Context, roleID id.RoleID) (*role.Role, erro
 	return r, nil
 }
 
-func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, slug string) (*role.Role, error) {
+func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug string) (*role.Role, error) {
 	m := new(roleModel)
 	err := s.sdb.NewSelect(m).
 		Where("tenant_id = ?", tenantID).
+		Where("namespace_path = ?", namespacePath).
 		Where("slug = ?", slug).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("role slug %q: %w", slug, errNotFound)
+			return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, errNotFound)
 		}
 		return nil, fmt.Errorf("warden: get role by slug: %w", err)
 	}

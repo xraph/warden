@@ -217,14 +217,14 @@ func (s *Store) GetRole(ctx context.Context, roleID id.RoleID) (*role.Role, erro
 	return roleFromModel(&m), nil
 }
 
-func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, slug string) (*role.Role, error) {
+func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug string) (*role.Role, error) {
 	var m roleModel
 	err := s.mdb.NewFind(&m).
-		Filter(bson.M{"tenant_id": tenantID, "slug": slug}).
+		Filter(bson.M{"tenant_id": tenantID, "namespace_path": namespacePath, "slug": slug}).
 		Scan(ctx)
 	if err != nil {
 		if isNoDocuments(err) {
-			return nil, fmt.Errorf("role slug %q: %w", slug, errNotFound)
+			return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, errNotFound)
 		}
 		return nil, fmt.Errorf("warden: get role by slug: %w", err)
 	}

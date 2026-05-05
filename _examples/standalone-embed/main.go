@@ -87,7 +87,7 @@ func main() {
 	// the embed → apply round-trip.
 	fmt.Println("\nLooking up the 'admin' role from the store ...")
 	ctxTenant := warden.WithTenant(ctx, "", "acme")
-	r, err := eng.Store().GetRoleBySlug(ctxTenant, "acme", "admin")
+	r, err := eng.Store().GetRoleBySlug(ctxTenant, "acme", "", "admin")
 	if err != nil {
 		fail("GetRoleBySlug: %v", err)
 	}

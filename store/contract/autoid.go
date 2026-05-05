@@ -73,7 +73,7 @@ func runRole(t *testing.T, mk MakeStore) {
 	assertNearNow(t, "Role.UpdatedAt", r.UpdatedAt, before)
 
 	// Get round-trip with the assigned ID.
-	got, err := s.GetRoleBySlug(ctx, "t1", "editor")
+	got, err := s.GetRoleBySlug(ctx, "t1", "", "editor")
 	if err != nil {
 		t.Fatalf("GetRoleBySlug: %v", err)
 	}

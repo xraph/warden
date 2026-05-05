@@ -40,7 +40,7 @@ func TestApplyFS_FromEmbed(t *testing.T) {
 	}
 
 	// Verify the role made it through with the substituted name.
-	r, err := store.GetRoleBySlug(ctx, "t-acme", "viewer")
+	r, err := store.GetRoleBySlug(ctx, "t-acme", "", "viewer")
 	if err != nil {
 		t.Fatalf("GetRoleBySlug: %v", err)
 	}

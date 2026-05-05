@@ -75,7 +75,7 @@ func TestSQLiteStore_RoleRoundTrip(t *testing.T) {
 	}
 
 	// GetRoleBySlug — same scan path, exercised by the API and the engine.
-	got2, err := s.GetRoleBySlug(ctx, "t1", "viewer")
+	got2, err := s.GetRoleBySlug(ctx, "t1", "", "viewer")
 	if err != nil {
 		t.Fatalf("GetRoleBySlug: %v", err)
 	}

@@ -296,16 +296,19 @@ func fetchEntityCounts(ctx context.Context, s store.Store, tenantID string) enti
 func enrichRoleRows(ctx context.Context, s store.Store, roles []*role.Role) []pages.RoleRow {
 	rows := make([]pages.RoleRow, len(roles))
 
-	// Cache parents we resolve via GetRoleBySlug, keyed by (tenant, slug).
+	// Cache parents we resolve via GetRoleBySlug, keyed by (tenant, namespace, slug).
 	type parentInfo struct {
 		id   string
 		name string
 	}
 	parentBySlug := make(map[string]parentInfo, len(roles))
+	cacheKey := func(tenantID, namespacePath, slug string) string {
+		return tenantID + "\x00" + namespacePath + "\x00" + slug
+	}
 
 	// Seed the cache from this page so we don't fetch parents that are already in scope.
 	for _, r := range roles {
-		parentBySlug[r.TenantID+"\x00"+r.Slug] = parentInfo{id: r.ID.String(), name: r.Name}
+		parentBySlug[cacheKey(r.TenantID, r.NamespacePath, r.Slug)] = parentInfo{id: r.ID.String(), name: r.Name}
 	}
 
 	// Fetch missing parents not in the current page.
@@ -313,11 +316,13 @@ func enrichRoleRows(ctx context.Context, s store.Store, roles []*role.Role) []pa
 		if r.ParentSlug == "" {
 			continue
 		}
-		key := r.TenantID + "\x00" + r.ParentSlug
+		// Parent is assumed to live in the same namespace as the child;
+		// cross-namespace inheritance isn't supported.
+		key := cacheKey(r.TenantID, r.NamespacePath, r.ParentSlug)
 		if _, ok := parentBySlug[key]; ok {
 			continue
 		}
-		parent, err := s.GetRoleBySlug(ctx, r.TenantID, r.ParentSlug)
+		parent, err := s.GetRoleBySlug(ctx, r.TenantID, r.NamespacePath, r.ParentSlug)
 		if err == nil && parent != nil {
 			parentBySlug[key] = parentInfo{id: parent.ID.String(), name: parent.Name}
 		}

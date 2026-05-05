@@ -40,7 +40,7 @@ func TestLoadDir_ApplyEndToEnd(t *testing.T) {
 	if _, err := Apply(context.Background(), eng, prog, ApplyOptions{}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if r, err := s.GetRoleBySlug(context.Background(), "t1", "editor"); err != nil || r == nil {
+	if r, err := s.GetRoleBySlug(context.Background(), "t1", "", "editor"); err != nil || r == nil {
 		t.Fatalf("editor role missing: %v", err)
 	}
 }

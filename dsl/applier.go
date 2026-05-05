@@ -90,7 +90,7 @@ type applier struct {
 	store interface {
 		// Roles
 		CreateRole(ctx context.Context, r *role.Role) error
-		GetRoleBySlug(ctx context.Context, tenantID, slug string) (*role.Role, error)
+		GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug string) (*role.Role, error)
 		UpdateRole(ctx context.Context, r *role.Role) error
 		DeleteRole(ctx context.Context, roleID id.RoleID) error
 		ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role.Role, error)
@@ -360,7 +360,7 @@ func (a *applier) applyRoles(prog *Program) error {
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
-		existing, _ := a.store.GetRoleBySlug(a.ctx, a.tenantID, r.Slug) //nolint:errcheck // missing → create
+		existing, _ := a.store.GetRoleBySlug(a.ctx, a.tenantID, r.NamespacePath, r.Slug) //nolint:errcheck // missing → create
 		if existing == nil {
 			// ID is auto-assigned by the store on CreateRole.
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ role/%s/%s", r.NamespacePath, r.Slug))
@@ -465,7 +465,7 @@ func (a *applier) applyRolePermissions(prog *Program) error {
 			continue
 		}
 		// Re-fetch the role to get its ID (just-created or pre-existing).
-		stored, err := a.store.GetRoleBySlug(a.ctx, a.tenantID, r.Slug)
+		stored, err := a.store.GetRoleBySlug(a.ctx, a.tenantID, r.NamespacePath, r.Slug)
 		if err != nil || stored == nil {
 			return fmt.Errorf("role %s not found after apply: %w", r.Slug, err)
 		}

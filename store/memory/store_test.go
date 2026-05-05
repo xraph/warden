@@ -46,7 +46,7 @@ func TestRoleCRUD(t *testing.T) {
 	}
 
 	// GetBySlug
-	got, err = s.GetRoleBySlug(ctx, "t1", "admin")
+	got, err = s.GetRoleBySlug(ctx, "t1", "", "admin")
 	if err != nil {
 		t.Fatal(err)
 	}

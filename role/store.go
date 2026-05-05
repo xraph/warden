@@ -15,8 +15,11 @@ type Store interface {
 	// GetRole retrieves a role by ID.
 	GetRole(ctx context.Context, roleID id.RoleID) (*Role, error)
 
-	// GetRoleBySlug retrieves a role by tenant and slug.
-	GetRoleBySlug(ctx context.Context, tenantID, slug string) (*Role, error)
+	// GetRoleBySlug retrieves a role by tenant, namespace, and slug.
+	// Slugs are unique per (tenant_id, namespace_path); the namespace
+	// argument disambiguates roles that share the same slug across
+	// different namespace scopes.
+	GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug string) (*Role, error)
 
 	// UpdateRole persists changes to a role.
 	UpdateRole(ctx context.Context, r *Role) error

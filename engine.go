@@ -352,7 +352,7 @@ func (e *Engine) walkRoleParents(ctx context.Context, roleID id.RoleID, seen map
 	if err != nil || r == nil || r.ParentSlug == "" {
 		return
 	}
-	parent, err := e.store.GetRoleBySlug(ctx, r.TenantID, r.ParentSlug)
+	parent, err := e.store.GetRoleBySlug(ctx, r.TenantID, r.NamespacePath, r.ParentSlug)
 	if err != nil || parent == nil {
 		return
 	}

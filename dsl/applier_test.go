@@ -124,7 +124,7 @@ role editor : viewer {
 
 	// Verify the engine sees the role hierarchy by running a Check.
 	// We need an assignment first.
-	editor, err := s.GetRoleBySlug(ctx, "t1", "editor")
+	editor, err := s.GetRoleBySlug(ctx, "t1", "", "editor")
 	if err != nil || editor == nil {
 		t.Fatalf("editor role not created: %v", err)
 	}
@@ -210,7 +210,7 @@ role viewer {
 		t.Errorf("expected planned creates in dry-run output")
 	}
 	// Verify nothing was actually created.
-	if _, err := s.GetRoleBySlug(ctx, "t1", "viewer"); err == nil {
+	if _, err := s.GetRoleBySlug(ctx, "t1", "", "viewer"); err == nil {
 		t.Errorf("dry-run should not have written role")
 	}
 }
@@ -245,7 +245,7 @@ role current {
 	if _, err := Apply(ctx, eng, prog2, ApplyOptions{Prune: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetRoleBySlug(ctx, "t1", "legacy"); err == nil {
+	if _, err := s.GetRoleBySlug(ctx, "t1", "", "legacy"); err == nil {
 		t.Fatalf("prune should have deleted legacy role")
 	}
 }
@@ -280,7 +280,7 @@ role viewer {
 
 	// The role landed under tenant "" (global). Confirm by reading via
 	// the same scope.
-	r, err := s.GetRoleBySlug(ctx, "", "viewer")
+	r, err := s.GetRoleBySlug(ctx, "", "", "viewer")
 	if err != nil {
 		t.Fatalf("GetRoleBySlug(\"\"): %v", err)
 	}

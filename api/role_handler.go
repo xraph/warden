@@ -130,8 +130,9 @@ func (a *API) createRole(ctx forge.Context, req *CreateRoleRequest) (*role.Role,
 
 	if req.ParentSlug != "" {
 		// Pre-validate the parent exists for a friendlier error than an FK violation.
-		if _, err := a.eng.Store().GetRoleBySlug(ctx.Context(), tenantID, req.ParentSlug); err != nil {
-			return nil, forge.BadRequest(fmt.Sprintf("parent role %q not found in tenant %q", req.ParentSlug, tenantID))
+		// Parents must live in the same namespace as the child role.
+		if _, err := a.eng.Store().GetRoleBySlug(ctx.Context(), tenantID, r.NamespacePath, req.ParentSlug); err != nil {
+			return nil, forge.BadRequest(fmt.Sprintf("parent role %q not found in tenant %q ns %q", req.ParentSlug, tenantID, r.NamespacePath))
 		}
 		r.ParentSlug = req.ParentSlug
 	}
@@ -187,8 +188,8 @@ func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role,
 	if req.ParentSlug != nil {
 		newParent := *req.ParentSlug
 		if newParent != "" && newParent != r.ParentSlug {
-			if _, err := a.eng.Store().GetRoleBySlug(ctx.Context(), r.TenantID, newParent); err != nil {
-				return nil, forge.BadRequest(fmt.Sprintf("parent role %q not found in tenant %q", newParent, r.TenantID))
+			if _, err := a.eng.Store().GetRoleBySlug(ctx.Context(), r.TenantID, r.NamespacePath, newParent); err != nil {
+				return nil, forge.BadRequest(fmt.Sprintf("parent role %q not found in tenant %q ns %q", newParent, r.TenantID, r.NamespacePath))
 			}
 		}
 		r.ParentSlug = newParent

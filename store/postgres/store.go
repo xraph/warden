@@ -73,9 +73,16 @@ func (s *Store) Close() error {
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateRole(ctx context.Context, r *role.Role) error {
+	if r.ID.IsNil() {
+		r.ID = id.NewRoleID()
+	}
 	now := time.Now().UTC()
-	r.CreatedAt = now
-	r.UpdatedAt = now
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = now
+	}
+	if r.UpdatedAt.IsZero() {
+		r.UpdatedAt = now
+	}
 	m := roleToModel(r)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
@@ -100,15 +107,16 @@ func (s *Store) GetRole(ctx context.Context, roleID id.RoleID) (*role.Role, erro
 	return roleFromModel(m), nil
 }
 
-func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, slug string) (*role.Role, error) {
+func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug string) (*role.Role, error) {
 	m := new(roleModel)
 	err := s.pgdb.NewSelect(m).
 		Where("tenant_id = ?", tenantID).
+		Where("namespace_path = ?", namespacePath).
 		Where("slug = ?", slug).
 		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("role slug %q: %w", slug, errNotFound)
+			return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, errNotFound)
 		}
 		return nil, fmt.Errorf("warden: get role by slug: %w", err)
 	}
@@ -196,31 +204,41 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 	return count, nil
 }
 
-func (s *Store) ListRolePermissions(ctx context.Context, roleID id.RoleID) ([]id.PermissionID, error) {
-	var models []rolePermissionModel
-	err := s.pgdb.NewSelect(&models).
-		Where("role_id = ?", roleID.String()).
-		Scan(ctx)
-	if err != nil {
+// listRolePermissionsJoinSQL walks the junction's natural keys
+// (perm_namespace_path, perm_name) into warden_permissions, scoped to the
+// role's tenant via the warden_roles join.
+const listRolePermissionsJoinSQL = `
+SELECT p.id, p.tenant_id, p.namespace_path, p.app_id, p.name, p.description,
+       p.resource, p.action, p.is_system, p.metadata, p.created_at, p.updated_at
+FROM warden_role_permissions rp
+JOIN warden_roles r ON r.id = rp.role_id
+JOIN warden_permissions p
+  ON p.tenant_id = r.tenant_id
+ AND p.namespace_path = rp.perm_namespace_path
+ AND p.name = rp.perm_name
+WHERE rp.role_id = $1
+`
+
+func (s *Store) ListRolePermissions(ctx context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
+	var models []permissionModel
+	if err := s.pgdb.NewRaw(listRolePermissionsJoinSQL, roleID.String()).Scan(ctx, &models); err != nil {
 		return nil, fmt.Errorf("warden: list role permissions: %w", err)
 	}
-	result := make([]id.PermissionID, 0, len(models))
-	for _, m := range models {
-		pid, err := id.ParsePermissionID(m.PermissionID)
-		if err == nil {
-			result = append(result, pid)
-		}
+	result := make([]*permission.Permission, 0, len(models))
+	for i := range models {
+		result = append(result, permissionFromModel(&models[i]))
 	}
 	return result, nil
 }
 
-func (s *Store) AttachPermission(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error {
+func (s *Store) AttachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error {
 	m := &rolePermissionModel{
-		RoleID:       roleID.String(),
-		PermissionID: permID.String(),
+		RoleID:            roleID.String(),
+		PermNamespacePath: ref.NamespacePath,
+		PermName:          ref.Name,
 	}
 	_, err := s.pgdb.NewInsert(m).
-		OnConflict("(role_id, permission_id) DO NOTHING").
+		OnConflict("(role_id, perm_namespace_path, perm_name) DO NOTHING").
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: attach permission: %w", err)
@@ -228,10 +246,11 @@ func (s *Store) AttachPermission(ctx context.Context, roleID id.RoleID, permID i
 	return nil
 }
 
-func (s *Store) DetachPermission(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error {
+func (s *Store) DetachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error {
 	_, err := s.pgdb.NewDelete((*rolePermissionModel)(nil)).
 		Where("role_id = ?", roleID.String()).
-		Where("permission_id = ?", permID.String()).
+		Where("perm_namespace_path = ?", ref.NamespacePath).
+		Where("perm_name = ?", ref.Name).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: detach permission: %w", err)
@@ -239,7 +258,7 @@ func (s *Store) DetachPermission(ctx context.Context, roleID id.RoleID, permID i
 	return nil
 }
 
-func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, permIDs []id.PermissionID) error {
+func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, refs []permission.Ref) error {
 	tx, err := s.pgdb.BeginTxQuery(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("warden: begin tx: %w", err)
@@ -254,13 +273,13 @@ func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, permID
 		return fmt.Errorf("warden: clear role permissions: %w", err)
 	}
 
-	// Insert new permissions.
-	if len(permIDs) > 0 {
-		models := make([]rolePermissionModel, len(permIDs))
-		for i, pid := range permIDs {
+	if len(refs) > 0 {
+		models := make([]rolePermissionModel, len(refs))
+		for i, ref := range refs {
 			models[i] = rolePermissionModel{
-				RoleID:       roleID.String(),
-				PermissionID: pid.String(),
+				RoleID:            roleID.String(),
+				PermNamespacePath: ref.NamespacePath,
+				PermName:          ref.Name,
 			}
 		}
 		_, err = tx.NewInsert(&models).Exec(ctx)
@@ -306,9 +325,16 @@ func (s *Store) DeleteRolesByTenant(ctx context.Context, tenantID string) error 
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreatePermission(ctx context.Context, p *permission.Permission) error {
+	if p.ID.IsNil() {
+		p.ID = id.NewPermissionID()
+	}
 	now := time.Now().UTC()
-	p.CreatedAt = now
-	p.UpdatedAt = now
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
+	}
+	if p.UpdatedAt.IsZero() {
+		p.UpdatedAt = now
+	}
 	m := permissionToModel(p)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
@@ -430,39 +456,31 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 }
 
 func (s *Store) ListPermissionsByRole(ctx context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
-	var models []permissionModel
-	err := s.pgdb.NewSelect(&models).
-		Join("JOIN", "warden_role_permissions AS rp", "rp.permission_id = warden_permissions.id").
-		Where("rp.role_id = ?", roleID.String()).
-		Scan(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("warden: list permissions by role: %w", err)
-	}
-	result := make([]*permission.Permission, len(models))
-	for i := range models {
-		result[i] = permissionFromModel(&models[i])
-	}
-	return result, nil
+	return s.ListRolePermissions(ctx, roleID)
 }
 
+const listPermissionsBySubjectSQL = `
+SELECT DISTINCT p.id, p.tenant_id, p.namespace_path, p.app_id, p.name, p.description,
+       p.resource, p.action, p.is_system, p.metadata, p.created_at, p.updated_at
+FROM warden_assignments a
+JOIN warden_role_permissions rp ON rp.role_id = a.role_id
+JOIN warden_permissions p
+  ON p.tenant_id = a.tenant_id
+ AND p.namespace_path = rp.perm_namespace_path
+ AND p.name = rp.perm_name
+WHERE a.tenant_id = $1
+  AND a.subject_kind = $2
+  AND a.subject_id = $3
+`
+
 func (s *Store) ListPermissionsBySubject(ctx context.Context, tenantID, subjectKind, subjectID string) ([]*permission.Permission, error) {
-	// Join assignments -> role_permissions -> permissions to get all permissions
-	// granted to a subject through their assigned roles.
 	var models []permissionModel
-	err := s.pgdb.NewSelect(&models).
-		DistinctOn("warden_permissions.id").
-		Join("JOIN", "warden_role_permissions AS rp", "rp.permission_id = warden_permissions.id").
-		Join("JOIN", "warden_assignments AS a", "a.role_id = rp.role_id").
-		Where("a.tenant_id = ?", tenantID).
-		Where("a.subject_kind = ?", subjectKind).
-		Where("a.subject_id = ?", subjectID).
-		Scan(ctx)
-	if err != nil {
+	if err := s.pgdb.NewRaw(listPermissionsBySubjectSQL, tenantID, subjectKind, subjectID).Scan(ctx, &models); err != nil {
 		return nil, fmt.Errorf("warden: list permissions by subject: %w", err)
 	}
-	result := make([]*permission.Permission, len(models))
+	result := make([]*permission.Permission, 0, len(models))
 	for i := range models {
-		result[i] = permissionFromModel(&models[i])
+		result = append(result, permissionFromModel(&models[i]))
 	}
 	return result, nil
 }
@@ -481,7 +499,12 @@ func (s *Store) DeletePermissionsByTenant(ctx context.Context, tenantID string) 
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateAssignment(ctx context.Context, a *assignment.Assignment) error {
-	a.CreatedAt = time.Now().UTC()
+	if a.ID.IsNil() {
+		a.ID = id.NewAssignmentID()
+	}
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now().UTC()
+	}
 	m := assignmentToModel(a)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
@@ -697,7 +720,12 @@ func (s *Store) DeleteAssignmentsByTenant(ctx context.Context, tenantID string) 
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateRelation(ctx context.Context, t *relation.Tuple) error {
-	t.CreatedAt = time.Now().UTC()
+	if t.ID.IsNil() {
+		t.ID = id.NewRelationID()
+	}
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now().UTC()
+	}
 	m := relationToModel(t)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
@@ -904,9 +932,16 @@ func (s *Store) DeleteRelationsByTenant(ctx context.Context, tenantID string) er
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreatePolicy(ctx context.Context, p *policy.Policy) error {
+	if p.ID.IsNil() {
+		p.ID = id.NewPolicyID()
+	}
 	now := time.Now().UTC()
-	p.CreatedAt = now
-	p.UpdatedAt = now
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
+	}
+	if p.UpdatedAt.IsZero() {
+		p.UpdatedAt = now
+	}
 	m := policyToModel(p)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
@@ -1066,9 +1101,16 @@ func (s *Store) DeletePoliciesByTenant(ctx context.Context, tenantID string) err
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateResourceType(ctx context.Context, rt *resourcetype.ResourceType) error {
+	if rt.ID.IsNil() {
+		rt.ID = id.NewResourceTypeID()
+	}
 	now := time.Now().UTC()
-	rt.CreatedAt = now
-	rt.UpdatedAt = now
+	if rt.CreatedAt.IsZero() {
+		rt.CreatedAt = now
+	}
+	if rt.UpdatedAt.IsZero() {
+		rt.UpdatedAt = now
+	}
 	m := resourceTypeToModel(rt)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
@@ -1185,7 +1227,12 @@ func (s *Store) DeleteResourceTypesByTenant(ctx context.Context, tenantID string
 // ──────────────────────────────────────────────────
 
 func (s *Store) CreateCheckLog(ctx context.Context, e *checklog.Entry) error {
-	e.CreatedAt = time.Now().UTC()
+	if e.ID.IsNil() {
+		e.ID = id.NewCheckLogID()
+	}
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = time.Now().UTC()
+	}
 	m := checkLogToModel(e)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {

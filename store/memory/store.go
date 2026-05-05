@@ -112,15 +112,15 @@ func (s *Store) GetRole(_ context.Context, roleID id.RoleID) (*role.Role, error)
 	return copyRole(r), nil
 }
 
-func (s *Store) GetRoleBySlug(_ context.Context, tenantID, slug string) (*role.Role, error) {
+func (s *Store) GetRoleBySlug(_ context.Context, tenantID, namespacePath, slug string) (*role.Role, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, r := range s.roles {
-		if r.TenantID == tenantID && r.Slug == slug {
+		if r.TenantID == tenantID && r.NamespacePath == namespacePath && r.Slug == slug {
 			return copyRole(r), nil
 		}
 	}
-	return nil, fmt.Errorf("role slug %q: %w", slug, errNotFound)
+	return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, errNotFound)
 }
 
 func (s *Store) UpdateRole(_ context.Context, r *role.Role) error {
