@@ -22,6 +22,7 @@ import (
 	"github.com/xraph/warden/resourcetype"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store"
+	"github.com/xraph/warden/wardenerr"
 )
 
 // Compile-time interface check.
@@ -78,6 +79,10 @@ func (s *Store) CreateRole(ctx context.Context, r *role.Role) error {
 	m := roleToModel(r)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("role %q in tenant %q ns %q: %w",
+				r.Slug, r.TenantID, r.NamespacePath, wardenerr.ErrDuplicateRole)
+		}
 		return fmt.Errorf("warden: create role: %w", err)
 	}
 	return nil
@@ -307,6 +312,10 @@ func (s *Store) CreatePermission(ctx context.Context, p *permission.Permission) 
 	m := permissionToModel(p)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("permission %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePermission)
+		}
 		return fmt.Errorf("warden: create permission: %w", err)
 	}
 	return nil
@@ -476,6 +485,11 @@ func (s *Store) CreateAssignment(ctx context.Context, a *assignment.Assignment) 
 	m := assignmentToModel(a)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("assignment role=%s subject=%s:%s in tenant %q ns %q: %w",
+				a.RoleID, a.SubjectKind, a.SubjectID, a.TenantID, a.NamespacePath,
+				wardenerr.ErrDuplicateAssignment)
+		}
 		return fmt.Errorf("warden: create assignment: %w", err)
 	}
 	return nil
@@ -687,6 +701,11 @@ func (s *Store) CreateRelation(ctx context.Context, t *relation.Tuple) error {
 	m := relationToModel(t)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("relation %s:%s#%s@%s:%s in tenant %q: %w",
+				t.ObjectType, t.ObjectID, t.Relation, t.SubjectType, t.SubjectID,
+				t.TenantID, wardenerr.ErrDuplicateRelation)
+		}
 		return fmt.Errorf("warden: create relation: %w", err)
 	}
 	return nil
@@ -891,6 +910,10 @@ func (s *Store) CreatePolicy(ctx context.Context, p *policy.Policy) error {
 	m := policyToModel(p)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+		}
 		return fmt.Errorf("warden: create policy: %w", err)
 	}
 	return nil
@@ -1049,6 +1072,10 @@ func (s *Store) CreateResourceType(ctx context.Context, rt *resourcetype.Resourc
 	m := resourceTypeToModel(rt)
 	_, err := s.pgdb.NewInsert(m).Exec(ctx)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("resource type %q in tenant %q ns %q: %w",
+				rt.Name, rt.TenantID, rt.NamespacePath, wardenerr.ErrDuplicateResourceType)
+		}
 		return fmt.Errorf("warden: create resource type: %w", err)
 	}
 	return nil
