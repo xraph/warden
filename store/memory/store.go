@@ -246,6 +246,14 @@ func (s *Store) DeleteRolesByTenant(_ context.Context, tenantID string) error {
 func (s *Store) CreatePermission(_ context.Context, p *permission.Permission) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.permissions {
+		if existing.TenantID == p.TenantID &&
+			existing.NamespacePath == p.NamespacePath &&
+			existing.Name == p.Name {
+			return fmt.Errorf("permission %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePermission)
+		}
+	}
 	s.permissions[p.ID.String()] = copyPermission(p)
 	return nil
 }
@@ -394,6 +402,19 @@ func (s *Store) DeletePermissionsByTenant(_ context.Context, tenantID string) er
 func (s *Store) CreateAssignment(_ context.Context, a *assignment.Assignment) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.assignments {
+		if existing.TenantID == a.TenantID &&
+			existing.NamespacePath == a.NamespacePath &&
+			existing.RoleID == a.RoleID &&
+			existing.SubjectKind == a.SubjectKind &&
+			existing.SubjectID == a.SubjectID &&
+			existing.ResourceType == a.ResourceType &&
+			existing.ResourceID == a.ResourceID {
+			return fmt.Errorf("assignment role=%s subject=%s:%s in tenant %q ns %q: %w",
+				a.RoleID, a.SubjectKind, a.SubjectID, a.TenantID, a.NamespacePath,
+				wardenerr.ErrDuplicateAssignment)
+		}
+	}
 	s.assignments[a.ID.String()] = copyAssignment(a)
 	return nil
 }
@@ -687,6 +708,14 @@ func (s *Store) DeleteRelationsByTenant(_ context.Context, tenantID string) erro
 func (s *Store) CreatePolicy(_ context.Context, p *policy.Policy) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.policies {
+		if existing.TenantID == p.TenantID &&
+			existing.NamespacePath == p.NamespacePath &&
+			existing.Name == p.Name {
+			return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+		}
+	}
 	s.policies[p.ID.String()] = copyPolicy(p)
 	return nil
 }
@@ -807,6 +836,14 @@ func (s *Store) DeletePoliciesByTenant(_ context.Context, tenantID string) error
 func (s *Store) CreateResourceType(_ context.Context, rt *resourcetype.ResourceType) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.resourceTypes {
+		if existing.TenantID == rt.TenantID &&
+			existing.NamespacePath == rt.NamespacePath &&
+			existing.Name == rt.Name {
+			return fmt.Errorf("resource type %q in tenant %q ns %q: %w",
+				rt.Name, rt.TenantID, rt.NamespacePath, wardenerr.ErrDuplicateResourceType)
+		}
+	}
 	s.resourceTypes[rt.ID.String()] = copyResourceType(rt)
 	return nil
 }
