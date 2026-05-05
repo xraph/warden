@@ -48,6 +48,7 @@ help:
 	@echo "  make test (t)       - Run tests"
 	@echo "  make test-verbose   - Run tests with verbose output"
 	@echo "  make test-race      - Run tests with race detector"
+	@echo "  make test-integration - Run integration tests (postgres; needs Docker or WARDEN_TEST_DSN)"
 	@echo "  make coverage       - Generate test coverage report"
 	@echo "  make coverage-html  - Generate HTML coverage report"
 	@echo ""
@@ -168,6 +169,12 @@ test-race:
 	@echo "$(BLUE)Running tests with race detector...$(NC)"
 	$(GO) test -race -v ./...
 	@echo "$(GREEN)✓ Race tests complete$(NC)"
+
+## test-integration: Run integration tests (requires Docker for testcontainers, or WARDEN_TEST_DSN)
+test-integration:
+	@echo "$(BLUE)Running integration tests (postgres)...$(NC)"
+	$(GO) test -tags=integration -v -timeout 5m ./...
+	@echo "$(GREEN)✓ Integration tests complete$(NC)"
 
 ## coverage: Generate test coverage
 coverage:
