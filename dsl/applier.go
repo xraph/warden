@@ -477,12 +477,14 @@ func (a *applier) applyRolePermissions(prog *Program) error {
 		// fast at apply time rather than silently writing an orphan grant.
 		refs := make([]permission.Ref, 0, len(r.Grants))
 		for _, name := range r.Grants {
-			if isGlob(name) {
-				// Glob permissions are matched at Check time without a
-				// concrete attachment row. Skip.
-				continue
-			}
+			// Look up the permission in the role's namespace first. If not
+			// found, fall back to the root namespace ("") so that roles in a
+			// child namespace (e.g. "platform") can reference permissions
+			// declared in the shared catalog at the root level.
 			perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, r.NamespacePath, name)
+			if (err != nil || perm == nil) && r.NamespacePath != "" {
+				perm, err = a.store.GetPermissionByName(a.ctx, a.tenantID, "", name)
+			}
 			if err != nil || perm == nil {
 				return fmt.Errorf("role %s grants unknown permission %q", r.Slug, name)
 			}
