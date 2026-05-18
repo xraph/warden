@@ -330,8 +330,14 @@ export function CodeBlock({
       // Shell snippets are mostly literal — only `$` prompt + comments get color.
       highlighter = (line) =>
         line
-          .replace(/^(\s*\$)/, '<span class="text-fd-muted-foreground/60">$1</span>')
-          .replace(/(#.*$)/, '<span class="text-fd-muted-foreground/60 italic">$1</span>');
+          .replace(
+            /^(\s*\$)/,
+            '<span class="text-fd-muted-foreground/60">$1</span>',
+          )
+          .replace(
+            /(#.*$)/,
+            '<span class="text-fd-muted-foreground/60 italic">$1</span>',
+          );
       break;
     default:
       highlighter = highlightGo;

@@ -398,7 +398,9 @@ function FileNode({
         <svg
           className={cn(
             "size-3 transition-transform",
-            open ? "rotate-90 text-fd-foreground" : "text-fd-muted-foreground/60",
+            open
+              ? "rotate-90 text-fd-foreground"
+              : "text-fd-muted-foreground/60",
           )}
           viewBox="0 0 12 12"
           fill="currentColor"
@@ -408,7 +410,13 @@ function FileNode({
         </svg>
       ) : (
         <span className="size-3 inline-flex items-center justify-center text-fd-muted-foreground/60">
-          <svg viewBox="0 0 12 12" fill="currentColor" className="size-2.5">
+          <svg
+            viewBox="0 0 12 12"
+            fill="currentColor"
+            className="size-2.5"
+            aria-hidden="true"
+          >
+            <title>bullet</title>
             <circle cx="6" cy="6" r="1.6" />
           </svg>
         </span>

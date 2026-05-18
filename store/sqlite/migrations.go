@@ -683,7 +683,7 @@ CREATE INDEX IF NOT EXISTS idx_warden_assign_ns       ON warden_assignments (ten
 `)
 				return err
 			},
-			Down: func(ctx context.Context, exec migrate.Executor) error {
+			Down: func(_ context.Context, exec migrate.Executor) error {
 				// SQLite down for table-recreate migrations is intentionally
 				// not implemented — restore from a snapshot if you need to
 				// roll back. The forward migration is idempotent if no rows

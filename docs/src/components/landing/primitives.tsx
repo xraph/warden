@@ -136,6 +136,7 @@ export function SpotlightCard({
   const background = useMotionTemplate`radial-gradient(220px circle at ${x}px ${y}px, ${highlightColor}, transparent 80%)`;
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: decorative hover-only spotlight, no interactive semantics
     <div
       key={id}
       onMouseMove={handleMouseMove}
@@ -186,9 +187,7 @@ export function Pill({ children, className }: PillProps) {
 export function DotLed({ color = "bg-emerald-500" }: { color?: string }) {
   return (
     <span className="relative inline-flex shrink-0 items-center">
-      <span
-        className={cn("absolute inline-flex size-2 rounded-full", color)}
-      />
+      <span className={cn("absolute inline-flex size-2 rounded-full", color)} />
       <span
         className={cn(
           "absolute inline-flex size-2 rounded-full opacity-75 animate-ping",

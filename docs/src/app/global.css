@@ -23,21 +23,9 @@
      Renders as a non-animated layer; pair with .aurora-shift for motion. */
   .bg-aurora {
     background-image:
-      radial-gradient(
-        at 20% 20%,
-        rgba(99, 102, 241, 0.28) 0,
-        transparent 50%
-      ),
-      radial-gradient(
-        at 80% 30%,
-        rgba(59, 130, 246, 0.22) 0,
-        transparent 50%
-      ),
-      radial-gradient(
-        at 50% 80%,
-        rgba(168, 85, 247, 0.20) 0,
-        transparent 50%
-      );
+      radial-gradient(at 20% 20%, rgba(99, 102, 241, 0.28) 0, transparent 50%),
+      radial-gradient(at 80% 30%, rgba(59, 130, 246, 0.22) 0, transparent 50%),
+      radial-gradient(at 50% 80%, rgba(168, 85, 247, 0.2) 0, transparent 50%);
   }
 
   .aurora-shift {

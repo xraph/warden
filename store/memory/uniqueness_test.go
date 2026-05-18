@@ -21,7 +21,7 @@ import (
 // below cover edge cases the contract doesn't (e.g. cross-namespace
 // allowance for permissions, distinct-resource allowance for assignments).
 func TestMemory_UniquenessContract(t *testing.T) {
-	contract.RunUniquenessContract(t, func(t *testing.T) (store.Store, func()) {
+	contract.RunUniquenessContract(t, func(_ *testing.T) (store.Store, func()) {
 		return New(), func() {}
 	})
 }

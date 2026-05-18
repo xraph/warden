@@ -190,7 +190,9 @@ export function EditorShowcase() {
           />
           <EditorCard
             name="Helix"
-            recipe={'[[language]]\nname = "warden"\nlanguage-server = { command = "warden", args = ["lsp"] }'}
+            recipe={
+              '[[language]]\nname = "warden"\nlanguage-server = { command = "warden", args = ["lsp"] }'
+            }
           />
           <EditorCard
             name="Zed"

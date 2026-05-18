@@ -160,11 +160,9 @@ role editor : viewer {
                     VS Code Marketplace
                   </span>{" "}
                   — search{" "}
-                  <code className="font-mono text-fd-foreground">
-                    Warden
-                  </code>{" "}
-                  by{" "}
-                  <code className="font-mono text-fd-foreground">xraph</code>.
+                  <code className="font-mono text-fd-foreground">Warden</code>{" "}
+                  by <code className="font-mono text-fd-foreground">xraph</code>
+                  .
                 </div>
               </div>
             </BentoCard>
@@ -235,7 +233,7 @@ role editor : viewer {
             >
               <div className="rounded-lg border border-fd-border/60 bg-fd-muted/20 p-3 font-mono text-[11px] leading-relaxed">
                 <div className="text-fd-muted-foreground/70">
-                  // incident freeze until 2026-06-01
+                  {"// incident freeze until 2026-06-01"}
                 </div>
                 <div>
                   <span className="text-purple-400">policy</span>{" "}
@@ -344,9 +342,9 @@ function NamespaceTree() {
     <div className="rounded-lg border border-fd-border/60 bg-fd-muted/20 p-4 font-mono text-[11px] leading-relaxed text-fd-muted-foreground">
       <div className="text-fd-foreground">acme</div>
       <div className="pl-3">├── engineering</div>
-      <div className="pl-3">│   ├── platform</div>
-      <div className="pl-3">│   │   └── sre</div>
-      <div className="pl-3">│   └── frontend</div>
+      <div className="pl-3">│ ├── platform</div>
+      <div className="pl-3">│ │ └── sre</div>
+      <div className="pl-3">│ └── frontend</div>
       <div className="pl-3">└── billing</div>
       <div className="mt-2 pt-2 border-t border-fd-border/40 text-fd-muted-foreground/70">
         Roles defined at <span className="text-fd-foreground">engineering</span>{" "}
