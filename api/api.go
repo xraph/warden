@@ -35,6 +35,7 @@ func (a *API) Handler() http.Handler {
 func (a *API) RegisterRoutes(router forge.Router) error {
 	registerers := []func(forge.Router) error{
 		a.registerCheckRoutes,
+		a.registerAuthZenRoutes,
 		a.registerRoleRoutes,
 		a.registerPermissionRoutes,
 		a.registerAssignmentRoutes,

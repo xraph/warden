@@ -6,7 +6,7 @@ require (
 	github.com/a-h/templ v0.3.1001
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
-	github.com/xraph/forge v1.6.4
+	github.com/xraph/forge v1.6.5
 	github.com/xraph/forgeui v1.4.1
 	github.com/xraph/go-utils v1.1.1
 	github.com/xraph/grove v1.5.2
