@@ -938,16 +938,18 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	return count, nil
 }
 
-func (s *Store) ListRelationSubjects(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string) ([]*relation.Tuple, error) {
 	var models []relationModel
-	err := s.sdb.NewSelect(&models).
+	q := s.sdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
-		Where("namespace_path = ?", namespacePath).
 		Where("object_type = ?", objectType).
 		Where("object_id = ?", objectID).
-		Where("relation = ?", rel).
-		OrderExpr("created_at ASC").
-		Scan(ctx)
+		Where("relation = ?", rel)
+	if len(namespacePaths) > 0 {
+		ph, nsArgs := inPlaceholders(namespacePaths)
+		q = q.Where("namespace_path IN ("+ph+")", nsArgs...)
+	}
+	err := q.OrderExpr("created_at ASC").Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("warden: list relation subjects: %w", err)
 	}
@@ -986,16 +988,19 @@ func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath
 	return result, nil
 }
 
-func (s *Store) CheckDirectRelation(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
-	count, err := s.sdb.NewSelect((*relationModel)(nil)).
+func (s *Store) CheckDirectRelation(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
+	q := s.sdb.NewSelect((*relationModel)(nil)).
 		Where("tenant_id = ?", tenantID).
-		Where("namespace_path = ?", namespacePath).
 		Where("object_type = ?", objectType).
 		Where("object_id = ?", objectID).
 		Where("relation = ?", rel).
 		Where("subject_type = ?", subjectType).
-		Where("subject_id = ?", subjectID).
-		Count(ctx)
+		Where("subject_id = ?", subjectID)
+	if len(namespacePaths) > 0 {
+		ph, nsArgs := inPlaceholders(namespacePaths)
+		q = q.Where("namespace_path IN ("+ph+")", nsArgs...)
+	}
+	count, err := q.Count(ctx)
 	if err != nil {
 		return false, fmt.Errorf("warden: check direct relation: %w", err)
 	}

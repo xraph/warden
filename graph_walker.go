@@ -10,9 +10,10 @@ import (
 
 // GraphWalker traverses the relation graph for ReBAC evaluation.
 //
-// Walk is invoked with the namespace path of the request — relation tuples
-// are partitioned by namespace, so the walker only follows tuples that live
-// in that namespace.
+// Walk is invoked with the namespace path of the request. Relations cascade
+// like roles and policies: the walker follows tuples in the request namespace
+// and every ancestor namespace (see AncestorNamespaces), so a relationship
+// granted at a parent namespace is honored for descendant-scoped checks.
 type GraphWalker interface {
 	Walk(ctx context.Context, relStore relation.Store, tenantID, namespacePath string, req *CheckRequest) (allowed bool, path string, err error)
 }
@@ -41,6 +42,10 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 	targetSubjectType := string(req.Subject.Kind)
 	targetSubjectID := req.Subject.ID
 
+	// Relations cascade: the whole walk considers the request namespace and
+	// every ancestor. Computed once and reused for every node lookup.
+	namespaces := AncestorNamespaces(namespacePath)
+
 	// Start BFS from the resource.
 	queue := []walkNode{{
 		objectType: req.Resource.Type,
@@ -66,7 +71,7 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		}
 		visited[visitKey] = struct{}{}
 
-		tuples, err := relStore.ListRelationSubjects(ctx, tenantID, namespacePath, node.objectType, node.objectID, node.relation)
+		tuples, err := relStore.ListRelationSubjects(ctx, tenantID, namespaces, node.objectType, node.objectID, node.relation)
 		if err != nil {
 			return false, "", fmt.Errorf("list subjects for %s: %w", visitKey, err)
 		}

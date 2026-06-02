@@ -294,6 +294,71 @@ func TestReBAC_TransitiveRelation(t *testing.T) {
 	}
 }
 
+// TestReBAC_NamespaceCascade verifies that relation tuples defined at an
+// ancestor namespace grant access when the request is scoped to a descendant
+// namespace — matching how RBAC roles and ABAC policies already cascade.
+// A tuple at a non-ancestor namespace must NOT leak into the decision.
+func TestReBAC_NamespaceCascade(t *testing.T) {
+	ctx := WithTenant(context.Background(), "app1", "t1")
+	eng, s := newTestEngine(t)
+
+	// Direct relation at PARENT namespace "eng".
+	_ = s.CreateRelation(ctx, &relation.Tuple{
+		TenantID:      "t1",
+		NamespacePath: "eng",
+		ObjectType:    "document", ObjectID: "doc1", Relation: "read",
+		SubjectType: "user", SubjectID: "u1",
+	})
+
+	// Transitive chain at PARENT namespace "eng":
+	//   document:doc2#read -> folder:f1#read (subject set) -> user:u2
+	_ = s.CreateRelation(ctx, &relation.Tuple{
+		TenantID:      "t1",
+		NamespacePath: "eng",
+		ObjectType:    "document", ObjectID: "doc2", Relation: "read",
+		SubjectType: "folder", SubjectID: "f1", SubjectRelation: "read",
+	})
+	_ = s.CreateRelation(ctx, &relation.Tuple{
+		TenantID:      "t1",
+		NamespacePath: "eng",
+		ObjectType:    "folder", ObjectID: "f1", Relation: "read",
+		SubjectType: "user", SubjectID: "u2",
+	})
+
+	// Decoy at NON-ancestor namespace "other".
+	_ = s.CreateRelation(ctx, &relation.Tuple{
+		TenantID:      "t1",
+		NamespacePath: "other",
+		ObjectType:    "document", ObjectID: "doc3", Relation: "read",
+		SubjectType: "user", SubjectID: "u3",
+	})
+
+	// Request scoped to the CHILD namespace "eng/platform".
+	check := func(subjectID, docID string) *CheckResult {
+		t.Helper()
+		res, err := eng.Check(ctx, &CheckRequest{
+			NamespacePath: "eng/platform",
+			Subject:       Subject{Kind: SubjectUser, ID: subjectID},
+			Action:        Action{Name: "read"},
+			Resource:      Resource{Type: "document", ID: docID},
+		})
+		if err != nil {
+			t.Fatalf("check %s/%s: %v", subjectID, docID, err)
+		}
+		return res
+	}
+
+	if r := check("u1", "doc1"); !r.Allowed {
+		t.Errorf("direct relation at ancestor namespace should cascade: got %s: %s", r.Decision, r.Reason)
+	}
+	if r := check("u2", "doc2"); !r.Allowed {
+		t.Errorf("transitive relation at ancestor namespace should cascade: got %s: %s", r.Decision, r.Reason)
+	}
+	if r := check("u3", "doc3"); r.Allowed {
+		t.Errorf("relation at non-ancestor namespace must NOT cascade, but access was granted")
+	}
+}
+
 func TestABACFlow(t *testing.T) {
 	ctx := WithTenant(context.Background(), "app1", "t1")
 	eng, s := newTestEngine(t)

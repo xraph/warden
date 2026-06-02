@@ -1024,16 +1024,19 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	return count, nil
 }
 
-func (s *Store) ListRelationSubjects(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string) ([]*relation.Tuple, error) {
 	var models []relationModel
+	filter := bson.M{
+		"tenant_id":   tenantID,
+		"object_type": objectType,
+		"object_id":   objectID,
+		"relation":    rel,
+	}
+	if len(namespacePaths) > 0 {
+		filter["namespace_path"] = bson.M{"$in": namespacePaths}
+	}
 	if err := s.mdb.NewFind(&models).
-		Filter(bson.M{
-			"tenant_id":      tenantID,
-			"namespace_path": namespacePath,
-			"object_type":    objectType,
-			"object_id":      objectID,
-			"relation":       rel,
-		}).
+		Filter(filter).
 		Sort(bson.D{{Key: "created_at", Value: 1}}).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list relation subjects: %w", err)
@@ -1066,17 +1069,20 @@ func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath
 	return result, nil
 }
 
-func (s *Store) CheckDirectRelation(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
+func (s *Store) CheckDirectRelation(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
+	filter := bson.M{
+		"tenant_id":    tenantID,
+		"object_type":  objectType,
+		"object_id":    objectID,
+		"relation":     rel,
+		"subject_type": subjectType,
+		"subject_id":   subjectID,
+	}
+	if len(namespacePaths) > 0 {
+		filter["namespace_path"] = bson.M{"$in": namespacePaths}
+	}
 	count, err := s.mdb.NewFind((*relationModel)(nil)).
-		Filter(bson.M{
-			"tenant_id":      tenantID,
-			"namespace_path": namespacePath,
-			"object_type":    objectType,
-			"object_id":      objectID,
-			"relation":       rel,
-			"subject_type":   subjectType,
-			"subject_id":     subjectID,
-		}).
+		Filter(filter).
 		Count(ctx)
 	if err != nil {
 		return false, fmt.Errorf("warden: check direct relation: %w", err)

@@ -34,6 +34,12 @@ type EvalContext struct {
 	TenantID      string
 	NamespacePath string
 
+	// NamespacePaths is the set of namespaces a relation lookup may match —
+	// typically the request namespace and its ancestors, so relations cascade
+	// like roles and policies. When empty, lookups fall back to the single
+	// NamespacePath (see nsList).
+	NamespacePaths []string
+
 	ObjectType string
 	ObjectID   string
 
@@ -43,6 +49,16 @@ type EvalContext struct {
 	// MaxDepth bounds traversal recursion. The engine sets this from its
 	// configured graph walker depth.
 	MaxDepth int
+}
+
+// nsList returns the namespaces a relation lookup should match. It prefers the
+// cascaded NamespacePaths and falls back to the single NamespacePath so an
+// EvalContext constructed without the cascade list still works (exact match).
+func (ec EvalContext) nsList() []string {
+	if len(ec.NamespacePaths) > 0 {
+		return ec.NamespacePaths
+	}
+	return []string{ec.NamespacePath}
 }
 
 // PermResolver returns the compiled permission expression for a resource
@@ -132,7 +148,7 @@ func (e *Evaluator) walk(ctx context.Context, expr Expr, ec EvalContext, depth i
 	switch v := expr.(type) {
 	case *RefExpr:
 		// Direct relation match: does (object, relation, subject) exist?
-		return e.relStore.CheckDirectRelation(ctx, ec.TenantID, ec.NamespacePath,
+		return e.relStore.CheckDirectRelation(ctx, ec.TenantID, ec.nsList(),
 			ec.ObjectType, ec.ObjectID, v.Name,
 			ec.SubjectType, ec.SubjectID)
 	case *OrExpr:
@@ -181,7 +197,7 @@ func (e *Evaluator) walkTraversal(ctx context.Context, steps []string, ec EvalCo
 		return false, nil
 	}
 	// Hop step 0: enumerate (object, relation=steps[0], ?) tuples.
-	tuples, err := e.relStore.ListRelationSubjects(ctx, ec.TenantID, ec.NamespacePath,
+	tuples, err := e.relStore.ListRelationSubjects(ctx, ec.TenantID, ec.nsList(),
 		ec.ObjectType, ec.ObjectID, steps[0])
 	if err != nil {
 		return false, err
@@ -194,7 +210,7 @@ func (e *Evaluator) walkTraversal(ctx context.Context, steps []string, ec EvalCo
 
 		if len(steps) == 2 {
 			// Final step: try direct relation match on the hopped object first.
-			ok, err := e.relStore.CheckDirectRelation(ctx, ec.TenantID, ec.NamespacePath,
+			ok, err := e.relStore.CheckDirectRelation(ctx, ec.TenantID, ec.nsList(),
 				next.ObjectType, next.ObjectID, steps[1],
 				ec.SubjectType, ec.SubjectID)
 			if err != nil {

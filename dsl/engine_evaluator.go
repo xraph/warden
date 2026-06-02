@@ -89,12 +89,13 @@ func (e *EngineEvaluator) EvalPermission(
 		return false, nil
 	}
 	return e.ev.Eval(ctx, expr, EvalContext{
-		TenantID:      tenantID,
-		NamespacePath: namespacePath,
-		ObjectType:    resourceType,
-		ObjectID:      resourceID,
-		SubjectType:   subjectKind,
-		SubjectID:     subjectID,
+		TenantID:       tenantID,
+		NamespacePath:  namespacePath,
+		NamespacePaths: warden.AncestorNamespaces(namespacePath),
+		ObjectType:     resourceType,
+		ObjectID:       resourceID,
+		SubjectType:    subjectKind,
+		SubjectID:      subjectID,
 	})
 }
 

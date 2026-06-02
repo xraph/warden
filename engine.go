@@ -360,9 +360,9 @@ func (e *Engine) walkRoleParents(ctx context.Context, roleID id.RoleID, seen map
 }
 
 func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, error) {
-	// Direct relation check. Tuples partition the relation space by namespace,
-	// so we only check the request's namespace (no ancestor cascading for ReBAC).
-	direct, err := e.store.CheckDirectRelation(ctx, scope.tenantID, scope.namespacePath, req.Resource.Type, req.Resource.ID, req.Action.Name, string(req.Subject.Kind), req.Subject.ID)
+	// Direct relation check. Relations cascade like roles/policies: a tuple at
+	// an ancestor namespace is in scope for a check at a descendant namespace.
+	direct, err := e.store.CheckDirectRelation(ctx, scope.tenantID, AncestorNamespaces(scope.namespacePath), req.Resource.Type, req.Resource.ID, req.Action.Name, string(req.Subject.Kind), req.Subject.ID)
 	if err != nil {
 		return nil, err
 	}

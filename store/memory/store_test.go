@@ -240,25 +240,25 @@ func TestRelationCRUD(t *testing.T) {
 	}
 
 	// CheckDirectRelation (tenant root namespace)
-	ok, _ := s.CheckDirectRelation(ctx, "t1", "", "document", "doc1", "viewer", "user", "u1")
+	ok, _ := s.CheckDirectRelation(ctx, "t1", []string{""}, "document", "doc1", "viewer", "user", "u1")
 	if !ok {
 		t.Fatal("expected direct relation")
 	}
 
-	ok, _ = s.CheckDirectRelation(ctx, "t1", "", "document", "doc1", "editor", "user", "u1")
+	ok, _ = s.CheckDirectRelation(ctx, "t1", []string{""}, "document", "doc1", "editor", "user", "u1")
 	if ok {
 		t.Fatal("expected no relation for editor")
 	}
 
 	// ListRelationSubjects
-	subs, _ := s.ListRelationSubjects(ctx, "t1", "", "document", "doc1", "viewer")
+	subs, _ := s.ListRelationSubjects(ctx, "t1", []string{""}, "document", "doc1", "viewer")
 	if len(subs) != 1 {
 		t.Fatalf("expected 1 subject, got %d", len(subs))
 	}
 
 	// DeleteRelationTuple
 	_ = s.DeleteRelationTuple(ctx, "t1", "", "document", "doc1", "viewer", "user", "u1")
-	ok, _ = s.CheckDirectRelation(ctx, "t1", "", "document", "doc1", "viewer", "user", "u1")
+	ok, _ = s.CheckDirectRelation(ctx, "t1", []string{""}, "document", "doc1", "viewer", "user", "u1")
 	if ok {
 		t.Fatal("expected relation deleted")
 	}

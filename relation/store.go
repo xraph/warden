@@ -24,16 +24,22 @@ type Store interface {
 	CountRelations(ctx context.Context, filter *ListFilter) (int64, error)
 
 	// ListRelationSubjects returns tuples where the given object has the
-	// specified relation in the given namespace.
-	ListRelationSubjects(ctx context.Context, tenantID, namespacePath, objectType, objectID, relation string) ([]*Tuple, error)
+	// specified relation in any of the given namespace paths. Pass the
+	// request namespace and its ancestors (see warden.AncestorNamespaces) to
+	// honor namespace inheritance, or a single-element slice for an exact
+	// lookup. An empty slice matches any namespace.
+	ListRelationSubjects(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, relation string) ([]*Tuple, error)
 
 	// ListRelationObjects returns tuples where the given subject has the
 	// specified relation in the given namespace.
 	ListRelationObjects(ctx context.Context, tenantID, namespacePath, subjectType, subjectID, relation string) ([]*Tuple, error)
 
-	// CheckDirectRelation checks if a direct relation exists between subject
-	// and object in the given namespace.
-	CheckDirectRelation(ctx context.Context, tenantID, namespacePath, objectType, objectID, relation, subjectType, subjectID string) (bool, error)
+	// CheckDirectRelation reports whether a direct relation exists between
+	// subject and object in any of the given namespace paths. Pass the request
+	// namespace and its ancestors to honor namespace inheritance, or a
+	// single-element slice for an exact lookup. An empty slice matches any
+	// namespace.
+	CheckDirectRelation(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, relation, subjectType, subjectID string) (bool, error)
 
 	// DeleteRelationsByObject removes all relation tuples for an object.
 	DeleteRelationsByObject(ctx context.Context, tenantID, objectType, objectID string) error

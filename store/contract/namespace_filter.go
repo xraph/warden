@@ -7,6 +7,7 @@ import (
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/policy"
+	"github.com/xraph/warden/relation"
 	"github.com/xraph/warden/store"
 )
 
@@ -34,6 +35,8 @@ func RunNamespaceFilterContract(t *testing.T, mk MakeStore) {
 	t.Run("ListRolesForSubject", func(t *testing.T) { runListRolesForSubjectNS(t, mk) })
 	t.Run("ListRolesForSubjectOnResource", func(t *testing.T) { runListRolesForSubjectOnResourceNS(t, mk) })
 	t.Run("ListActivePolicies", func(t *testing.T) { runListActivePoliciesNS(t, mk) })
+	t.Run("CheckDirectRelation", func(t *testing.T) { runCheckDirectRelationNS(t, mk) })
+	t.Run("ListRelationSubjects", func(t *testing.T) { runListRelationSubjectsNS(t, mk) })
 }
 
 // ancestors mirrors warden.AncestorNamespaces("eng/platform"): the requested
@@ -132,7 +135,89 @@ func runListActivePoliciesNS(t *testing.T, mk MakeStore) {
 	}
 }
 
+func runCheckDirectRelationNS(t *testing.T, mk MakeStore) {
+	s, cleanup := mk(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// A tuple at ancestor "eng" must be visible from the cascaded list;
+	// a tuple at the non-ancestor "other" namespace must not.
+	createRelation(t, s, &relation.Tuple{
+		TenantID: "t1", NamespacePath: "eng",
+		ObjectType: "document", ObjectID: "doc1", Relation: "read",
+		SubjectType: "user", SubjectID: "alice",
+	})
+	createRelation(t, s, &relation.Tuple{
+		TenantID: "t1", NamespacePath: nsDecoy,
+		ObjectType: "document", ObjectID: "doc2", Relation: "read",
+		SubjectType: "user", SubjectID: "bob",
+	})
+
+	ok, err := s.CheckDirectRelation(ctx, "t1", nsAncestors, "document", "doc1", "read", "user", "alice")
+	if err != nil {
+		t.Fatalf("CheckDirectRelation (ancestor): %v", err)
+	}
+	if !ok {
+		t.Errorf("relation at ancestor namespace should be found via cascaded list")
+	}
+
+	leaked, err := s.CheckDirectRelation(ctx, "t1", nsAncestors, "document", "doc2", "read", "user", "bob")
+	if err != nil {
+		t.Fatalf("CheckDirectRelation (decoy): %v", err)
+	}
+	if leaked {
+		t.Errorf("relation at non-ancestor namespace must NOT be found")
+	}
+}
+
+func runListRelationSubjectsNS(t *testing.T, mk MakeStore) {
+	s, cleanup := mk(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Same object+relation, subjects spread across namespaces.
+	createRelation(t, s, &relation.Tuple{
+		TenantID: "t1", NamespacePath: "eng",
+		ObjectType: "document", ObjectID: "doc1", Relation: "read",
+		SubjectType: "user", SubjectID: "alice",
+	})
+	createRelation(t, s, &relation.Tuple{
+		TenantID: "t1", NamespacePath: "",
+		ObjectType: "document", ObjectID: "doc1", Relation: "read",
+		SubjectType: "user", SubjectID: "carol",
+	})
+	createRelation(t, s, &relation.Tuple{
+		TenantID: "t1", NamespacePath: nsDecoy,
+		ObjectType: "document", ObjectID: "doc1", Relation: "read",
+		SubjectType: "user", SubjectID: "dave",
+	})
+
+	tuples, err := s.ListRelationSubjects(ctx, "t1", nsAncestors, "document", "doc1", "read")
+	if err != nil {
+		t.Fatalf("ListRelationSubjects: %v", err)
+	}
+	got := make(map[string]bool, len(tuples))
+	for _, tup := range tuples {
+		got[tup.SubjectID] = true
+	}
+	for _, want := range []string{"alice", "carol"} {
+		if !got[want] {
+			t.Errorf("expected subject %q from ancestor namespace, missing", want)
+		}
+	}
+	if got["dave"] {
+		t.Errorf("subject from non-ancestor %q namespace leaked into result", nsDecoy)
+	}
+}
+
 // ───── helpers ─────
+
+func createRelation(t *testing.T, s store.Store, tup *relation.Tuple) {
+	t.Helper()
+	if err := s.CreateRelation(context.Background(), tup); err != nil {
+		t.Fatalf("create relation (ns=%q): %v", tup.NamespacePath, err)
+	}
+}
 
 func slugFor(prefix string, i int) string {
 	return prefix + "-" + string(rune('a'+i))

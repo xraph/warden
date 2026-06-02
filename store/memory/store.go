@@ -713,12 +713,13 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	return int64(len(list)), nil
 }
 
-func (s *Store) ListRelationSubjects(_ context.Context, tenantID, namespacePath, objectType, objectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationSubjects(_ context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string) ([]*relation.Tuple, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	nsSet := namespacePathSet(namespacePaths)
 	var result []*relation.Tuple
 	for _, t := range s.relations {
-		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel {
+		if t.TenantID == tenantID && nsSet.matches(t.NamespacePath) && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel {
 			result = append(result, copyTuple(t))
 		}
 	}
@@ -737,11 +738,12 @@ func (s *Store) ListRelationObjects(_ context.Context, tenantID, namespacePath, 
 	return result, nil
 }
 
-func (s *Store) CheckDirectRelation(_ context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
+func (s *Store) CheckDirectRelation(_ context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	nsSet := namespacePathSet(namespacePaths)
 	for _, t := range s.relations {
-		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel && t.SubjectType == subjectType && t.SubjectID == subjectID {
+		if t.TenantID == tenantID && nsSet.matches(t.NamespacePath) && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel && t.SubjectType == subjectType && t.SubjectID == subjectID {
 			return true, nil
 		}
 	}
