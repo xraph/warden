@@ -44,6 +44,20 @@ func New(db *grove.DB) *Store {
 	}
 }
 
+// inPlaceholders builds an "IN (?, ?, …)" body and the matching []any args for
+// vals. Grove's query builder binds one argument per "?" placeholder and does
+// not expand slices, so an "IN (?)" with a []string would bind the whole slice
+// to a single placeholder and fail. Callers must emit one placeholder per
+// element. Only call this when len(vals) > 0 (an empty IN () is invalid SQL).
+func inPlaceholders(vals []string) (string, []any) {
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(vals)), ",")
+	args := make([]any, len(vals))
+	for i, v := range vals {
+		args[i] = v
+	}
+	return ph, args
+}
+
 // Migrate runs programmatic migrations via the grove orchestrator.
 func (s *Store) Migrate(ctx context.Context) error {
 	executor, err := migrate.NewExecutorFor(s.sdb)
@@ -689,7 +703,8 @@ func (s *Store) ListRolesForSubject(ctx context.Context, tenantID string, namesp
 		Where("subject_id = ?", subjectID).
 		Where("resource_type = ''")
 	if len(namespacePaths) > 0 {
-		q = q.Where("namespace_path IN (?)", namespacePaths)
+		ph, nsArgs := inPlaceholders(namespacePaths)
+		q = q.Where("namespace_path IN ("+ph+")", nsArgs...)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles for subject: %w", err)
@@ -713,7 +728,8 @@ func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID stri
 		Where("resource_type = ?", resourceType).
 		Where("resource_id = ?", resourceID)
 	if len(namespacePaths) > 0 {
-		q = q.Where("namespace_path IN (?)", namespacePaths)
+		ph, nsArgs := inPlaceholders(namespacePaths)
+		q = q.Where("namespace_path IN ("+ph+")", nsArgs...)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles for subject on resource: %w", err)
@@ -1171,7 +1187,8 @@ func (s *Store) ListActivePolicies(ctx context.Context, tenantID string, namespa
 		Where("tenant_id = ?", tenantID).
 		Where("is_active = ?", true)
 	if len(namespacePaths) > 0 {
-		q = q.Where("namespace_path IN (?)", namespacePaths)
+		ph, nsArgs := inPlaceholders(namespacePaths)
+		q = q.Where("namespace_path IN ("+ph+")", nsArgs...)
 	}
 	q = q.OrderExpr("priority ASC")
 	if err := q.Scan(ctx); err != nil {

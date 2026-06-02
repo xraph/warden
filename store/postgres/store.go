@@ -616,7 +616,7 @@ func (s *Store) ListRolesForSubject(ctx context.Context, tenantID string, namesp
 		Where("subject_id = ?", subjectID).
 		Where("resource_type = ''")
 	if len(namespacePaths) > 0 {
-		q = q.Where("namespace_path IN (?)", namespacePaths)
+		q = q.WhereArray("namespace_path", "= ANY", namespacePaths)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles for subject: %w", err)
@@ -640,7 +640,7 @@ func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID stri
 		Where("resource_type = ?", resourceType).
 		Where("resource_id = ?", resourceID)
 	if len(namespacePaths) > 0 {
-		q = q.Where("namespace_path IN (?)", namespacePaths)
+		q = q.WhereArray("namespace_path", "= ANY", namespacePaths)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles for subject on resource: %w", err)
@@ -1064,7 +1064,7 @@ func (s *Store) ListActivePolicies(ctx context.Context, tenantID string, namespa
 		Where("tenant_id = ?", tenantID).
 		Where("is_active = ?", true)
 	if len(namespacePaths) > 0 {
-		q = q.Where("namespace_path IN (?)", namespacePaths)
+		q = q.WhereArray("namespace_path", "= ANY", namespacePaths)
 	}
 	q = q.OrderExpr("priority ASC")
 	if err := q.Scan(ctx); err != nil {
