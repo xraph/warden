@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	github.com/a-h/templ v0.3.1001
 	github.com/jackc/pgx/v5 v5.8.0
+	github.com/testcontainers/testcontainers-go/modules/mongodb v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/xraph/forge v1.6.5
 	github.com/xraph/forgeui v1.4.1
