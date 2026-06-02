@@ -3,11 +3,11 @@ module github.com/xraph/warden
 go 1.25.7
 
 require (
-	github.com/a-h/templ v0.3.1001
-	github.com/jackc/pgx/v5 v5.8.0
+	github.com/a-h/templ v0.3.1020
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/testcontainers/testcontainers-go/modules/mongodb v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
-	github.com/xraph/forge v1.6.5
+	github.com/xraph/forge v1.6.6
 	github.com/xraph/forgeui v1.4.1
 	github.com/xraph/go-utils v1.1.1
 	github.com/xraph/grove v1.5.2
@@ -16,7 +16,7 @@ require (
 	github.com/xraph/grove/drivers/sqlitedriver v1.5.2
 	github.com/xraph/vessel v1.0.2
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3
-	go.mongodb.org/mongo-driver/v2 v2.5.0
+	go.mongodb.org/mongo-driver/v2 v2.6.0
 )
 
 require (
@@ -145,7 +145,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
-	golang.org/x/net v0.49.0 // indirect
+	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
@@ -159,9 +159,9 @@ require (
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/api v0.35.0 // indirect
-	k8s.io/apimachinery v0.35.0 // indirect
-	k8s.io/client-go v0.35.0 // indirect
+	k8s.io/api v0.35.5 // indirect
+	k8s.io/apimachinery v0.35.5 // indirect
+	k8s.io/client-go v0.35.5 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect
