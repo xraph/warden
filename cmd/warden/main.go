@@ -63,7 +63,7 @@ func main() {
 		usage()
 		os.Exit(0)
 	default:
-		fmt.Fprintf(os.Stderr, "warden: unknown subcommand %q\n", os.Args[1]) //nolint:gosec // G705: CLI diagnostic written to stderr, not a web response sink
+		fmt.Fprintf(os.Stderr, "warden: unknown subcommand %q\n", os.Args[1])
 		usage()
 		os.Exit(2)
 	}
