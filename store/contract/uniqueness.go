@@ -240,7 +240,7 @@ func runAssignmentUniqueness(t *testing.T, mk MakeStore) {
 
 // seedRole creates a role and returns its ID. Used by tests that
 // need a foreign-key target.
-func seedRole(t *testing.T, s store.Store, tenantID, namespacePath, slug string) id.RoleID {
+func seedRole(t *testing.T, s store.Store, tenantID, namespacePath, slug string) id.RoleID { //nolint:unparam // shared test seed helper; tenantID kept as a parameter for clarity
 	t.Helper()
 	r := &role.Role{
 		ID: id.NewRoleID(), TenantID: tenantID, NamespacePath: namespacePath,

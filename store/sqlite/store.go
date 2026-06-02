@@ -49,13 +49,13 @@ func New(db *grove.DB) *Store {
 // not expand slices, so an "IN (?)" with a []string would bind the whole slice
 // to a single placeholder and fail. Callers must emit one placeholder per
 // element. Only call this when len(vals) > 0 (an empty IN () is invalid SQL).
-func inPlaceholders(vals []string) (string, []any) {
-	ph := strings.TrimSuffix(strings.Repeat("?,", len(vals)), ",")
-	args := make([]any, len(vals))
+func inPlaceholders(vals []string) (placeholders string, args []any) {
+	placeholders = strings.TrimSuffix(strings.Repeat("?,", len(vals)), ",")
+	args = make([]any, len(vals))
 	for i, v := range vals {
 		args[i] = v
 	}
-	return ph, args
+	return placeholders, args
 }
 
 // Migrate runs programmatic migrations via the grove orchestrator.

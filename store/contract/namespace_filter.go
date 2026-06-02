@@ -2,6 +2,7 @@ package contract
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/xraph/warden/assignment"
@@ -220,7 +221,7 @@ func createRelation(t *testing.T, s store.Store, tup *relation.Tuple) {
 }
 
 func slugFor(prefix string, i int) string {
-	return prefix + "-" + string(rune('a'+i))
+	return prefix + "-" + strconv.Itoa(i)
 }
 
 func createAssignment(t *testing.T, s store.Store, a *assignment.Assignment) {
