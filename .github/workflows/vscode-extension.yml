@@ -133,7 +133,7 @@ jobs:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: vscode-warden/v${{ steps.version.outputs.version }}
           name: Warden VS Code Extension v${{ steps.version.outputs.version }}
