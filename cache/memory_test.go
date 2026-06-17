@@ -116,6 +116,74 @@ func TestMemoryCacheInvalidateSubject(t *testing.T) {
 	}
 }
 
+// TestMemoryCacheNamespaceIsolation guards against caching a check result computed
+// for one namespace and returning it for another. Role assignments are commonly
+// scoped per-namespace (e.g. per workspace/tenant subtree), so two requests that are
+// identical except for NamespacePath can have different outcomes and must not share
+// a cache entry.
+func TestMemoryCacheNamespaceIsolation(t *testing.T) {
+	ctx := context.Background()
+	c := NewMemory(WithTTL(time.Minute))
+
+	reqA := &warden.CheckRequest{
+		NamespacePath: "ws-A",
+		Subject:       warden.Subject{Kind: warden.SubjectUser, ID: "u1"},
+		Action:        warden.Action{Name: "create"},
+		Resource:      warden.Resource{Type: "connections"},
+	}
+	reqB := &warden.CheckRequest{
+		NamespacePath: "ws-B",
+		Subject:       warden.Subject{Kind: warden.SubjectUser, ID: "u1"},
+		Action:        warden.Action{Name: "create"},
+		Resource:      warden.Resource{Type: "connections"},
+	}
+
+	// Allowed in namespace ws-A only.
+	c.Set(ctx, "t1", reqA, &warden.CheckResult{Allowed: true, Decision: warden.DecisionAllow})
+
+	// A different namespace must be a cache miss, not the ws-A result.
+	if _, ok := c.Get(ctx, "t1", reqB); ok {
+		t.Fatal("namespace ws-B got a cache hit from a ws-A entry (cross-namespace leak)")
+	}
+
+	// The exact same request (ws-A) must still hit.
+	if _, ok := c.Get(ctx, "t1", reqA); !ok {
+		t.Fatal("expected cache hit for the same namespace")
+	}
+}
+
+// TestMemoryCacheInvalidateSubjectAcrossNamespaces ensures invalidating a subject
+// clears its entries in every namespace, not just one.
+func TestMemoryCacheInvalidateSubjectAcrossNamespaces(t *testing.T) {
+	ctx := context.Background()
+	c := NewMemory()
+
+	mk := func(ns, user string) *warden.CheckRequest {
+		return &warden.CheckRequest{
+			NamespacePath: ns,
+			Subject:       warden.Subject{Kind: warden.SubjectUser, ID: user},
+			Action:        warden.Action{Name: "read"},
+			Resource:      warden.Resource{Type: "doc"},
+		}
+	}
+
+	c.Set(ctx, "t1", mk("ws-A", "u1"), &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t1", mk("ws-B", "u1"), &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t1", mk("ws-A", "u2"), &warden.CheckResult{Allowed: true})
+
+	c.InvalidateSubject(ctx, "t1", warden.SubjectUser, "u1")
+
+	if _, ok := c.Get(ctx, "t1", mk("ws-A", "u1")); ok {
+		t.Fatal("u1 ws-A should be invalidated")
+	}
+	if _, ok := c.Get(ctx, "t1", mk("ws-B", "u1")); ok {
+		t.Fatal("u1 ws-B should be invalidated across all namespaces")
+	}
+	if _, ok := c.Get(ctx, "t1", mk("ws-A", "u2")); !ok {
+		t.Fatal("u2 must not be invalidated when invalidating u1")
+	}
+}
+
 func TestMemoryCacheMaxSize(t *testing.T) {
 	ctx := context.Background()
 	c := NewMemory(WithMaxSize(2))
