@@ -116,13 +116,19 @@ func (m *Memory) InvalidateSubject(_ context.Context, tenantID string, subjectKi
 }
 
 func cacheKey(tenantID string, req *warden.CheckRequest) string {
-	return fmt.Sprintf("%s:%s:%s:%s:%s:%s",
+	// NamespacePath is the LAST segment so the InvalidateTenant ("tenantID:")
+	// and InvalidateSubject ("tenantID:kind:id:") prefix scans stay correct.
+	// It must be part of the key: assignments are namespace-scoped, so an
+	// otherwise-identical check can resolve differently per namespace and must
+	// not share a cache entry (cross-namespace permission leak otherwise).
+	return fmt.Sprintf("%s:%s:%s:%s:%s:%s:%s",
 		tenantID,
 		req.Subject.Kind,
 		req.Subject.ID,
 		req.Action.Name,
 		req.Resource.Type,
 		req.Resource.ID,
+		req.NamespacePath,
 	)
 }
 
