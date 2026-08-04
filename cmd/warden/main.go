@@ -63,6 +63,8 @@ func main() {
 		usage()
 		os.Exit(0)
 	default:
+		// #nosec G705 -- not XSS: this is a CLI writing an unknown subcommand to
+		// stderr, quoted by %q. There is no HTML sink and no browser involved.
 		fmt.Fprintf(os.Stderr, "warden: unknown subcommand %q\n", os.Args[1])
 		usage()
 		os.Exit(2)

@@ -78,8 +78,8 @@ func (s *server) handleDidClose(raw json.RawMessage) {
 	}
 	s.deleteDoc(p.TextDocument.URI)
 	// Clear diagnostics for the closed file.
-	// #nosec G104 -- best-effort clear; the LSP client may have disconnected.
-	s.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{
+	// Best-effort clear; the LSP client may have disconnected.
+	_ = s.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{ //nolint:errcheck // best-effort; client may have disconnected
 		URI:         p.TextDocument.URI,
 		Diagnostics: []lspDiagnostic{},
 	})
@@ -98,8 +98,8 @@ func (s *server) publishDiagnostics(doc *document) {
 			Message:  formatErrorMsg(d.Msg),
 		})
 	}
-	// #nosec G104 -- best-effort notification; the client may have disconnected.
-	s.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{
+	// Best-effort notification; the client may have disconnected.
+	_ = s.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{ //nolint:errcheck // best-effort; client may have disconnected
 		URI:         doc.uri,
 		Diagnostics: diags,
 	})
