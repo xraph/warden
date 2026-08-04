@@ -317,6 +317,8 @@ func runFmt(args []string) int {
 
 	anyChanged := false
 	for _, path := range files {
+		// #nosec G304 -- path comes from the file list the operator passed to
+		// `warden fmt`; reading those files is the command's purpose.
 		src, err := os.ReadFile(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warden fmt: %v\n", err)
@@ -340,7 +342,10 @@ func runFmt(args []string) int {
 		case *printDiff:
 			fmt.Printf("--- %s (current)\n+++ %s (canonical)\n%s\n", path, path, formatted)
 		default:
-			if err := os.WriteFile(path, []byte(formatted), 0o644); err != nil { //nolint:gosec // source file rewrite
+			// #nosec G306 G703 -- rewriting a policy source file in place, as gofmt
+			// does. 0644 is the right mode for source; 0600 would make formatted
+			// files unreadable to other users on shared checkouts.
+			if err := os.WriteFile(path, []byte(formatted), 0o644); err != nil {
 				fmt.Fprintf(os.Stderr, "warden fmt: %v\n", err)
 				return 3
 			}

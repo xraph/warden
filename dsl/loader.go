@@ -50,6 +50,7 @@ func (cfg *loadConfig) substituteIfNeeded(file string, src []byte) ([]byte, []*D
 // LoadFile reads and parses a single .warden file.
 func LoadFile(path string, opts ...LoadOption) (*Program, []*Diagnostic, error) {
 	cfg := collectLoadOptions(opts)
+	// #nosec G304 -- path is the policy file the operator asked to load.
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, err
