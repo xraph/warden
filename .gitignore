@@ -54,3 +54,6 @@ Thumbs.db
 *.pid
 tmp/
 .tmp/
+
+# ─── Local agent config ─────────────────────────────────────
+.claude/
