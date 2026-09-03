@@ -16,7 +16,7 @@ require (
 	github.com/xraph/grove/drivers/sqlitedriver v1.6.3
 	github.com/xraph/vessel v1.0.4
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3
-	go.mongodb.org/mongo-driver/v2 v2.8.0
+	go.mongodb.org/mongo-driver/v2 v2.8.2
 )
 
 require (
