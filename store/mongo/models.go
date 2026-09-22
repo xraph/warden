@@ -20,13 +20,13 @@ import (
 // nonNilMap returns m unchanged unless it is nil, in which case it returns
 // a non-nil empty map. MongoDB's generated $jsonSchema validator types a Go
 // map field as strictly "object" (see buildFieldSchema in
-// grove/drivers/mongodriver — only pointer-kind fields get the "or null"
+// grove/drivers/mongodriver: only pointer-kind fields get the "or null"
 // treatment). grove's insert path writes every field into the document
 // regardless of Go zero value (it does not honor `omitempty`), so a nil map
 // serializes to BSON null and the validator rejects it with "type did not
 // match". Every *ToModel below normalizes its map/slice fields through this
 // (and nonNilSlice) so a caller who never set Metadata still gets a valid,
-// insertable document — an empty object/array instead of null.
+// insertable document: an empty object/array instead of null.
 func nonNilMap[K comparable, V any](m map[K]V) map[K]V {
 	if m == nil {
 		return map[K]V{}
@@ -178,7 +178,7 @@ func permissionFromModel(m *permissionModel) *permission.Permission {
 // an independent auto-generated key and skipping it from the insert
 // whenever its own value happens to be the Go zero value. perm_namespace_path
 // is legitimately "" for the tenant root namespace, so that skip silently
-// dropped the field from the document — which the collection's generated
+// dropped the field from the document, which the collection's generated
 // $jsonSchema then rejected as missing a required property. Plain (non-pk)
 // grove tags avoid the skip; Mongo still auto-generates its own _id.
 type rolePermissionModel struct {

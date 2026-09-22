@@ -12,6 +12,8 @@ import (
 	mongod "go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/xraph/go-utils/log"
+
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/drivers/mongodriver"
 	"github.com/xraph/grove/migrate"
@@ -79,7 +81,7 @@ type Option func(*Store)
 // warden_check_logs: documents are deleted d after their created_at. When
 // this option is not supplied (the default), Migrate creates no TTL index
 // at all and check-log retention is left entirely to the calling
-// engine/job — matching the postgres and sqlite backends, which have no
+// engine/job, matching the postgres and sqlite backends, which have no
 // TTL mechanism of their own.
 func WithCheckLogTTL(d time.Duration) Option {
 	return func(s *Store) { s.checkLogTTL = d }
@@ -99,8 +101,8 @@ func New(db *grove.DB, opts ...Option) *Store {
 
 // Migrate runs the versioned migration group through the grove orchestrator
 // (collection creation, indexes, and the namespace-scoped uniqueness fix all
-// live in migrations.go), then — only when the store was constructed with
-// WithCheckLogTTL — ensures the check-log TTL index.
+// live in migrations.go), then, only when the store was constructed with
+// WithCheckLogTTL, ensures the check-log TTL index.
 func (s *Store) Migrate(ctx context.Context) error {
 	executor, err := migrate.NewExecutorFor(s.mdb)
 	if err != nil {
@@ -147,19 +149,30 @@ func (s *Store) ensureCheckLogTTLIndex(ctx context.Context) error {
 // the Store's lifetime.
 //
 // This is deliberately not a StartTransaction/AbortTransaction probe: in the
-// v2 driver, both of those are local, lazy client-side operations — neither
+// v2 driver, both of those are local, lazy client-side operations. Neither
 // sends anything to the server until the first real command runs inside the
-// transaction — so a probe built from them can't actually detect a
+// transaction, so a probe built from them can't actually detect a
 // standalone deployment; it only defers the "Transaction numbers are only
 // allowed on a replica set member or mongos" error to the first live write,
 // which is worse than not probing at all. `hello` gives a real, one-round-trip
 // answer up front.
+//
+// A failed `hello` (network error, auth failure, anything other than a
+// clean reply) is treated as "no transaction support" and cached as such for
+// the Store's lifetime, same as a confirmed-standalone deployment: retrying
+// on every call would turn a slow/unreachable server into a per-request
+// latency tax. Because that's silent otherwise (SetRolePermissions and
+// AttachPermission would just quietly stop being atomic), it logs one Warn
+// so an operator watching logs can see transactions were disabled and why.
 func (s *Store) supportsTransactions(ctx context.Context) bool {
 	s.txSupportOnce.Do(func() {
 		var reply bson.M
 		err := s.mdb.Database().RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&reply)
 		if err != nil {
 			s.txSupport = false
+			log.GetGlobalLogger().Warnf(
+				"warden/mongo: disabling transactional writes for this store's lifetime: "+
+					"the `hello` command used to detect replica-set/mongos support failed: %v", err)
 			return
 		}
 		_, hasSetName := reply["setName"]
@@ -172,8 +185,8 @@ func (s *Store) supportsTransactions(ctx context.Context) bool {
 // withTransaction runs fn inside a MongoDB session transaction when the
 // server supports them (a replica set or sharded cluster, per
 // supportsTransactions). Multi-document transactions are not available on a
-// standalone mongod — notably the default single-node container the test
-// harness starts when WARDEN_TEST_MONGO_URI is unset — so on a standalone
+// standalone mongod (notably the default single-node container the test
+// harness starts when WARDEN_TEST_MONGO_URI is unset), so on a standalone
 // deployment fn runs directly against ctx as a plain sequence of writes with
 // no atomicity guarantee. See the package doc comment for the operational
 // tradeoff this implies.

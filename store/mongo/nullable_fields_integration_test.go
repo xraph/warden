@@ -5,7 +5,7 @@
 // the model's Go types, typed Metadata (and, for policy and resource_type,
 // several other map/slice fields) as strictly "object"/"array". grove's
 // insert path (structToMapInsert) always writes every struct field into the
-// document regardless of its Go zero value — it doesn't honor `omitempty` —
+// document regardless of its Go zero value (it doesn't honor `omitempty`),
 // so a caller who never set Metadata sent BSON null on the wire and MongoDB
 // rejected the insert with "Document failed validation". store/mongo/models.go
 // now normalizes these fields to non-nil empty values before insert
@@ -14,7 +14,7 @@
 // that normalization existed. This test creates each entity type with every
 // affected field left nil and confirms both that Create succeeds and that
 // the round-tripped entity reads back with a usable non-nil empty
-// map/slice — not just "doesn't error".
+// map/slice, not just "doesn't error".
 package mongo
 
 import (

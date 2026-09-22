@@ -631,7 +631,7 @@ func init() {
 		&migrate.Migration{
 			// namespace_unique widens every entity's uniqueness key to
 			// include namespace_path. Before this migration, "roles"
-			// enforced (tenant_id, slug) — the same slug in two different
+			// enforced (tenant_id, slug): the same slug in two different
 			// namespaces of the same tenant collided even though the store
 			// contract (and the postgres/sqlite schemas) treat namespaces
 			// as independent scopes. Same story for permissions, policies
@@ -775,8 +775,8 @@ func init() {
 			// validator so its object/array-typed (map/slice Go) fields also
 			// accept "null". grove's insert path (structToMapInsert in
 			// grove/drivers/mongodriver/model.go) writes every struct field
-			// into the document regardless of its Go zero value — it does
-			// not honor `omitempty` — so a caller who leaves e.g. Metadata
+			// into the document regardless of its Go zero value: it does
+			// not honor `omitempty`, so a caller who leaves e.g. Metadata
 			// unset serializes it as BSON null. buildFieldSchema (same
 			// package) only tolerates null for pointer-kind Go fields, so a
 			// nil map/slice field fails "type did not match" against the
@@ -786,8 +786,8 @@ func init() {
 			// empty value on every write going forward (nonNilMap /
 			// nonNilSlice), which is the primary fix. This migration is the
 			// compatibility half: it keeps documents already written with
-			// an explicit null — by an older build of this package, or
-			// before collection validation existed at all — valid against
+			// an explicit null (by an older build of this package, or
+			// before collection validation existed at all) valid against
 			// $jsonSchema, and is idempotent (widening an already-widened
 			// bsonType array is a no-op) so it's safe to run against a
 			// fresh or a pre-existing deployment alike.

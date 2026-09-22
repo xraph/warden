@@ -11,8 +11,8 @@ import (
 
 // TestMongo_UniquenessContract runs the shared uniqueness contract against a
 // real MongoDB instance: it proves the namespace_unique migration widened
-// every entity's unique index to (tenant_id, namespace_path, slug|name) —
-// the same slug/name is rejected within a scope, but allowed across
+// every entity's unique index to (tenant_id, namespace_path, slug|name).
+// The same slug/name is rejected within a scope, but allowed across
 // namespaces and across tenants.
 func TestMongo_UniquenessContract(t *testing.T) {
 	contract.RunUniquenessContract(t, func(t *testing.T) (store.Store, func()) {
