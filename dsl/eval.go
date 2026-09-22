@@ -4,8 +4,11 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/relation"
+	"github.com/xraph/warden/resourcetype"
 )
 
 // CompileExpr parses a textual permission expression into an AST.
@@ -76,14 +79,24 @@ type Evaluator struct {
 	resolve  PermResolver // optional; enables traversal into permissions
 
 	mu    sync.RWMutex
-	cache map[string]Expr // keyed by `tenant\x00ns\x00restype\x00perm`
+	cache map[string]exprCacheEntry // keyed by `tenant\x00ns\x00restype\x00perm`
+}
+
+// exprCacheEntry pairs a compiled expression with the UpdatedAt timestamp
+// of the resource type it was compiled from, so a stale cache entry (the
+// resource type's permission expression changed since compilation) can be
+// detected and recompiled instead of silently evaluating a check against
+// an expression that no longer matches the stored definition.
+type exprCacheEntry struct {
+	expr      Expr
+	updatedAt time.Time
 }
 
 // NewEvaluator constructs an evaluator backed by the given relation store.
 func NewEvaluator(relStore relation.Store) *Evaluator {
 	return &Evaluator{
 		relStore: relStore,
-		cache:    make(map[string]Expr),
+		cache:    make(map[string]exprCacheEntry),
 	}
 }
 
@@ -95,13 +108,28 @@ func (e *Evaluator) WithPermResolver(r PermResolver) *Evaluator {
 }
 
 // CompileAndCache parses the expression for a resource-type permission and
-// caches the result. Subsequent Eval calls reuse the AST.
+// caches the result. Subsequent Eval calls reuse the AST. It never treats a
+// cached entry as stale; callers that know the resource type's UpdatedAt
+// should use CompileAndCacheVersioned instead so an edited permission
+// expression doesn't keep evaluating against the old AST.
 func (e *Evaluator) CompileAndCache(tenantID, ns, resourceType, permName, exprSrc string) (Expr, []*Diagnostic) {
+	return e.CompileAndCacheVersioned(tenantID, ns, resourceType, permName, exprSrc, time.Time{})
+}
+
+// CompileAndCacheVersioned is CompileAndCache plus a freshness check: a
+// cached entry is only reused when updatedAt is zero (freshness unknown —
+// same behavior as CompileAndCache) or not newer than the timestamp the
+// cached entry was compiled with. A newer updatedAt means the resource
+// type's permission definition changed since the AST was cached, so the
+// expression is recompiled from exprSrc and the cache entry replaced.
+func (e *Evaluator) CompileAndCacheVersioned(tenantID, ns, resourceType, permName, exprSrc string, updatedAt time.Time) (Expr, []*Diagnostic) {
 	key := cacheKey(tenantID, ns, resourceType, permName)
 	e.mu.RLock()
-	if expr, ok := e.cache[key]; ok {
-		e.mu.RUnlock()
-		return expr, nil
+	if entry, ok := e.cache[key]; ok {
+		if updatedAt.IsZero() || !updatedAt.After(entry.updatedAt) {
+			e.mu.RUnlock()
+			return entry.expr, nil
+		}
 	}
 	e.mu.RUnlock()
 	expr, diags := CompileExpr("<inline>", exprSrc)
@@ -109,7 +137,7 @@ func (e *Evaluator) CompileAndCache(tenantID, ns, resourceType, permName, exprSr
 		return expr, diags
 	}
 	e.mu.Lock()
-	e.cache[key] = expr
+	e.cache[key] = exprCacheEntry{expr: expr, updatedAt: updatedAt}
 	e.mu.Unlock()
 	return expr, nil
 }
@@ -127,6 +155,60 @@ func (e *Evaluator) Invalidate(tenantID, resourceType string) {
 		}
 	}
 }
+
+// InvalidateTenant clears every cached expression for a tenant, across
+// every resource type. Used when a mutation doesn't carry enough
+// information to invalidate a single resource type precisely — e.g. a
+// delete audit event, which only carries an EntityID, not the deleted
+// resource type's Name (the cache key).
+func (e *Evaluator) InvalidateTenant(tenantID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	prefix := tenantID + "\x00"
+	for k := range e.cache {
+		if strings.HasPrefix(k, prefix) {
+			delete(e.cache, k)
+		}
+	}
+}
+
+// invalidatorPlugin invalidates ev's compiled-expression cache whenever a
+// "resourcetype.*" mutation is audited, so an edited or deleted permission
+// expression takes effect on the very next Check instead of continuing to
+// evaluate against a stale cached AST until CompileAndCacheVersioned
+// happens to notice via UpdatedAt.
+type invalidatorPlugin struct {
+	ev *Evaluator
+}
+
+// NewInvalidatorPlugin returns a plugin.Plugin that invalidates ev's cache
+// on every "resourcetype.*" audit event (see plugin.Event, plugin.Audit).
+// Register it on the same engine that uses ev, typically via
+// warden.WithPlugin(dsl.NewInvalidatorPlugin(ev)) alongside
+// warden.WithExpressionEvaluator wiring an EngineEvaluator backed by ev.
+func NewInvalidatorPlugin(ev *Evaluator) plugin.Plugin {
+	return &invalidatorPlugin{ev: ev}
+}
+
+func (p *invalidatorPlugin) Name() string { return "dsl-expression-cache-invalidator" }
+
+// OnAudit implements plugin.Audit.
+func (p *invalidatorPlugin) OnAudit(_ context.Context, ev plugin.Event) error {
+	if !strings.HasPrefix(ev.Action, "resourcetype.") {
+		return nil
+	}
+	if rt, ok := ev.Entity.(*resourcetype.ResourceType); ok && rt != nil {
+		p.ev.Invalidate(ev.TenantID, rt.Name)
+		return nil
+	}
+	// No typed entity to read a Name from (a delete event only carries an
+	// EntityID) — fall back to a full tenant flush so nothing can outlive
+	// the resource type that produced it.
+	p.ev.InvalidateTenant(ev.TenantID)
+	return nil
+}
+
+var _ plugin.Audit = (*invalidatorPlugin)(nil)
 
 // Eval walks the expression AST and returns true iff the subject has the
 // permission on the object given the relation tuples in store.

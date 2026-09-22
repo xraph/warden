@@ -8,6 +8,7 @@ const (
 	ctxKeyAppID contextKey = iota
 	ctxKeyTenantID
 	ctxKeyNamespacePath
+	ctxKeyRequestIP
 )
 
 // WithTenant returns a context with the given app and tenant IDs.
@@ -47,6 +48,21 @@ func tenantIDFromContext(ctx context.Context) string {
 
 func namespacePathFromContext(ctx context.Context) string {
 	v, ok := ctx.Value(ctxKeyNamespacePath).(string)
+	if !ok {
+		return ""
+	}
+	return v
+}
+
+// WithRequestIP returns a context carrying the caller's IP address, used to
+// populate CheckLog entries (checklog.Entry.RequestIP). Typically set once
+// per inbound request by the HTTP/gRPC middleware layer.
+func WithRequestIP(ctx context.Context, ip string) context.Context {
+	return context.WithValue(ctx, ctxKeyRequestIP, ip)
+}
+
+func requestIPFromContext(ctx context.Context) string {
+	v, ok := ctx.Value(ctxKeyRequestIP).(string)
 	if !ok {
 		return ""
 	}

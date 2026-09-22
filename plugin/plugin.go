@@ -8,6 +8,7 @@ package plugin
 
 import (
 	"context"
+	"time"
 
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
@@ -150,4 +151,41 @@ type PolicyObligationFired interface {
 // Shutdown is called during graceful shutdown.
 type Shutdown interface {
 	OnShutdown(ctx context.Context) error
+}
+
+// ──────────────────────────────────────────────────
+// Audit hook
+// ──────────────────────────────────────────────────
+
+// Event describes a single mutation for the audit trail. It is fired for
+// every mutation in addition to the typed hooks above, so a plugin that
+// wants a complete audit stream can implement just Audit instead of every
+// typed hook individually.
+//
+// Actor is warden.Actor, passed as `any` to avoid an import cycle (plugin
+// cannot import the root warden package); it carries Kind, ID and Via.
+// Entity is the entity after the change, or nil on delete. Before is the
+// entity before an update, nil otherwise.
+type Event struct {
+	Actor     any
+	RequestID string
+	TraceID   string
+	At        time.Time
+	// Action is one of: "role.created", "role.updated", "role.deleted",
+	// "permission.created", "permission.deleted", "permission.attached",
+	// "permission.detached", "assignment.created", "assignment.deleted",
+	// "relation.written", "relation.deleted", "policy.created",
+	// "policy.updated", "policy.deleted", "resourcetype.created",
+	// "resourcetype.updated", "resourcetype.deleted", "declarative.applied".
+	Action   string
+	TenantID string
+	EntityID string
+	Entity   any
+	Before   any
+}
+
+// Audit is called for every mutation, in addition to whichever typed hook
+// above also fires for it.
+type Audit interface {
+	OnAudit(ctx context.Context, ev Event) error
 }

@@ -181,7 +181,7 @@ func (c *Contributor) renderOverview(ctx context.Context, s store.Store) (templ.
 
 func (c *Contributor) renderRoles(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
 	search := params.QueryParams["search"]
-	limit := parseIntParam(params.QueryParams, "limit", 20)
+	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
 	roles, total, err := fetchRolesPaginated(ctx, s, "", search, limit, offset)
@@ -235,7 +235,7 @@ func (c *Contributor) renderPermissions(ctx context.Context, s store.Store, para
 	search := params.QueryParams["search"]
 	resource := params.QueryParams["resource"]
 	action := params.QueryParams["action"]
-	limit := parseIntParam(params.QueryParams, "limit", 20)
+	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
 	perms, total, err := fetchPermissionsPaginated(ctx, s, "", search, resource, action, limit, offset)
@@ -251,7 +251,7 @@ func (c *Contributor) renderAssignments(ctx context.Context, s store.Store, para
 	subjectKind := params.QueryParams["subject_kind"]
 	subjectID := params.QueryParams["subject_id"]
 	roleIDStr := params.QueryParams["role_id"]
-	limit := parseIntParam(params.QueryParams, "limit", 20)
+	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
 	items, total, err := fetchAssignmentsPaginated(ctx, s, "", subjectKind, subjectID, roleIDStr, limit, offset)
@@ -273,7 +273,7 @@ func (c *Contributor) renderRelations(ctx context.Context, s store.Store, params
 	rel := params.QueryParams["relation"]
 	subjectType := params.QueryParams["subject_type"]
 	subjectID := params.QueryParams["subject_id"]
-	limit := parseIntParam(params.QueryParams, "limit", 20)
+	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
 	items, total, err := fetchRelationsPaginated(ctx, s, "", objectType, objectID, rel, subjectType, subjectID, limit, offset)
@@ -289,7 +289,7 @@ func (c *Contributor) renderPolicies(ctx context.Context, s store.Store, params 
 	search := params.QueryParams["search"]
 	effectStr := params.QueryParams["effect"]
 	active := parseBoolParam(params.QueryParams, "active")
-	limit := parseIntParam(params.QueryParams, "limit", 20)
+	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
 	items, total, err := fetchPoliciesPaginated(ctx, s, "", search, effectStr, active, limit, offset)
@@ -348,7 +348,7 @@ func (c *Contributor) renderPolicyForm(ctx context.Context, s store.Store, param
 
 func (c *Contributor) renderResourceTypes(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
 	search := params.QueryParams["search"]
-	limit := parseIntParam(params.QueryParams, "limit", 20)
+	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
 	items, total, err := fetchResourceTypesPaginated(ctx, s, "", search, limit, offset)
@@ -388,7 +388,7 @@ func (c *Contributor) renderResourceTypeForm(_ context.Context, _ store.Store) (
 }
 
 func (c *Contributor) renderCheckLogs(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
-	limit := parseIntParam(params.QueryParams, "limit", 50)
+	limit := parseLimitParam(params.QueryParams, 50)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
 	items, total, err := fetchCheckLogsPaginated(ctx, s, "", params.QueryParams, limit, offset)

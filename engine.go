@@ -7,10 +7,12 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/plugin"
+	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store"
 )
 
@@ -25,6 +27,15 @@ type Engine struct {
 	plugins     *plugin.Registry
 	logger      log.Logger
 	config      Config
+	metrics     Metrics
+
+	checkLogWriter *checkLogWriter
+	maintCancel    context.CancelFunc
+
+	// nowFn is the clock RunMaintenance uses to decide what has expired.
+	// Unexported so tests in this package can substitute a fixed clock
+	// without expanding the public API.
+	nowFn func() time.Time
 }
 
 // ExpressionEvaluator is an optional engine hook that evaluates resource-type
@@ -41,10 +52,11 @@ type ExpressionEvaluator interface {
 // NewEngine creates a new Warden engine with the given options.
 func NewEngine(opts ...Option) (*Engine, error) {
 	e := &Engine{
-		evaluator:   DefaultEvaluator(),
-		graphWalker: DefaultGraphWalker(10),
-		logger:      log.NewNoopLogger(),
-		config:      DefaultConfig(),
+		evaluator: DefaultEvaluator(),
+		logger:    log.NewNoopLogger(),
+		config:    DefaultConfig(),
+		metrics:   NoopMetrics{},
+		nowFn:     time.Now,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -52,10 +64,43 @@ func NewEngine(opts ...Option) (*Engine, error) {
 	if e.store == nil {
 		return nil, errors.New("warden: store is required")
 	}
-	// Update graph walker max depth from config.
-	if e.config.MaxGraphDepth > 0 {
-		e.graphWalker = DefaultGraphWalker(e.config.MaxGraphDepth)
+	if err := e.config.Validate(); err != nil {
+		return nil, fmt.Errorf("warden: invalid config: %w", err)
 	}
+
+	// Wire the configured logger into the default evaluator, constructed
+	// before WithLogger ran. A caller-supplied Evaluator (WithEvaluator) is
+	// left alone.
+	if ls, ok := e.evaluator.(interface{ setLogger(log.Logger) }); ok {
+		ls.setLogger(e.logger)
+	}
+
+	// Build the graph walker from config now that MaxGraphDepth/Visited/
+	// Fanout and the metrics sink are all resolved, unless the caller
+	// supplied their own via WithGraphWalker.
+	if e.graphWalker == nil {
+		e.graphWalker = NewGraphWalker(e.config.MaxGraphDepth, e.config.MaxGraphVisited, e.config.MaxGraphFanout, e.metrics)
+	}
+
+	// Auto-build the memory cache from Config.CacheTTL when the caller
+	// didn't supply one explicitly via WithCache.
+	if e.cache == nil && e.config.CacheTTL > 0 {
+		e.cache = NewMemoryCache(WithCacheTTL(e.config.CacheTTL), WithCacheMaxSize(e.config.CacheMaxSize))
+	}
+	if e.cache != nil {
+		if e.plugins == nil {
+			e.plugins = plugin.NewRegistry(e.logger)
+		}
+		e.plugins.Register(newCacheInvalidator(e.cache))
+	}
+	if e.plugins != nil {
+		e.plugins.SetMetrics(e.metrics)
+	}
+
+	if e.config.checkLogEnabled() {
+		e.checkLogWriter = newCheckLogWriter(e.store, e.config.CheckLogQueueSize, e.logger, e.metrics)
+	}
+
 	return e, nil
 }
 
@@ -78,11 +123,62 @@ func (e *Engine) Health(ctx context.Context) error {
 	return e.store.Ping(ctx)
 }
 
-// Start performs any startup initialization.
-func (e *Engine) Start(_ context.Context) error { return nil }
+// Start performs startup initialization: logs a summary of the engine's
+// check-log/cache/maintenance configuration and, when
+// Config.MaintenanceInterval > 0, starts the background maintenance loop
+// (RunMaintenance on that interval) that Stop later cancels.
+func (e *Engine) Start(_ context.Context) error {
+	e.logger.Info("warden: engine starting",
+		log.Bool("check_log_enabled", e.config.checkLogEnabled()),
+		log.String("check_log_retention", e.config.CheckLogRetention.String()),
+		log.Int("check_log_queue_size", e.config.CheckLogQueueSize),
+		log.Bool("cache_enabled", e.cache != nil),
+		log.String("maintenance_interval", e.config.MaintenanceInterval.String()),
+	)
+	if e.config.MaintenanceInterval > 0 {
+		mctx, cancel := context.WithCancel(context.Background())
+		e.maintCancel = cancel
+		e.StartMaintenance(mctx)
+	}
+	return nil
+}
 
-// Stop performs graceful shutdown.
-func (e *Engine) Stop(_ context.Context) error { return nil }
+// Stop performs graceful shutdown: cancels the maintenance loop, drains the
+// check log writer (best-effort, bounded by ctx), and notifies Shutdown
+// plugin hooks.
+func (e *Engine) Stop(ctx context.Context) error {
+	if e.maintCancel != nil {
+		e.maintCancel()
+	}
+	var err error
+	if e.checkLogWriter != nil {
+		err = e.checkLogWriter.Stop(ctx)
+	}
+	if e.plugins != nil {
+		e.plugins.EmitShutdown(ctx)
+	}
+	return err
+}
+
+// InvalidateSubject clears every cached Check result for one subject. A
+// no-op when no Cache is configured.
+func (e *Engine) InvalidateSubject(ctx context.Context, tenantID string, subjectKind SubjectKind, subjectID string) {
+	if e.cache == nil {
+		return
+	}
+	e.cache.InvalidateSubject(ctx, tenantID, subjectKind, subjectID)
+	e.metrics.CacheInvalidated("subject")
+}
+
+// InvalidateTenant clears every cached Check result for a tenant. A no-op
+// when no Cache is configured.
+func (e *Engine) InvalidateTenant(ctx context.Context, tenantID string) {
+	if e.cache == nil {
+		return
+	}
+	e.cache.InvalidateTenant(ctx, tenantID)
+	e.metrics.CacheInvalidated("tenant")
+}
 
 // Check performs an authorization check. This is the hot path.
 // Optional CallOption values override scope for this single call.
@@ -120,6 +216,14 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 		scope.namespacePath = co.namespacePath
 	}
 
+	if e.config.requireTenant() && scope.tenantID == "" {
+		return nil, ErrTenantRequired
+	}
+
+	// Computed once, after every scope override has been applied, and
+	// reused by every evaluator below instead of each recomputing it.
+	scope.namespaces = AncestorNamespaces(scope.namespacePath)
+
 	e.logger.Debug("warden: check",
 		log.String("subject_kind", string(req.Subject.Kind)),
 		log.String("subject_id", req.Subject.ID),
@@ -129,43 +233,54 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 		log.String("scope_tenant_id", scope.tenantID),
 	)
 
-	// 1. Cache hit?
-	if e.cache != nil {
-		if cached, ok := e.cache.Get(ctx, scope.tenantID, req); ok {
-			cached.EvalTimeNs = time.Since(start).Nanoseconds()
-			return cached, nil
-		}
-	}
-
-	// 1b. Extension hook: before check.
 	if e.plugins != nil {
 		e.plugins.EmitBeforeCheck(ctx, req)
 	}
 
-	var rbacResult, rebacResult, abacResult *CheckResult
+	// 1. Cache hit? Hooks and the check log still fire on a hit — only the
+	// RBAC/ReBAC/ABAC evaluation itself is skipped.
+	if e.cache != nil {
+		if cached, ok := e.cache.Get(ctx, scope.tenantID, scope.namespacePath, req); ok {
+			result := *cached
+			result.EvalTimeNs = time.Since(start).Nanoseconds()
+			e.metrics.CheckEvaluated(result.Decision, decisionSource(&result), time.Since(start), true)
+			e.emitAfterCheck(ctx, req, &result)
+			e.writeCheckLog(ctx, scope, req, &result, true, "")
+			return &result, nil
+		}
+	}
+
+	var rbacResult *CheckResult
+	var rbacRoles []*role.Role
 	var err error
 
 	// 2. RBAC: resolve roles → check permissions.
 	if e.config.rbacEnabled() {
-		rbacResult, err = e.evaluateRBAC(ctx, scope, req)
+		rbacResult, rbacRoles, err = e.evaluateRBAC(ctx, scope, req)
 		if err != nil {
-			return nil, fmt.Errorf("warden rbac: %w", err)
+			return e.failCheck(ctx, scope, req, fmt.Errorf("warden rbac: %w", err))
 		}
 	}
 
-	// 3. ReBAC: check relation tuples → walk graph.
-	if e.config.rebacEnabled() {
+	// 3. ReBAC: check relation tuples → walk graph. Skipped once RBAC has
+	// already allowed the request, unless EvaluateAllModels is set — the
+	// graph walk is the most expensive of the three evaluators.
+	var rebacResult *CheckResult
+	if e.config.rebacEnabled() && (rbacResult == nil || !rbacResult.Allowed || e.config.EvaluateAllModels) {
 		rebacResult, err = e.evaluateReBAC(ctx, scope, req)
 		if err != nil {
-			return nil, fmt.Errorf("warden rebac: %w", err)
+			return e.failCheck(ctx, scope, req, fmt.Errorf("warden rebac: %w", err))
 		}
 	}
 
-	// 4. ABAC: evaluate active policies with conditions.
+	// 4. ABAC: evaluate active policies with conditions. Always runs (even
+	// after an RBAC/ReBAC allow) because an explicit deny policy must be
+	// able to override an allow from another model.
+	var abacResult *CheckResult
 	if e.config.abacEnabled() {
-		abacResult, err = e.evaluateABAC(ctx, scope, req)
+		abacResult, err = e.evaluateABAC(ctx, scope, req, rolesToSlugs(rbacRoles))
 		if err != nil {
-			return nil, fmt.Errorf("warden abac: %w", err)
+			return e.failCheck(ctx, scope, req, fmt.Errorf("warden abac: %w", err))
 		}
 	}
 
@@ -173,25 +288,49 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	result := e.mergeDecisions(req, rbacResult, rebacResult, abacResult)
 	result.EvalTimeNs = time.Since(start).Nanoseconds()
 
+	e.metrics.CheckEvaluated(result.Decision, decisionSource(result), time.Since(start), false)
+
 	// 6. Cache the result.
 	if e.cache != nil {
-		e.cache.Set(ctx, scope.tenantID, req, result)
+		e.cache.Set(ctx, scope.tenantID, scope.namespacePath, req, result)
 	}
 
 	// 7. Extension hooks: per-obligation, then after check.
-	if e.plugins != nil {
-		for _, ob := range result.Obligations {
-			e.plugins.EmitPolicyObligationFired(ctx, policyIDFromMatched(result.MatchedBy), ob, req, result)
-		}
-		e.plugins.EmitAfterCheck(ctx, req, result)
-	}
+	e.emitAfterCheck(ctx, req, result)
 
-	// 8. Write check log entry (fire-and-forget).
-	if e.config.checkLogEnabled() {
-		go e.writeCheckLog(ctx, scope, req, result)
-	}
+	// 8. Write check log entry (via the bounded batching writer — never a
+	// per-call goroutine).
+	e.writeCheckLog(ctx, scope, req, result, false, "")
 
 	return result, nil
+}
+
+func (e *Engine) emitAfterCheck(ctx context.Context, req *CheckRequest, result *CheckResult) {
+	if e.plugins == nil {
+		return
+	}
+	for _, ob := range result.Obligations {
+		e.plugins.EmitPolicyObligationFired(ctx, policyIDFromMatched(result.MatchedBy), ob, req, result)
+	}
+	e.plugins.EmitAfterCheck(ctx, req, result)
+}
+
+// failCheck records a check-evaluation failure (as a check log entry with
+// Decision "error") and returns the error unchanged, so every Check error
+// path still leaves an audit trail.
+func (e *Engine) failCheck(ctx context.Context, scope tenantScope, req *CheckRequest, err error) (*CheckResult, error) {
+	e.metrics.StoreError("check")
+	e.writeCheckLog(ctx, scope, req, nil, false, err.Error())
+	return nil, err
+}
+
+// decisionSource returns the evaluator that produced result's decision
+// ("rbac", "rebac", "abac"), or "none" when nothing matched.
+func decisionSource(result *CheckResult) string {
+	if result == nil || len(result.MatchedBy) == 0 {
+		return "none"
+	}
+	return result.MatchedBy[0].Source
 }
 
 // Enforce returns an error if the authorization check is denied.
@@ -221,149 +360,235 @@ func (e *Engine) CanI(ctx context.Context, subjectKind SubjectKind, subjectID, a
 	return result.Allowed, nil
 }
 
-func (e *Engine) writeCheckLog(ctx context.Context, scope tenantScope, req *CheckRequest, result *CheckResult) {
-	entry := &checklog.Entry{
-		ID:           id.NewCheckLogID(),
-		TenantID:     scope.tenantID,
-		AppID:        scope.appID,
-		SubjectKind:  string(req.Subject.Kind),
-		SubjectID:    req.Subject.ID,
-		Action:       req.Action.Name,
-		ResourceType: req.Resource.Type,
-		ResourceID:   req.Resource.ID,
-		Decision:     string(result.Decision),
-		Reason:       result.Reason,
-		EvalTimeNs:   result.EvalTimeNs,
-		CreatedAt:    time.Now(),
+// writeCheckLog builds a check log entry and hands it to the bounded
+// batching writer. cached marks a cache-hit entry; evalErr, when non-empty,
+// marks an evaluation-error entry (Decision "error"). Never blocks: a full
+// writer queue drops the entry and increments Metrics.CheckLogDropped.
+func (e *Engine) writeCheckLog(ctx context.Context, scope tenantScope, req *CheckRequest, result *CheckResult, cached bool, evalErr string) {
+	if !e.config.checkLogEnabled() || e.checkLogWriter == nil {
+		return
 	}
-	if err := e.store.CreateCheckLog(context.WithoutCancel(ctx), entry); err != nil {
-		e.logger.Error("warden: failed to write check log", log.Error(err))
+	e.checkLogWriter.Enqueue(e.buildCheckLogEntry(ctx, scope, req, result, cached, evalErr))
+}
+
+func (e *Engine) buildCheckLogEntry(ctx context.Context, scope tenantScope, req *CheckRequest, result *CheckResult, cached bool, evalErr string) *checklog.Entry {
+	decision := "error"
+	reason := ""
+	var matchedBy []checklog.MatchRef
+	var obligations []string
+	var evalTimeNs int64
+	if result != nil {
+		decision = string(result.Decision)
+		reason = result.Reason
+		matchedBy = toMatchRefs(result.MatchedBy)
+		obligations = result.Obligations
+		evalTimeNs = result.EvalTimeNs
+	}
+	if evalErr != "" {
+		decision = "error"
+	}
+
+	traceID := log.TraceIDFromContext(ctx)
+	if traceID == "" {
+		if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
+			traceID = sc.TraceID().String()
+		}
+	}
+
+	return &checklog.Entry{
+		ID:            id.NewCheckLogID(),
+		TenantID:      scope.tenantID,
+		NamespacePath: scope.namespacePath,
+		AppID:         scope.appID,
+		SubjectKind:   string(req.Subject.Kind),
+		SubjectID:     req.Subject.ID,
+		Action:        req.Action.Name,
+		ResourceType:  req.Resource.Type,
+		ResourceID:    req.Resource.ID,
+		Decision:      decision,
+		Reason:        reason,
+		MatchedBy:     matchedBy,
+		Obligations:   obligations,
+		EvalTimeNs:    evalTimeNs,
+		RequestIP:     requestIPFromContext(ctx),
+		RequestID:     log.RequestIDFromContext(ctx),
+		TraceID:       traceID,
+		Cached:        cached,
+		Error:         evalErr,
+		CreatedAt:     time.Now(),
 	}
 }
 
-func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, error) {
-	// Cascading scope: resolve roles assigned at the request's namespace and
-	// every ancestor up to the tenant root.
-	namespaces := AncestorNamespaces(scope.namespacePath)
+func toMatchRefs(in []MatchInfo) []checklog.MatchRef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]checklog.MatchRef, len(in))
+	for i, m := range in {
+		out[i] = checklog.MatchRef{Source: m.Source, RuleID: m.RuleID, Detail: m.Detail}
+	}
+	return out
+}
 
-	// 1. Get roles assigned to subject (global + resource-scoped).
-	globalRoles, err := e.store.ListRolesForSubject(ctx, scope.tenantID, namespaces, string(req.Subject.Kind), req.Subject.ID)
+// resolveAssignedRoles resolves the full set of roles held by the request's
+// subject — direct (global + resource-scoped) assignments, plus every role
+// reached by walking ParentSlug inheritance — as full Role objects, so
+// callers can read both permissions (RBAC) and slugs (role-scoped ABAC
+// matching, see matchesSubject) from the same resolution.
+func (e *Engine) resolveAssignedRoles(ctx context.Context, scope tenantScope, req *CheckRequest) ([]*role.Role, error) {
+	globalRoleIDs, err := e.store.ListRolesForSubject(ctx, scope.tenantID, scope.namespaces, string(req.Subject.Kind), req.Subject.ID)
 	if err != nil {
+		e.metrics.StoreError("list_roles_for_subject")
 		return nil, err
 	}
-	resourceRoles, err := e.store.ListRolesForSubjectOnResource(ctx, scope.tenantID, namespaces, string(req.Subject.Kind), req.Subject.ID, req.Resource.Type, req.Resource.ID)
+	resourceRoleIDs, err := e.store.ListRolesForSubjectOnResource(ctx, scope.tenantID, scope.namespaces, string(req.Subject.Kind), req.Subject.ID, req.Resource.Type, req.Resource.ID)
 	if err != nil {
+		e.metrics.StoreError("list_roles_for_subject_on_resource")
 		return nil, err
 	}
-	allRoles := make([]id.RoleID, 0, len(globalRoles)+len(resourceRoles))
-	allRoles = append(allRoles, globalRoles...)
-	allRoles = append(allRoles, resourceRoles...)
 
-	if len(allRoles) == 0 {
-		e.logger.Debug("warden: rbac no roles found",
-			log.String("tenant_id", scope.tenantID),
-			log.String("subject_kind", string(req.Subject.Kind)),
-			log.String("subject_id", req.Subject.ID),
-		)
-		return &CheckResult{Decision: DecisionDenyNoRoles, Reason: fmt.Sprintf("subject %s:%s has no assigned roles in tenant %q", req.Subject.Kind, req.Subject.ID, scope.tenantID)}, nil
+	allIDs := make([]id.RoleID, 0, len(globalRoleIDs)+len(resourceRoleIDs))
+	allIDs = append(allIDs, globalRoleIDs...)
+	allIDs = append(allIDs, resourceRoleIDs...)
+	if len(allIDs) == 0 {
+		return nil, nil
 	}
 
-	// 2. Walk parent chain for inherited roles.
-	allRoles = e.resolveInheritedRoles(ctx, scope.tenantID, allRoles)
+	direct, err := e.store.GetRoles(ctx, scope.tenantID, allIDs)
+	if err != nil {
+		e.metrics.StoreError("get_roles")
+		return nil, err
+	}
 
-	// 3. Check if any role grants "resource:action" permission (glob matching).
-	permName := req.Resource.Type + ":" + req.Action.Name
+	return e.resolveInheritedRoleObjects(ctx, direct), nil
+}
 
-	e.logger.Debug("warden: rbac evaluating",
-		log.Int("role_count", len(allRoles)),
-		log.String("perm_required", permName),
-		log.String("tenant_id", scope.tenantID),
-	)
+// resolveInheritedRoleObjects walks ParentSlug inheritance breadth-first,
+// one level at a time, deduplicating both by role ID (a role already
+// resolved at an earlier level is never re-walked) and by (namespace,slug)
+// within a level (two roles at the same level sharing a parent slug only
+// trigger one GetRoleBySlug call). depth is capped at 20 to bound a cyclic
+// parent chain.
+func (e *Engine) resolveInheritedRoleObjects(ctx context.Context, initial []*role.Role) []*role.Role {
+	seen := make(map[string]struct{}, len(initial))
+	var result []*role.Role
 
-	for _, roleID := range allRoles {
-		perms, err := e.store.ListRolePermissions(ctx, scope.tenantID, roleID)
-		if err != nil {
-			e.logger.Warn("warden: rbac ListRolePermissions error",
-				log.String("role_id", roleID.String()),
-				log.Error(err),
-			)
+	level := initial
+	// depth <= 20 (not <) matches the original recursive walker's cap
+	// ("if depth > 20 { return }" before appending), which permits 21
+	// levels total (depth 0 through 20 inclusive) before the safety limit
+	// bites — a chain shallower than that must resolve every level.
+	for depth := 0; len(level) > 0 && depth <= 20; depth++ {
+		var nextLevel []*role.Role
+		parentCache := make(map[string]*role.Role)
+
+		for _, r := range level {
+			if r == nil {
+				continue
+			}
+			key := r.ID.String()
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, r)
+
+			if r.ParentSlug == "" {
+				continue
+			}
+			pkey := r.NamespacePath + "\x00" + r.ParentSlug
+			parent, ok := parentCache[pkey]
+			if !ok {
+				var perr error
+				parent, perr = e.store.GetRoleBySlug(ctx, r.TenantID, r.NamespacePath, r.ParentSlug)
+				if perr != nil || parent == nil {
+					parentCache[pkey] = nil
+					continue
+				}
+				parentCache[pkey] = parent
+			}
+			if parent == nil {
+				continue
+			}
+			if _, ok := seen[parent.ID.String()]; ok {
+				continue
+			}
+			nextLevel = append(nextLevel, parent)
+		}
+		level = nextLevel
+	}
+	return result
+}
+
+// rolesToSlugs extracts role slugs for role-scoped ABAC matching
+// (policy.SubjectMatch.Role).
+func rolesToSlugs(roles []*role.Role) []string {
+	if len(roles) == 0 {
+		return nil
+	}
+	slugs := make([]string, 0, len(roles))
+	for _, r := range roles {
+		if r == nil {
 			continue
 		}
+		slugs = append(slugs, r.Slug)
+	}
+	return slugs
+}
 
-		e.logger.Debug("warden: rbac checking role",
-			log.String("role_id", roleID.String()),
-			log.Int("perm_count", len(perms)),
-		)
+func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, []*role.Role, error) {
+	roles, err := e.resolveAssignedRoles(ctx, scope, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(roles) == 0 {
+		return &CheckResult{Decision: DecisionDenyNoRoles, Reason: fmt.Sprintf("subject %s:%s has no assigned roles in tenant %q", req.Subject.Kind, req.Subject.ID, scope.tenantID)}, nil, nil
+	}
 
-		// Phase A.5: ListRolePermissions returns full Permission records via JOIN.
-		// No more N+1 GetPermission lookups in this hot path.
-		for _, perm := range perms {
+	roleIDs := make([]id.RoleID, len(roles))
+	for i, r := range roles {
+		roleIDs[i] = r.ID
+	}
+
+	// One JOIN-backed call for every role's grants, instead of the
+	// previous ListRolePermissions-per-role loop.
+	permsByRole, err := e.store.ListRolePermissionsForRoles(ctx, scope.tenantID, roleIDs)
+	if err != nil {
+		e.metrics.StoreError("list_role_permissions_for_roles")
+		return nil, roles, err
+	}
+
+	permName := req.Resource.Type + ":" + req.Action.Name
+
+	for _, r := range roles {
+		for _, perm := range permsByRole[r.ID] {
 			if perm == nil {
 				continue
 			}
 			storedPerm := perm.Resource + ":" + perm.Action
-			matched := matchPermission(storedPerm, permName)
-
-			e.logger.Debug("warden: rbac checking perm",
-				log.String("stored_perm", storedPerm),
-				log.String("required_perm", permName),
-				log.Bool("match", matched),
-			)
-
-			if matched {
+			if matchPermission(storedPerm, permName) {
 				return &CheckResult{
 					Allowed:  true,
 					Decision: DecisionAllow,
 					MatchedBy: []MatchInfo{{
 						Source: "rbac",
-						RuleID: roleID.String(),
+						RuleID: r.ID.String(),
 						Detail: "role grants " + storedPerm,
 					}},
-				}, nil
+				}, roles, nil
 			}
 		}
 	}
 
-	return &CheckResult{Decision: DecisionDenyNoPerms, Reason: fmt.Sprintf("no role grants permission %q for subject %s:%s", permName, req.Subject.Kind, req.Subject.ID)}, nil
-}
-
-func (e *Engine) resolveInheritedRoles(ctx context.Context, tenantID string, roleIDs []id.RoleID) []id.RoleID {
-	seen := make(map[string]struct{}, len(roleIDs))
-	result := make([]id.RoleID, 0, len(roleIDs)*2)
-
-	for _, rid := range roleIDs {
-		e.walkRoleParents(ctx, tenantID, rid, seen, &result, 0)
-	}
-	return result
-}
-
-func (e *Engine) walkRoleParents(ctx context.Context, tenantID string, roleID id.RoleID, seen map[string]struct{}, result *[]id.RoleID, depth int) {
-	key := roleID.String()
-	if _, ok := seen[key]; ok {
-		return
-	}
-	if depth > 20 {
-		return // Safety limit.
-	}
-	seen[key] = struct{}{}
-	*result = append(*result, roleID)
-
-	r, err := e.store.GetRole(ctx, tenantID, roleID)
-	if err != nil || r == nil || r.ParentSlug == "" {
-		return
-	}
-	parent, err := e.store.GetRoleBySlug(ctx, r.TenantID, r.NamespacePath, r.ParentSlug)
-	if err != nil || parent == nil {
-		return
-	}
-	e.walkRoleParents(ctx, tenantID, parent.ID, seen, result, depth+1)
+	return &CheckResult{Decision: DecisionDenyNoPerms, Reason: fmt.Sprintf("no role grants permission %q for subject %s:%s", permName, req.Subject.Kind, req.Subject.ID)}, roles, nil
 }
 
 func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, error) {
 	// Direct relation check. Relations cascade like roles/policies: a tuple at
 	// an ancestor namespace is in scope for a check at a descendant namespace.
-	direct, err := e.store.CheckDirectRelation(ctx, scope.tenantID, AncestorNamespaces(scope.namespacePath), req.Resource.Type, req.Resource.ID, req.Action.Name, string(req.Subject.Kind), req.Subject.ID)
+	direct, err := e.store.CheckDirectRelation(ctx, scope.tenantID, scope.namespaces, req.Resource.Type, req.Resource.ID, req.Action.Name, string(req.Subject.Kind), req.Subject.ID)
 	if err != nil {
+		e.metrics.StoreError("check_direct_relation")
 		return nil, err
 	}
 	if direct {
@@ -395,8 +620,14 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 	// Walk graph for transitive permissions.
 	if e.graphWalker != nil {
 		allowed, path, err := e.graphWalker.Walk(ctx, e.store, scope.tenantID, scope.namespacePath, req)
-		if err != nil && !errors.Is(err, ErrGraphDepthExceeded) {
-			return nil, err
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrGraphDepthExceeded):
+			case errors.Is(err, ErrGraphBudgetExceeded):
+			default:
+				e.metrics.StoreError("graph_walk")
+				return nil, err
+			}
 		}
 		if allowed {
 			return &CheckResult{
@@ -410,14 +641,26 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 	return &CheckResult{Decision: DecisionDenyRelation, Reason: fmt.Sprintf("no relation grants %s:%s %s access to %s:%s", req.Subject.Kind, req.Subject.ID, req.Action.Name, req.Resource.Type, req.Resource.ID)}, nil
 }
 
-func (e *Engine) evaluateABAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, error) {
+func (e *Engine) evaluateABAC(ctx context.Context, scope tenantScope, req *CheckRequest, roleSlugs []string) (*CheckResult, error) {
+	if !e.config.rbacEnabled() {
+		// RBAC didn't already resolve roles for us — do it here so
+		// role-scoped policies (policy.SubjectMatch.Role) still work when
+		// RBAC evaluation itself is disabled.
+		roles, err := e.resolveAssignedRoles(ctx, scope, req)
+		if err != nil {
+			e.logger.Warn("warden: abac role slug resolution failed", log.Error(err))
+		} else {
+			roleSlugs = rolesToSlugs(roles)
+		}
+	}
+
 	// Policies cascade: include policies at the request's namespace and every ancestor.
-	namespaces := AncestorNamespaces(scope.namespacePath)
-	policies, err := e.store.ListActivePolicies(ctx, scope.tenantID, namespaces)
+	policies, err := e.store.ListActivePolicies(ctx, scope.tenantID, scope.namespaces)
 	if err != nil {
+		e.metrics.StoreError("list_active_policies")
 		return nil, err
 	}
-	return e.evaluator.Evaluate(ctx, policies, req)
+	return e.evaluator.Evaluate(ctx, policies, req, roleSlugs)
 }
 
 func (e *Engine) mergeDecisions(req *CheckRequest, rbac, rebac, abac *CheckResult) *CheckResult {

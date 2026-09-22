@@ -20,14 +20,14 @@ func TestMemoryCacheHitMiss(t *testing.T) {
 	result := &warden.CheckResult{Allowed: true, Decision: warden.DecisionAllow}
 
 	// Miss
-	_, ok := c.Get(ctx, "t1", req)
+	_, ok := c.Get(ctx, "t1", "", req)
 	if ok {
 		t.Fatal("expected cache miss")
 	}
 
 	// Set + Hit
-	c.Set(ctx, "t1", req, result)
-	got, ok := c.Get(ctx, "t1", req)
+	c.Set(ctx, "t1", "", req, result)
+	got, ok := c.Get(ctx, "t1", "", req)
 	if !ok {
 		t.Fatal("expected cache hit")
 	}
@@ -47,10 +47,10 @@ func TestMemoryCacheTTLExpiry(t *testing.T) {
 	}
 	result := &warden.CheckResult{Allowed: true}
 
-	c.Set(ctx, "t1", req, result)
+	c.Set(ctx, "t1", "", req, result)
 	time.Sleep(5 * time.Millisecond)
 
-	_, ok := c.Get(ctx, "t1", req)
+	_, ok := c.Get(ctx, "t1", "", req)
 	if ok {
 		t.Fatal("expected cache miss after TTL expiry")
 	}
@@ -71,19 +71,19 @@ func TestMemoryCacheInvalidateTenant(t *testing.T) {
 		Resource: warden.Resource{Type: "doc", ID: "d2"},
 	}
 
-	c.Set(ctx, "t1", req1, &warden.CheckResult{Allowed: true})
-	c.Set(ctx, "t1", req2, &warden.CheckResult{Allowed: false})
-	c.Set(ctx, "t2", req1, &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t1", "", req1, &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t1", "", req2, &warden.CheckResult{Allowed: false})
+	c.Set(ctx, "t2", "", req1, &warden.CheckResult{Allowed: true})
 
 	c.InvalidateTenant(ctx, "t1")
 
-	if _, ok := c.Get(ctx, "t1", req1); ok {
+	if _, ok := c.Get(ctx, "t1", "", req1); ok {
 		t.Fatal("t1 req1 should be invalidated")
 	}
-	if _, ok := c.Get(ctx, "t1", req2); ok {
+	if _, ok := c.Get(ctx, "t1", "", req2); ok {
 		t.Fatal("t1 req2 should be invalidated")
 	}
-	if _, ok := c.Get(ctx, "t2", req1); !ok {
+	if _, ok := c.Get(ctx, "t2", "", req1); !ok {
 		t.Fatal("t2 req1 should still be cached")
 	}
 }
@@ -103,15 +103,15 @@ func TestMemoryCacheInvalidateSubject(t *testing.T) {
 		Resource: warden.Resource{Type: "doc", ID: "d1"},
 	}
 
-	c.Set(ctx, "t1", req1, &warden.CheckResult{Allowed: true})
-	c.Set(ctx, "t1", req2, &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t1", "", req1, &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t1", "", req2, &warden.CheckResult{Allowed: true})
 
 	c.InvalidateSubject(ctx, "t1", warden.SubjectUser, "u1")
 
-	if _, ok := c.Get(ctx, "t1", req1); ok {
+	if _, ok := c.Get(ctx, "t1", "", req1); ok {
 		t.Fatal("u1 should be invalidated")
 	}
-	if _, ok := c.Get(ctx, "t1", req2); !ok {
+	if _, ok := c.Get(ctx, "t1", "", req2); !ok {
 		t.Fatal("u2 should still be cached")
 	}
 }
@@ -119,35 +119,28 @@ func TestMemoryCacheInvalidateSubject(t *testing.T) {
 // TestMemoryCacheNamespaceIsolation guards against caching a check result computed
 // for one namespace and returning it for another. Role assignments are commonly
 // scoped per-namespace (e.g. per workspace/tenant subtree), so two requests that are
-// identical except for NamespacePath can have different outcomes and must not share
+// identical except for namespace can have different outcomes and must not share
 // a cache entry.
 func TestMemoryCacheNamespaceIsolation(t *testing.T) {
 	ctx := context.Background()
 	c := NewMemory(WithTTL(time.Minute))
 
-	reqA := &warden.CheckRequest{
-		NamespacePath: "ws-A",
-		Subject:       warden.Subject{Kind: warden.SubjectUser, ID: "u1"},
-		Action:        warden.Action{Name: "create"},
-		Resource:      warden.Resource{Type: "connections"},
-	}
-	reqB := &warden.CheckRequest{
-		NamespacePath: "ws-B",
-		Subject:       warden.Subject{Kind: warden.SubjectUser, ID: "u1"},
-		Action:        warden.Action{Name: "create"},
-		Resource:      warden.Resource{Type: "connections"},
+	req := &warden.CheckRequest{
+		Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "u1"},
+		Action:   warden.Action{Name: "create"},
+		Resource: warden.Resource{Type: "connections"},
 	}
 
 	// Allowed in namespace ws-A only.
-	c.Set(ctx, "t1", reqA, &warden.CheckResult{Allowed: true, Decision: warden.DecisionAllow})
+	c.Set(ctx, "t1", "ws-A", req, &warden.CheckResult{Allowed: true, Decision: warden.DecisionAllow})
 
 	// A different namespace must be a cache miss, not the ws-A result.
-	if _, ok := c.Get(ctx, "t1", reqB); ok {
+	if _, ok := c.Get(ctx, "t1", "ws-B", req); ok {
 		t.Fatal("namespace ws-B got a cache hit from a ws-A entry (cross-namespace leak)")
 	}
 
 	// The exact same request (ws-A) must still hit.
-	if _, ok := c.Get(ctx, "t1", reqA); !ok {
+	if _, ok := c.Get(ctx, "t1", "ws-A", req); !ok {
 		t.Fatal("expected cache hit for the same namespace")
 	}
 }
@@ -158,49 +151,86 @@ func TestMemoryCacheInvalidateSubjectAcrossNamespaces(t *testing.T) {
 	ctx := context.Background()
 	c := NewMemory()
 
-	mk := func(ns, user string) *warden.CheckRequest {
-		return &warden.CheckRequest{
-			NamespacePath: ns,
-			Subject:       warden.Subject{Kind: warden.SubjectUser, ID: user},
-			Action:        warden.Action{Name: "read"},
-			Resource:      warden.Resource{Type: "doc"},
-		}
+	req := &warden.CheckRequest{
+		Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "u1"},
+		Action:   warden.Action{Name: "read"},
+		Resource: warden.Resource{Type: "doc"},
+	}
+	req2 := &warden.CheckRequest{
+		Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "u2"},
+		Action:   warden.Action{Name: "read"},
+		Resource: warden.Resource{Type: "doc"},
 	}
 
-	c.Set(ctx, "t1", mk("ws-A", "u1"), &warden.CheckResult{Allowed: true})
-	c.Set(ctx, "t1", mk("ws-B", "u1"), &warden.CheckResult{Allowed: true})
-	c.Set(ctx, "t1", mk("ws-A", "u2"), &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t1", "ws-A", req, &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t1", "ws-B", req, &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t1", "ws-A", req2, &warden.CheckResult{Allowed: true})
 
 	c.InvalidateSubject(ctx, "t1", warden.SubjectUser, "u1")
 
-	if _, ok := c.Get(ctx, "t1", mk("ws-A", "u1")); ok {
+	if _, ok := c.Get(ctx, "t1", "ws-A", req); ok {
 		t.Fatal("u1 ws-A should be invalidated")
 	}
-	if _, ok := c.Get(ctx, "t1", mk("ws-B", "u1")); ok {
+	if _, ok := c.Get(ctx, "t1", "ws-B", req); ok {
 		t.Fatal("u1 ws-B should be invalidated across all namespaces")
 	}
-	if _, ok := c.Get(ctx, "t1", mk("ws-A", "u2")); !ok {
+	if _, ok := c.Get(ctx, "t1", "ws-A", req2); !ok {
 		t.Fatal("u2 must not be invalidated when invalidating u1")
 	}
 }
 
+// TestMemoryCacheMaxSize checks the cache stays bounded (LRU eviction keeps
+// it from growing without limit) purely through the public API — the
+// underlying warden.MemoryCache shards internally, so a raw entry count
+// isn't observable from here the way it was with the old single-map
+// implementation.
 func TestMemoryCacheMaxSize(t *testing.T) {
 	ctx := context.Background()
-	c := NewMemory(WithMaxSize(2))
+	c := NewMemory(WithMaxSize(2), WithTTL(time.Minute))
 
-	for i := 0; i < 5; i++ {
+	var reqs []*warden.CheckRequest
+	for i := 0; i < 50; i++ {
 		req := &warden.CheckRequest{
 			Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "u1"},
 			Action:   warden.Action{Name: "read"},
 			Resource: warden.Resource{Type: "doc", ID: string(rune('a' + i))},
 		}
-		c.Set(ctx, "t1", req, &warden.CheckResult{Allowed: true})
+		reqs = append(reqs, req)
+		c.Set(ctx, "t1", "", req, &warden.CheckResult{Allowed: true})
 	}
 
-	c.mu.RLock()
-	size := len(c.entries)
-	c.mu.RUnlock()
-	if size > 2 {
-		t.Fatalf("expected max 2 entries, got %d", size)
+	hits := 0
+	for _, req := range reqs {
+		if _, ok := c.Get(ctx, "t1", "", req); ok {
+			hits++
+		}
+	}
+	// With a max size far smaller than the number of entries written, most
+	// early entries must have been evicted; the cache must not have kept
+	// everything.
+	if hits >= len(reqs) {
+		t.Fatalf("expected eviction to bound the cache, but all %d entries were still present", hits)
+	}
+}
+
+func TestMemoryCacheClear(t *testing.T) {
+	ctx := context.Background()
+	c := NewMemory()
+
+	req := &warden.CheckRequest{
+		Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "u1"},
+		Action:   warden.Action{Name: "read"},
+		Resource: warden.Resource{Type: "doc", ID: "d1"},
+	}
+	c.Set(ctx, "t1", "", req, &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t2", "", req, &warden.CheckResult{Allowed: true})
+
+	c.Clear(ctx)
+
+	if _, ok := c.Get(ctx, "t1", "", req); ok {
+		t.Fatal("expected t1 entry cleared")
+	}
+	if _, ok := c.Get(ctx, "t2", "", req); ok {
+		t.Fatal("expected t2 entry cleared")
 	}
 }

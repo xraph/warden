@@ -101,7 +101,11 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		return ns == prefix || strings.HasPrefix(ns, prefix+"/")
 	}
 
-	rts, err := store.ListResourceTypes(ctx, &resourcetype.ListFilter{TenantID: opts.TenantID})
+	rts, err := collectPages(func(limit, offset int) ([]*resourcetype.ResourceType, error) {
+		return store.ListResourceTypes(ctx, &resourcetype.ListFilter{
+			TenantID: opts.TenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list resource types: %w", err)
 	}
@@ -112,7 +116,11 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		prog.ResourceTypes = append(prog.ResourceTypes, resourceTypeToDecl(rt))
 	}
 
-	perms, err := store.ListPermissions(ctx, &permission.ListFilter{TenantID: opts.TenantID})
+	perms, err := collectPages(func(limit, offset int) ([]*permission.Permission, error) {
+		return store.ListPermissions(ctx, &permission.ListFilter{
+			TenantID: opts.TenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list permissions: %w", err)
 	}
@@ -123,7 +131,11 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		prog.Permissions = append(prog.Permissions, permissionToDecl(p))
 	}
 
-	roles, err := store.ListRoles(ctx, &role.ListFilter{TenantID: opts.TenantID})
+	roles, err := collectPages(func(limit, offset int) ([]*role.Role, error) {
+		return store.ListRoles(ctx, &role.ListFilter{
+			TenantID: opts.TenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list roles: %w", err)
 	}
@@ -146,7 +158,11 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		prog.Roles = append(prog.Roles, decl)
 	}
 
-	policies, err := store.ListPolicies(ctx, &policy.ListFilter{TenantID: opts.TenantID})
+	policies, err := collectPages(func(limit, offset int) ([]*policy.Policy, error) {
+		return store.ListPolicies(ctx, &policy.ListFilter{
+			TenantID: opts.TenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list policies: %w", err)
 	}
@@ -157,7 +173,11 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		prog.Policies = append(prog.Policies, policyToDecl(p))
 	}
 
-	tuples, err := store.ListRelations(ctx, &relation.ListFilter{TenantID: opts.TenantID})
+	tuples, err := collectPages(func(limit, offset int) ([]*relation.Tuple, error) {
+		return store.ListRelations(ctx, &relation.ListFilter{
+			TenantID: opts.TenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list relations: %w", err)
 	}

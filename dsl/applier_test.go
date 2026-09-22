@@ -250,6 +250,32 @@ role current {
 	}
 }
 
+// TestApply_PruneRefusesEmptyTenant guards against a Prune=true apply with
+// no tenant set (neither opts.TenantID nor `tenant` in source) deleting
+// every entity in the shared global (tenant-less) scope — a single-tenant
+// app's whole dataset, since Apply without a tenant writes there by
+// design (see TestApply_NoTenantAppliesToGlobalScope).
+func TestApply_PruneRefusesEmptyTenant(t *testing.T) {
+	prog, _ := Parse("test.warden", []byte(`
+warden config 1
+permission "x:y" (x : y)
+role current {
+    name = "Current"
+    grants = ["x:y"]
+}
+`))
+	eng, _ := newTestEngine(t)
+	ctx := context.Background()
+
+	_, err := Apply(ctx, eng, prog, ApplyOptions{Prune: true})
+	if err == nil {
+		t.Fatal("expected Apply to refuse Prune with no tenant set")
+	}
+	if !strings.Contains(err.Error(), "tenant") {
+		t.Fatalf("expected error to mention tenant, got: %v", err)
+	}
+}
+
 // TestApply_NoTenantAppliesToGlobalScope pins the optional-tenant
 // behavior: source without a `tenant` declaration and no
 // opts.TenantID applies cleanly to the empty-string tenant (global

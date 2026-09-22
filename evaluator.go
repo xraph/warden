@@ -5,15 +5,25 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/warden/policy"
 )
 
 // Evaluator evaluates ABAC/PBAC policies against a check request.
+//
+// roleSlugs is the set of role slugs (direct and inherited) held by the
+// requesting subject, resolved by the engine before evaluation. It powers
+// role-scoped policy.SubjectMatch.Role matching: a policy naming
+// {Role: "editor"} only applies to subjects holding a role with that slug.
 type Evaluator interface {
-	Evaluate(ctx context.Context, policies []*policy.Policy, req *CheckRequest) (*CheckResult, error)
+	Evaluate(ctx context.Context, policies []*policy.Policy, req *CheckRequest, roleSlugs []string) (*CheckResult, error)
 }
 
 // DefaultEvaluator returns the built-in condition evaluator backed by the
@@ -27,14 +37,25 @@ func NewConditionEvaluator(now func() time.Time) Evaluator {
 	if now == nil {
 		now = time.Now
 	}
-	return &conditionEvaluator{now: now}
+	return &conditionEvaluator{now: now, logger: log.NewNoopLogger()}
 }
 
 type conditionEvaluator struct {
-	now func() time.Time
+	now    func() time.Time
+	logger log.Logger
 }
 
-func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Policy, req *CheckRequest) (*CheckResult, error) {
+// setLogger lets the engine wire its configured logger into the default
+// evaluator after options are applied (NewEngine constructs the default
+// evaluator before WithLogger runs). Unexported: callers that supply their
+// own Evaluator via WithEvaluator are unaffected.
+func (e *conditionEvaluator) setLogger(l log.Logger) {
+	if l != nil {
+		e.logger = l
+	}
+}
+
+func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Policy, req *CheckRequest, roleSlugs []string) (*CheckResult, error) {
 	if len(policies) == 0 {
 		return nil, nil
 	}
@@ -44,16 +65,18 @@ func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Poli
 		now = time.Now()
 	}
 
+	sorted := sortPoliciesByPriority(policies)
+
 	var bestDeny *CheckResult
 	var bestAllow *CheckResult
 	var allObligations []string
 
-	for _, pol := range policies {
+	for _, pol := range sorted {
 		if !pol.EffectiveAt(now) {
 			continue
 		}
 
-		if !e.matchesSubject(pol, req) {
+		if !e.matchesSubject(pol, req, roleSlugs) {
 			continue
 		}
 		if !e.matchesAction(pol, req) {
@@ -65,7 +88,18 @@ func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Poli
 
 		conditionsMet, err := e.evaluateConditions(pol.Conditions, req)
 		if err != nil {
-			return nil, fmt.Errorf("evaluate conditions for policy %s: %w", pol.Name, err)
+			if pol.Effect != policy.EffectAllow {
+				// Fail closed: a deny policy whose condition couldn't be
+				// evaluated still applies rather than silently opening up
+				// access.
+				conditionsMet = true
+			} else {
+				e.logger.Warn("warden: abac condition evaluation error, skipping policy",
+					log.String("policy", pol.Name),
+					log.Error(err),
+				)
+				continue
+			}
 		}
 		if !conditionsMet {
 			continue
@@ -81,7 +115,9 @@ func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Poli
 			Detail: fmt.Sprintf("policy %q (%s)", pol.Name, pol.Effect),
 		}
 
-		if pol.Effect == policy.EffectDeny {
+		// Anything that isn't an explicit allow is treated as deny —
+		// defense in depth against an unvalidated/garbage Effect value.
+		if pol.Effect != policy.EffectAllow {
 			result := &CheckResult{
 				Allowed:   false,
 				Decision:  DecisionDenyExplicit,
@@ -117,6 +153,21 @@ func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Poli
 	return nil, nil
 }
 
+// sortPoliciesByPriority returns a new slice ordered by Priority descending,
+// tie-broken by Name ascending for determinism. The input slice is not
+// mutated.
+func sortPoliciesByPriority(policies []*policy.Policy) []*policy.Policy {
+	sorted := make([]*policy.Policy, len(policies))
+	copy(sorted, policies)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Priority != sorted[j].Priority {
+			return sorted[i].Priority > sorted[j].Priority
+		}
+		return sorted[i].Name < sorted[j].Name
+	})
+	return sorted
+}
+
 // dedupeStrings returns a new slice preserving first-occurrence order. Used
 // for merging obligations from many matched policies; obligations are
 // idempotent by name (the consumer dedupes the action it triggers).
@@ -136,7 +187,17 @@ func dedupeStrings(in []string) []string {
 	return out
 }
 
-func (e *conditionEvaluator) matchesSubject(pol *policy.Policy, req *CheckRequest) bool {
+// contains reports whether want is present in list.
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *conditionEvaluator) matchesSubject(pol *policy.Policy, req *CheckRequest, roleSlugs []string) bool {
 	if len(pol.Subjects) == 0 {
 		return true // No subject filter means all subjects.
 	}
@@ -145,6 +206,9 @@ func (e *conditionEvaluator) matchesSubject(pol *policy.Policy, req *CheckReques
 			continue
 		}
 		if sm.ID != "" && sm.ID != req.Subject.ID {
+			continue
+		}
+		if sm.Role != "" && !contains(roleSlugs, sm.Role) {
 			continue
 		}
 		return true
@@ -250,13 +314,17 @@ func evaluateCondition(op policy.Operator, actual, expected any) (bool, error) {
 	case policy.OpEndsWith:
 		return strings.HasSuffix(fmt.Sprint(actual), fmt.Sprint(expected)), nil
 	case policy.OpGreaterThan:
-		return compareNumbers(actual, expected) > 0, nil
+		cmp, ok := compareNumbers(actual, expected)
+		return ok && cmp > 0, nil
 	case policy.OpLessThan:
-		return compareNumbers(actual, expected) < 0, nil
+		cmp, ok := compareNumbers(actual, expected)
+		return ok && cmp < 0, nil
 	case policy.OpGTE:
-		return compareNumbers(actual, expected) >= 0, nil
+		cmp, ok := compareNumbers(actual, expected)
+		return ok && cmp >= 0, nil
 	case policy.OpLTE:
-		return compareNumbers(actual, expected) <= 0, nil
+		cmp, ok := compareNumbers(actual, expected)
+		return ok && cmp <= 0, nil
 	case policy.OpExists:
 		return actual != nil, nil
 	case policy.OpNotExists:
@@ -268,7 +336,7 @@ func evaluateCondition(op policy.Operator, actual, expected any) (bool, error) {
 	case policy.OpTimeBefore:
 		return timeCompare(actual, expected, false)
 	case policy.OpRegex:
-		re, err := regexp.Compile(fmt.Sprint(expected))
+		re, err := compiledRegex(fmt.Sprint(expected))
 		if err != nil {
 			return false, fmt.Errorf("%w: invalid regex %q: %w", ErrInvalidCondition, expected, err)
 		}
@@ -276,6 +344,30 @@ func evaluateCondition(op policy.Operator, actual, expected any) (bool, error) {
 	default:
 		return false, fmt.Errorf("%w: unknown operator %q", ErrInvalidCondition, op)
 	}
+}
+
+// regexCache memoizes compiled regular expressions across Check calls,
+// keyed by pattern source. Policies reuse the same handful of patterns
+// across many checks, so this avoids recompiling on every evaluation.
+var regexCache sync.Map // string -> *regexp.Regexp
+
+func compiledRegex(pattern string) (*regexp.Regexp, error) {
+	if v, ok := regexCache.Load(pattern); ok {
+		if re, ok := v.(*regexp.Regexp); ok {
+			return re, nil
+		}
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	// Races are harmless here: two goroutines may compile the same pattern
+	// concurrently; LoadOrStore just picks whichever won.
+	actual, _ := regexCache.LoadOrStore(pattern, re)
+	if cached, ok := actual.(*regexp.Regexp); ok {
+		return cached, nil
+	}
+	return re, nil
 }
 
 func inSlice(actual, expected any) bool {
@@ -297,36 +389,57 @@ func inSlice(actual, expected any) bool {
 	return false
 }
 
-func compareNumbers(a, b any) int {
-	fa := toFloat64(a)
-	fb := toFloat64(b)
+// compareNumbers compares a and b numerically. The second return value is
+// false ("not comparable") when either side is nil or cannot be parsed as a
+// number, in which case the caller must treat the condition as unmet rather
+// than guessing a comparison result from zero values.
+func compareNumbers(a, b any) (int, bool) {
+	fa, okA := toFloat64(a)
+	fb, okB := toFloat64(b)
+	if !okA || !okB {
+		return 0, false
+	}
 	if fa < fb {
-		return -1
+		return -1, true
 	}
 	if fa > fb {
-		return 1
+		return 1, true
 	}
-	return 0
+	return 0, true
 }
 
-func toFloat64(v any) float64 {
+func toFloat64(v any) (float64, bool) {
 	switch n := v.(type) {
+	case nil:
+		return 0, false
 	case int:
-		return float64(n)
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
 	case int64:
-		return float64(n)
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
 	case float64:
-		return n
+		return n, true
 	case float32:
-		return float64(n)
+		return float64(n), true
 	case string:
-		var f float64
-		if _, err := fmt.Sscanf(n, "%f", &f); err != nil {
-			return 0
+		f, err := strconv.ParseFloat(n, 64)
+		if err != nil {
+			return 0, false
 		}
-		return f
+		return f, true
 	default:
-		return 0
+		return 0, false
 	}
 }
 

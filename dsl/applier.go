@@ -53,6 +53,9 @@ type ApplyResult struct {
 // landing entities in the global bucket.
 func Apply(ctx context.Context, eng *warden.Engine, prog *Program, opts ApplyOptions) (*ApplyResult, error) {
 	tenantID := firstNonEmpty(opts.TenantID, prog.Tenant)
+	if opts.Prune && tenantID == "" {
+		return nil, errors.New("dsl: Prune requires a tenant — set ApplyOptions.TenantID or `tenant` in source; pruning the global (tenant-less) scope would delete every entity with an empty tenant_id across every caller that also uses the global scope")
+	}
 	if errs := Resolve(prog); len(errs) > 0 {
 		return nil, &DiagnosticError{Diags: errs}
 	}
@@ -249,7 +252,11 @@ func rtEquivalent(a, b *resourcetype.ResourceType) bool {
 }
 
 func (a *applier) pruneResourceTypes(declared map[string]struct{}) error {
-	existing, err := a.store.ListResourceTypes(a.ctx, &resourcetype.ListFilter{TenantID: a.tenantID})
+	existing, err := collectPages(func(limit, offset int) ([]*resourcetype.ResourceType, error) {
+		return a.store.ListResourceTypes(a.ctx, &resourcetype.ListFilter{
+			TenantID: a.tenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return err
 	}
@@ -316,7 +323,11 @@ func (a *applier) applyPermissions(prog *Program) error {
 		}
 	}
 	if a.prune {
-		existing, err := a.store.ListPermissions(a.ctx, &permission.ListFilter{TenantID: a.tenantID})
+		existing, err := collectPages(func(limit, offset int) ([]*permission.Permission, error) {
+			return a.store.ListPermissions(a.ctx, &permission.ListFilter{
+				TenantID: a.tenantID, Limit: limit, Offset: offset,
+			})
+		})
 		if err != nil {
 			return err
 		}
@@ -392,7 +403,11 @@ func (a *applier) applyRoles(prog *Program) error {
 		}
 	}
 	if a.prune {
-		existing, err := a.store.ListRoles(a.ctx, &role.ListFilter{TenantID: a.tenantID})
+		existing, err := collectPages(func(limit, offset int) ([]*role.Role, error) {
+			return a.store.ListRoles(a.ctx, &role.ListFilter{
+				TenantID: a.tenantID, Limit: limit, Offset: offset,
+			})
+		})
 		if err != nil {
 			return err
 		}
@@ -557,7 +572,11 @@ func (a *applier) applyPolicies(prog *Program) error {
 		}
 	}
 	if a.prune {
-		existing, err := a.store.ListPolicies(a.ctx, &policy.ListFilter{TenantID: a.tenantID})
+		existing, err := collectPages(func(limit, offset int) ([]*policy.Policy, error) {
+			return a.store.ListPolicies(a.ctx, &policy.ListFilter{
+				TenantID: a.tenantID, Limit: limit, Offset: offset,
+			})
+		})
 		if err != nil {
 			return err
 		}
@@ -681,16 +700,23 @@ func (a *applier) applyRelations(prog *Program) error {
 			SubjectRelation: r.SubjectRelation,
 			CreatedAt:       a.now,
 		}
-		// Check if the tuple already exists.
-		existing, _ := a.store.ListRelations(a.ctx, &relation.ListFilter{ //nolint:errcheck // empty list → create
-			TenantID:        a.tenantID,
-			NamespacePath:   nil, // exact-match below via SubjectRelation comparison
-			ObjectType:      r.ObjectType,
-			ObjectID:        r.ObjectID,
-			Relation:        r.Relation,
-			SubjectType:     r.SubjectType,
-			SubjectID:       r.SubjectID,
-			SubjectRelation: r.SubjectRelation,
+		// Check if the tuple already exists. The filter pins every column
+		// but the namespace, so this normally comes back in one page; it
+		// pages anyway so a tenant with many namespaces cannot hide a
+		// duplicate behind the store's default limit.
+		existing, _ := collectPages(func(limit, offset int) ([]*relation.Tuple, error) { //nolint:errcheck // empty list → create
+			return a.store.ListRelations(a.ctx, &relation.ListFilter{
+				TenantID:        a.tenantID,
+				NamespacePath:   nil, // exact-match below via SubjectRelation comparison
+				ObjectType:      r.ObjectType,
+				ObjectID:        r.ObjectID,
+				Relation:        r.Relation,
+				SubjectType:     r.SubjectType,
+				SubjectID:       r.SubjectID,
+				SubjectRelation: r.SubjectRelation,
+				Limit:           limit,
+				Offset:          offset,
+			})
 		})
 		dup := false
 		for _, e := range existing {

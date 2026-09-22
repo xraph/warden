@@ -90,4 +90,16 @@ var (
 
 	// ErrGraphDepthExceeded is returned when the relation graph walk exceeds max depth.
 	ErrGraphDepthExceeded = errors.New("warden: relation graph depth exceeded")
+
+	// ErrTenantRequired is returned by Check when the resolved scope has no
+	// tenant ID and Config.RequireTenant is true (the default).
+	ErrTenantRequired = errors.New("warden: tenant is required")
+
+	// ErrGraphBudgetExceeded is returned when a ReBAC graph traversal
+	// exceeds its configured visited-node or fan-out budget.
+	ErrGraphBudgetExceeded = errors.New("warden: graph traversal budget exceeded")
+
+	// ErrUnauthenticated is returned when a check cannot proceed because no
+	// subject/actor identity is available.
+	ErrUnauthenticated = errors.New("warden: unauthenticated")
 )

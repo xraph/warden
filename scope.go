@@ -10,6 +10,12 @@ type tenantScope struct {
 	appID         string
 	tenantID      string
 	namespacePath string
+
+	// namespaces is AncestorNamespaces(namespacePath), computed once by
+	// Check after every scope override (context, CheckRequest, CallOption)
+	// has been applied, and reused by evaluateRBAC/evaluateReBAC/evaluateABAC
+	// instead of each recomputing it.
+	namespaces []string
 }
 
 // scopeFromContext extracts tenant scope from context. Explicit WithTenant

@@ -33,6 +33,25 @@ func parseIntParam(params map[string]string, key string, defaultVal int) int {
 	return n
 }
 
+// maxPageLimit bounds the page size a caller can ask for. The stores honour
+// any positive Limit they are handed, so without a ceiling here a query
+// string of ?limit=1000000 turns a dashboard page into a full table scan.
+const maxPageLimit = 500
+
+// parseLimitParam extracts the page-size query param, falling back to
+// defaultVal when it is absent, unparseable or non-positive, and clamping
+// anything larger than maxPageLimit.
+func parseLimitParam(params map[string]string, defaultVal int) int {
+	n := parseIntParam(params, "limit", defaultVal)
+	if n <= 0 {
+		n = defaultVal
+	}
+	if n > maxPageLimit {
+		return maxPageLimit
+	}
+	return n
+}
+
 // parseBoolParam extracts a bool query param, returning nil if empty.
 func parseBoolParam(params map[string]string, key string) *bool {
 	v, ok := params[key]
@@ -227,18 +246,31 @@ func fetchCheckLogsPaginated(ctx context.Context, s store.Store, tenantID string
 
 // ─── Non-Paginated Fetch Functions ───────────────────────────────────────────
 
-// fetchRoles returns all roles for the given tenant.
+// dropdownOptionLimit bounds the fetches that populate <select> elements in
+// the create and edit dialogs. Those lists are display aids, not the page's
+// data, and a select holding tens of thousands of options helps nobody.
+//
+// The bound is stated here rather than inherited from the store: the SQL
+// backends truncate an unlimited List* at 1000 and the memory backend returns
+// every row, so leaving Limit unset makes the dashboard behave differently
+// depending on which database is behind it. Callers that need the full set
+// must page.
+const dropdownOptionLimit = 500
+
+// fetchRoles returns up to dropdownOptionLimit roles for the given tenant,
+// for use as select options.
 func fetchRoles(ctx context.Context, s store.Store, tenantID string) ([]*role.Role, error) {
-	roles, err := s.ListRoles(ctx, &role.ListFilter{TenantID: tenantID})
+	roles, err := s.ListRoles(ctx, &role.ListFilter{TenantID: tenantID, Limit: dropdownOptionLimit})
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: fetch roles: %w", err)
 	}
 	return roles, nil
 }
 
-// fetchPermissions returns all permissions for the given tenant.
+// fetchPermissions returns up to dropdownOptionLimit permissions for the given
+// tenant, for use as select options.
 func fetchPermissions(ctx context.Context, s store.Store, tenantID string) ([]*permission.Permission, error) {
-	perms, err := s.ListPermissions(ctx, &permission.ListFilter{TenantID: tenantID})
+	perms, err := s.ListPermissions(ctx, &permission.ListFilter{TenantID: tenantID, Limit: dropdownOptionLimit})
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: fetch permissions: %w", err)
 	}
