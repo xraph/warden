@@ -882,6 +882,40 @@ CREATE INDEX IF NOT EXISTS idx_warden_role_perms_tenant_perm
 			},
 		},
 		&migrate.Migration{
+			Name:    "actor_columns",
+			Version: "20260922000004",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// SQLite has no ADD COLUMN IF NOT EXISTS, so each column is
+				// added individually and a "duplicate column name" error
+				// (a retry after a partial run) is treated as already-done.
+				cols := []struct{ table, column string }{
+					{"warden_roles", "created_by"},
+					{"warden_roles", "updated_by"},
+					{"warden_permissions", "created_by"},
+					{"warden_permissions", "updated_by"},
+					{"warden_policies", "created_by"},
+					{"warden_policies", "updated_by"},
+					{"warden_resource_types", "created_by"},
+					{"warden_resource_types", "updated_by"},
+					{"warden_relations", "created_by"},
+				}
+				for _, c := range cols {
+					stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT ''`, c.table, c.column)
+					if _, err := exec.Exec(ctx, stmt); err != nil {
+						if !strings.Contains(err.Error(), "duplicate column name") {
+							return err
+						}
+					}
+				}
+				return nil
+			},
+			Down: func(_ context.Context, _ migrate.Executor) error {
+				// SQLite only learned DROP COLUMN in 3.35 and refuses it for
+				// indexed columns; leave the (defaulted) columns in place.
+				return nil
+			},
+		},
+		&migrate.Migration{
 			Name:    "check_logs_indexes",
 			Version: "20260922000005",
 			Up: func(ctx context.Context, exec migrate.Executor) error {

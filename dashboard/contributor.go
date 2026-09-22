@@ -29,19 +29,46 @@ type Contributor struct {
 	manifest *contributor.Manifest
 	engine   *warden.Engine
 	plugins  []plugin.Plugin
+	basePath string
 }
 
-// New creates a new warden dashboard contributor.
-func New(manifest *contributor.Manifest, engine *warden.Engine, plugins []plugin.Plugin) *Contributor {
+// New creates a new warden dashboard contributor. basePath is the URL
+// prefix the warden extension mounted its HTTP API under (used by, e.g.,
+// the playground page to know where to POST checks); pass "" when the
+// caller doesn't know it or the API isn't mounted.
+func New(manifest *contributor.Manifest, engine *warden.Engine, plugins []plugin.Plugin, basePath string) *Contributor {
 	return &Contributor{
 		manifest: manifest,
 		engine:   engine,
 		plugins:  plugins,
+		basePath: basePath,
 	}
 }
 
 // Manifest returns the contributor manifest.
 func (c *Contributor) Manifest() *contributor.Manifest { return c.manifest }
+
+// tenantFromContext resolves the caller's tenant from ctx.
+//
+// It matters more than it looks: an empty TenantID in a store ListFilter
+// matches every tenant's rows (see e.g. store/memory/store.go's
+// filterRoles, which only excludes a row when filter.TenantID is
+// non-empty and differs), so a dashboard that queried with a hardcoded ""
+// tenant was effectively showing every tenant's roles, permissions,
+// assignments, relations, policies and check logs to anyone who opened
+// it. Resolving the real tenant from warden.ScopeFromContext closes that.
+func tenantFromContext(ctx context.Context) string {
+	_, tenantID := warden.ScopeFromContext(ctx)
+	return tenantID
+}
+
+// noTenantPage is rendered by list views instead of querying the store
+// when no tenant resolves from context, so "no scope" can never mean
+// "show everything" the way an empty ListFilter.TenantID does.
+func noTenantPage() templ.Component {
+	return components.EmptyState("users", "Select a tenant",
+		"This view needs a tenant in scope. Set a tenant on the request before opening the dashboard.")
+}
 
 // RenderPage renders a page for the given route.
 func (c *Contributor) RenderPage(ctx context.Context, route string, params contributor.Params) (templ.Component, error) {
@@ -50,7 +77,8 @@ func (c *Contributor) RenderPage(ctx context.Context, route string, params contr
 		return nil, fmt.Errorf("warden dashboard: no store configured")
 	}
 
-	comp, err := c.renderPageRoute(ctx, route, s, params)
+	tenantID := tenantFromContext(ctx)
+	comp, err := c.renderPageRoute(ctx, route, s, tenantID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +91,7 @@ func (c *Contributor) RenderPage(ctx context.Context, route string, params contr
 }
 
 // renderPageRoute dispatches to the correct page renderer based on the page route.
-func (c *Contributor) renderPageRoute(ctx context.Context, pageRoute string, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderPageRoute(ctx context.Context, pageRoute string, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
 	// Check plugin-contributed pages first (PageContributor for parameterized routes).
 	for _, p := range c.plugins {
 		if dpc, ok := p.(PageContributor); ok {
@@ -84,33 +112,33 @@ func (c *Contributor) renderPageRoute(ctx context.Context, pageRoute string, s s
 
 	switch pageRoute {
 	case "/", "":
-		return c.renderOverview(ctx, s)
+		return c.renderOverview(ctx, s, tenantID)
 	case "/roles":
-		return c.renderRoles(ctx, s, params)
+		return c.renderRoles(ctx, s, tenantID, params)
 	case "/roles/detail":
-		return c.renderRoleDetail(ctx, s, params)
+		return c.renderRoleDetail(ctx, s, tenantID, params)
 	case "/permissions":
-		return c.renderPermissions(ctx, s, params)
+		return c.renderPermissions(ctx, s, tenantID, params)
 	case "/assignments":
-		return c.renderAssignments(ctx, s, params)
+		return c.renderAssignments(ctx, s, tenantID, params)
 	case "/relations":
-		return c.renderRelations(ctx, s, params)
+		return c.renderRelations(ctx, s, tenantID, params)
 	case "/policies":
-		return c.renderPolicies(ctx, s, params)
+		return c.renderPolicies(ctx, s, tenantID, params)
 	case "/policies/detail":
-		return c.renderPolicyDetail(ctx, s, params)
+		return c.renderPolicyDetail(ctx, s, tenantID, params)
 	case "/policies/create":
-		return c.renderPolicyForm(ctx, s, params)
+		return c.renderPolicyForm(ctx, s, tenantID, params)
 	case "/policies/edit":
-		return c.renderPolicyForm(ctx, s, params)
+		return c.renderPolicyForm(ctx, s, tenantID, params)
 	case "/resource-types":
-		return c.renderResourceTypes(ctx, s, params)
+		return c.renderResourceTypes(ctx, s, tenantID, params)
 	case "/resource-types/detail":
-		return c.renderResourceTypeDetail(ctx, s, params)
+		return c.renderResourceTypeDetail(ctx, s, tenantID, params)
 	case "/resource-types/create":
 		return c.renderResourceTypeForm(ctx, s)
 	case "/check-logs":
-		return c.renderCheckLogs(ctx, s, params)
+		return c.renderCheckLogs(ctx, s, tenantID, params)
 	case "/playground":
 		return c.renderPlayground(ctx)
 	default:
@@ -124,6 +152,7 @@ func (c *Contributor) RenderWidget(ctx context.Context, widgetID string) (templ.
 	if s == nil {
 		return nil, fmt.Errorf("warden dashboard: no store configured")
 	}
+	tenantID := tenantFromContext(ctx)
 
 	// Check plugin-contributed widgets first.
 	for _, dp := range c.dashboardPlugins() {
@@ -136,9 +165,9 @@ func (c *Contributor) RenderWidget(ctx context.Context, widgetID string) (templ.
 
 	switch widgetID {
 	case "warden-stats":
-		return c.renderStatsWidget(ctx, s)
+		return c.renderStatsWidget(ctx, s, tenantID)
 	case "warden-recent-checks":
-		return c.renderRecentChecksWidget(ctx, s)
+		return c.renderRecentChecksWidget(ctx, s, tenantID)
 	default:
 		return nil, contributor.ErrWidgetNotFound
 	}
@@ -158,10 +187,14 @@ func (c *Contributor) RenderSettings(ctx context.Context, settingID string) (tem
 
 // ─── Private Render Helpers ──────────────────────────────────────────────────
 
-func (c *Contributor) renderOverview(ctx context.Context, s store.Store) (templ.Component, error) {
-	counts := fetchEntityCounts(ctx, s, "")
+func (c *Contributor) renderOverview(ctx context.Context, s store.Store, tenantID string) (templ.Component, error) {
+	if tenantID == "" {
+		return noTenantPage(), nil
+	}
 
-	logs, err := fetchCheckLogs(ctx, s, "", 10)
+	counts := fetchEntityCounts(ctx, s, tenantID)
+
+	logs, err := fetchCheckLogs(ctx, s, tenantID, 10)
 	if err != nil {
 		logs = nil
 	}
@@ -169,7 +202,7 @@ func (c *Contributor) renderOverview(ctx context.Context, s store.Store) (templ.
 	cfg := c.engine.Config()
 
 	// Fetch roles for the create dialogs on the overview page
-	allRoles, _ := fetchRoles(ctx, s, "") //nolint:errcheck // display data
+	allRoles, _ := fetchRoles(ctx, s, tenantID) //nolint:errcheck // display data
 
 	pluginSections := c.collectPluginSections(ctx)
 
@@ -179,25 +212,28 @@ func (c *Contributor) renderOverview(ctx context.Context, s store.Store) (templ.
 	}), nil
 }
 
-func (c *Contributor) renderRoles(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderRoles(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
+	if tenantID == "" {
+		return noTenantPage(), nil
+	}
+
 	search := params.QueryParams["search"]
 	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
-	roles, total, err := fetchRolesPaginated(ctx, s, "", search, limit, offset)
+	roles, total, err := fetchRolesPaginated(ctx, s, tenantID, search, limit, offset)
 	if err != nil {
 		roles = nil
 		total = 0
 	}
 
-	// TODO(soc2-T6): resolve tenant from scope
-	rows := enrichRoleRows(ctx, s, "", roles)
+	rows := enrichRoleRows(ctx, s, tenantID, roles)
 
 	pg := components.NewPaginationMeta(total, limit, offset)
 	return pages.RolesPage(rows, search, pg), nil
 }
 
-func (c *Contributor) renderRoleDetail(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderRoleDetail(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
 	roleIDStr := params.PathParams["id"]
 	if roleIDStr == "" {
 		roleIDStr = params.QueryParams["id"]
@@ -211,8 +247,7 @@ func (c *Contributor) renderRoleDetail(ctx context.Context, s store.Store, param
 		return nil, contributor.ErrPageNotFound
 	}
 
-	// TODO(soc2-T6): resolve tenant from scope
-	r, perms, err := fetchRoleWithPermissions(ctx, s, "", roleID)
+	r, perms, err := fetchRoleWithPermissions(ctx, s, tenantID, roleID)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: resolve role: %w", err)
 	}
@@ -220,8 +255,8 @@ func (c *Contributor) renderRoleDetail(ctx context.Context, s store.Store, param
 	childRoles, _ := s.ListChildRoles(ctx, r.TenantID, r.Slug) //nolint:errcheck // display data; nil is acceptable
 
 	// Fetch all roles for parent select and all permissions for attach dialog
-	allRoles, _ := fetchRoles(ctx, s, "")       //nolint:errcheck // display data
-	allPerms, _ := fetchPermissions(ctx, s, "") //nolint:errcheck // display data
+	allRoles, _ := fetchRoles(ctx, s, tenantID)       //nolint:errcheck // display data
+	allPerms, _ := fetchPermissions(ctx, s, tenantID) //nolint:errcheck // display data
 
 	pluginSections := c.collectRoleDetailSections(ctx, roleID)
 
@@ -231,14 +266,18 @@ func (c *Contributor) renderRoleDetail(ctx context.Context, s store.Store, param
 	}), nil
 }
 
-func (c *Contributor) renderPermissions(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderPermissions(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
+	if tenantID == "" {
+		return noTenantPage(), nil
+	}
+
 	search := params.QueryParams["search"]
 	resource := params.QueryParams["resource"]
 	action := params.QueryParams["action"]
 	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
-	perms, total, err := fetchPermissionsPaginated(ctx, s, "", search, resource, action, limit, offset)
+	perms, total, err := fetchPermissionsPaginated(ctx, s, tenantID, search, resource, action, limit, offset)
 	if err != nil {
 		perms = nil
 		total = 0
@@ -247,27 +286,35 @@ func (c *Contributor) renderPermissions(ctx context.Context, s store.Store, para
 	return pages.PermissionsPage(perms, search, resource, action, pg), nil
 }
 
-func (c *Contributor) renderAssignments(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderAssignments(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
+	if tenantID == "" {
+		return noTenantPage(), nil
+	}
+
 	subjectKind := params.QueryParams["subject_kind"]
 	subjectID := params.QueryParams["subject_id"]
 	roleIDStr := params.QueryParams["role_id"]
 	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
-	items, total, err := fetchAssignmentsPaginated(ctx, s, "", subjectKind, subjectID, roleIDStr, limit, offset)
+	items, total, err := fetchAssignmentsPaginated(ctx, s, tenantID, subjectKind, subjectID, roleIDStr, limit, offset)
 	if err != nil {
 		items = nil
 		total = 0
 	}
 
 	// Fetch roles for the create dialog selectbox
-	allRoles, _ := fetchRoles(ctx, s, "") //nolint:errcheck // display data
+	allRoles, _ := fetchRoles(ctx, s, tenantID) //nolint:errcheck // display data
 
 	pg := components.NewPaginationMeta(total, limit, offset)
 	return pages.AssignmentsPage(items, subjectKind, subjectID, roleIDStr, allRoles, pg), nil
 }
 
-func (c *Contributor) renderRelations(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderRelations(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
+	if tenantID == "" {
+		return noTenantPage(), nil
+	}
+
 	objectType := params.QueryParams["object_type"]
 	objectID := params.QueryParams["object_id"]
 	rel := params.QueryParams["relation"]
@@ -276,7 +323,7 @@ func (c *Contributor) renderRelations(ctx context.Context, s store.Store, params
 	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
-	items, total, err := fetchRelationsPaginated(ctx, s, "", objectType, objectID, rel, subjectType, subjectID, limit, offset)
+	items, total, err := fetchRelationsPaginated(ctx, s, tenantID, objectType, objectID, rel, subjectType, subjectID, limit, offset)
 	if err != nil {
 		items = nil
 		total = 0
@@ -285,14 +332,18 @@ func (c *Contributor) renderRelations(ctx context.Context, s store.Store, params
 	return pages.RelationsPage(items, objectType, rel, subjectType, pg), nil
 }
 
-func (c *Contributor) renderPolicies(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderPolicies(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
+	if tenantID == "" {
+		return noTenantPage(), nil
+	}
+
 	search := params.QueryParams["search"]
 	effectStr := params.QueryParams["effect"]
 	active := parseBoolParam(params.QueryParams, "active")
 	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
-	items, total, err := fetchPoliciesPaginated(ctx, s, "", search, effectStr, active, limit, offset)
+	items, total, err := fetchPoliciesPaginated(ctx, s, tenantID, search, effectStr, active, limit, offset)
 	if err != nil {
 		items = nil
 		total = 0
@@ -301,7 +352,7 @@ func (c *Contributor) renderPolicies(ctx context.Context, s store.Store, params 
 	return pages.PoliciesPage(items, search, effectStr, params.QueryParams["active"], pg), nil
 }
 
-func (c *Contributor) renderPolicyDetail(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderPolicyDetail(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
 	polIDStr := params.PathParams["id"]
 	if polIDStr == "" {
 		polIDStr = params.QueryParams["id"]
@@ -315,8 +366,7 @@ func (c *Contributor) renderPolicyDetail(ctx context.Context, s store.Store, par
 		return nil, contributor.ErrPageNotFound
 	}
 
-	// TODO(soc2-T6): resolve tenant from scope
-	p, err := s.GetPolicy(ctx, "", polID)
+	p, err := s.GetPolicy(ctx, tenantID, polID)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: resolve policy: %w", err)
 	}
@@ -329,15 +379,14 @@ func (c *Contributor) renderPolicyDetail(ctx context.Context, s store.Store, par
 	}), nil
 }
 
-func (c *Contributor) renderPolicyForm(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderPolicyForm(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
 	polIDStr := params.QueryParams["id"]
 	if polIDStr != "" {
 		polID, err := id.ParsePolicyID(polIDStr)
 		if err != nil {
 			return nil, contributor.ErrPageNotFound
 		}
-		// TODO(soc2-T6): resolve tenant from scope
-		p, err := s.GetPolicy(ctx, "", polID)
+		p, err := s.GetPolicy(ctx, tenantID, polID)
 		if err != nil {
 			return nil, fmt.Errorf("dashboard: resolve policy for edit: %w", err)
 		}
@@ -346,12 +395,16 @@ func (c *Contributor) renderPolicyForm(ctx context.Context, s store.Store, param
 	return pages.PolicyCreatePage(), nil
 }
 
-func (c *Contributor) renderResourceTypes(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderResourceTypes(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
+	if tenantID == "" {
+		return noTenantPage(), nil
+	}
+
 	search := params.QueryParams["search"]
 	limit := parseLimitParam(params.QueryParams, 20)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
-	items, total, err := fetchResourceTypesPaginated(ctx, s, "", search, limit, offset)
+	items, total, err := fetchResourceTypesPaginated(ctx, s, tenantID, search, limit, offset)
 	if err != nil {
 		items = nil
 		total = 0
@@ -360,7 +413,7 @@ func (c *Contributor) renderResourceTypes(ctx context.Context, s store.Store, pa
 	return pages.ResourceTypesPage(items, search, pg), nil
 }
 
-func (c *Contributor) renderResourceTypeDetail(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderResourceTypeDetail(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
 	rtIDStr := params.PathParams["id"]
 	if rtIDStr == "" {
 		rtIDStr = params.QueryParams["id"]
@@ -374,8 +427,7 @@ func (c *Contributor) renderResourceTypeDetail(ctx context.Context, s store.Stor
 		return nil, contributor.ErrPageNotFound
 	}
 
-	// TODO(soc2-T6): resolve tenant from scope
-	rt, err := s.GetResourceType(ctx, "", rtID)
+	rt, err := s.GetResourceType(ctx, tenantID, rtID)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: resolve resource type: %w", err)
 	}
@@ -387,11 +439,15 @@ func (c *Contributor) renderResourceTypeForm(_ context.Context, _ store.Store) (
 	return pages.ResourceTypeCreatePage(), nil
 }
 
-func (c *Contributor) renderCheckLogs(ctx context.Context, s store.Store, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderCheckLogs(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
+	if tenantID == "" {
+		return noTenantPage(), nil
+	}
+
 	limit := parseLimitParam(params.QueryParams, 50)
 	offset := parseIntParam(params.QueryParams, "offset", 0)
 
-	items, total, err := fetchCheckLogsPaginated(ctx, s, "", params.QueryParams, limit, offset)
+	items, total, err := fetchCheckLogsPaginated(ctx, s, tenantID, params.QueryParams, limit, offset)
 	if err != nil {
 		items = nil
 		total = 0
@@ -401,18 +457,24 @@ func (c *Contributor) renderCheckLogs(ctx context.Context, s store.Store, params
 }
 
 func (c *Contributor) renderPlayground(_ context.Context) (templ.Component, error) {
-	return pages.PlaygroundPage(), nil
+	return pages.PlaygroundPage(c.basePath), nil
 }
 
 // ─── Widget Render Helpers ───────────────────────────────────────────────────
 
-func (c *Contributor) renderStatsWidget(ctx context.Context, s store.Store) (templ.Component, error) {
-	counts := fetchEntityCounts(ctx, s, "")
+func (c *Contributor) renderStatsWidget(ctx context.Context, s store.Store, tenantID string) (templ.Component, error) {
+	if tenantID == "" {
+		return noTenantPage(), nil
+	}
+	counts := fetchEntityCounts(ctx, s, tenantID)
 	return widgets.StatsWidget(counts.Roles, counts.Permissions, counts.Assignments, counts.Relations, counts.Policies, counts.ResourceTypes), nil
 }
 
-func (c *Contributor) renderRecentChecksWidget(ctx context.Context, s store.Store) (templ.Component, error) {
-	logs, err := fetchCheckLogs(ctx, s, "", 10)
+func (c *Contributor) renderRecentChecksWidget(ctx context.Context, s store.Store, tenantID string) (templ.Component, error) {
+	if tenantID == "" {
+		return noTenantPage(), nil
+	}
+	logs, err := fetchCheckLogs(ctx, s, tenantID, 10)
 	if err != nil || logs == nil {
 		return widgets.RecentChecksWidget(nil), nil
 	}

@@ -10,11 +10,15 @@ import (
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/role"
 )
 
 func (a *API) registerRoleRoutes(router forge.Router) error {
 	g := router.Group("/v1", forge.WithGroupTags("roles"))
+
+	manage := a.authorize("manage", "warden:role")
+	read := a.authorize("read", "warden:role")
 
 	if err := g.POST("/roles", a.createRole,
 		forge.WithSummary("Create role"),
@@ -23,6 +27,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(CreateRoleRequest{}),
 		forge.WithCreatedResponse(&role.Role{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -34,6 +39,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(GetRoleRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Role details", &role.Role{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	); err != nil {
 		return err
 	}
@@ -45,6 +51,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(UpdateRoleRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Updated role", &role.Role{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -56,6 +63,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(GetRoleRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -67,6 +75,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(ListRolesRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Role list", []*role.Role{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	); err != nil {
 		return err
 	}
@@ -78,6 +87,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(AttachPermissionRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -89,6 +99,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(DetachPermissionRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	)
 }
 
@@ -112,6 +123,7 @@ func (a *API) createRole(ctx forge.Context, req *CreateRoleRequest) (*role.Role,
 
 	now := time.Now()
 	appID, tenantID := scopeFromForgeContext(ctx)
+	actor, _ := warden.ActorFromContext(ctx.Context())
 	r := &role.Role{
 		ID:            id.NewRoleID(),
 		TenantID:      tenantID,
@@ -120,10 +132,11 @@ func (a *API) createRole(ctx forge.Context, req *CreateRoleRequest) (*role.Role,
 		Name:          req.Name,
 		Slug:          req.Slug,
 		Description:   req.Description,
-		IsSystem:      req.IsSystem,
 		IsDefault:     req.IsDefault,
 		MaxMembers:    req.MaxMembers,
 		Metadata:      req.Metadata,
+		CreatedBy:     actor.ID,
+		UpdatedBy:     actor.ID,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -143,9 +156,13 @@ func (a *API) createRole(ctx forge.Context, req *CreateRoleRequest) (*role.Role,
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitRoleCreated(ctx.Context(), r)
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: now, Action: "role.created",
+			TenantID: tenantID, EntityID: r.ID.String(), Entity: r,
+		})
 	}
 
-	return r, ctx.JSON(http.StatusCreated, r)
+	return nil, ctx.JSON(http.StatusCreated, r)
 }
 
 func (a *API) getRole(ctx forge.Context, _ *GetRoleRequest) (*role.Role, error) {
@@ -161,7 +178,7 @@ func (a *API) getRole(ctx forge.Context, _ *GetRoleRequest) (*role.Role, error) 
 		return nil, mapError(err)
 	}
 
-	return r, ctx.JSON(http.StatusOK, r)
+	return r, nil
 }
 
 func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role, error) {
@@ -172,10 +189,11 @@ func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role,
 
 	_, tenantID := scopeFromForgeContext(ctx)
 
-	r, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
+	before, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
 	if err != nil {
 		return nil, mapError(err)
 	}
+	r := *before
 
 	if req.Name != "" {
 		r.Name = req.Name
@@ -201,17 +219,23 @@ func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role,
 	if req.Metadata != nil {
 		r.Metadata = req.Metadata
 	}
+	actor, _ := warden.ActorFromContext(ctx.Context())
+	r.UpdatedBy = actor.ID
 	r.UpdatedAt = time.Now()
 
-	if err := a.eng.Store().UpdateRole(ctx.Context(), r); err != nil {
+	if err := a.eng.Store().UpdateRole(ctx.Context(), &r); err != nil {
 		return nil, mapError(err)
 	}
 
 	if a.eng.Plugins() != nil {
-		a.eng.Plugins().EmitRoleUpdated(ctx.Context(), r)
+		a.eng.Plugins().EmitRoleUpdated(ctx.Context(), &r)
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: r.UpdatedAt, Action: "role.updated",
+			TenantID: tenantID, EntityID: r.ID.String(), Entity: &r, Before: before,
+		})
 	}
 
-	return r, ctx.JSON(http.StatusOK, r)
+	return &r, nil
 }
 
 func (a *API) deleteRole(ctx forge.Context, _ *GetRoleRequest) (*struct{}, error) {
@@ -221,6 +245,7 @@ func (a *API) deleteRole(ctx forge.Context, _ *GetRoleRequest) (*struct{}, error
 	}
 
 	_, tenantID := scopeFromForgeContext(ctx)
+	before, getErr := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
 
 	if err := a.eng.Store().DeleteRole(ctx.Context(), tenantID, roleID); err != nil {
 		return nil, mapError(err)
@@ -228,6 +253,15 @@ func (a *API) deleteRole(ctx forge.Context, _ *GetRoleRequest) (*struct{}, error
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitRoleDeleted(ctx.Context(), roleID)
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		ev := plugin.Event{
+			Actor: actor, At: time.Now(), Action: "role.deleted",
+			TenantID: tenantID, EntityID: roleID.String(),
+		}
+		if getErr == nil {
+			ev.Before = before
+		}
+		a.eng.Plugins().EmitAudit(ctx.Context(), ev)
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)
@@ -287,8 +321,16 @@ func (a *API) attachPermissionToRole(ctx forge.Context, req *AttachPermissionReq
 		return nil, mapError(err)
 	}
 
-	if a.eng.Plugins() != nil && legacyID != nil {
-		a.eng.Plugins().EmitPermissionAttached(ctx.Context(), roleID, *legacyID)
+	if a.eng.Plugins() != nil {
+		if legacyID != nil {
+			a.eng.Plugins().EmitPermissionAttached(ctx.Context(), roleID, *legacyID)
+		}
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: time.Now(), Action: "permission.attached",
+			TenantID: tenantID, EntityID: roleID.String(),
+			Entity: map[string]string{"role_id": roleID.String(), "permission_namespace_path": ref.NamespacePath, "permission_name": ref.Name},
+		})
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)
@@ -314,8 +356,16 @@ func (a *API) detachPermissionFromRole(ctx forge.Context, req *DetachPermissionR
 		return nil, mapError(err)
 	}
 
-	if a.eng.Plugins() != nil && legacyID != nil {
-		a.eng.Plugins().EmitPermissionDetached(ctx.Context(), roleID, *legacyID)
+	if a.eng.Plugins() != nil {
+		if legacyID != nil {
+			a.eng.Plugins().EmitPermissionDetached(ctx.Context(), roleID, *legacyID)
+		}
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: time.Now(), Action: "permission.detached",
+			TenantID: tenantID, EntityID: roleID.String(),
+			Entity: map[string]string{"role_id": roleID.String(), "permission_namespace_path": ref.NamespacePath, "permission_name": ref.Name},
+		})
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)

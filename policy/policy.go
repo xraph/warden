@@ -68,6 +68,8 @@ type Policy struct {
 	Resources     []string       `json:"resources" db:"-"`
 	Conditions    []Condition    `json:"conditions,omitempty" db:"-"`
 	Metadata      map[string]any `json:"metadata,omitempty" db:"metadata"`
+	CreatedBy     string         `json:"created_by,omitempty" db:"created_by"`
+	UpdatedBy     string         `json:"updated_by,omitempty" db:"updated_by"`
 	CreatedAt     time.Time      `json:"created_at" db:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at" db:"updated_at"`
 }

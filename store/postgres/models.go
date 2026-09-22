@@ -34,6 +34,8 @@ type roleModel struct {
 	ParentSlug      *string          `grove:"parent_slug"`
 	MaxMembers      int              `grove:"max_members,notnull"`
 	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
+	CreatedBy       string           `grove:"created_by,notnull"`
+	UpdatedBy       string           `grove:"updated_by,notnull"`
 	CreatedAt       time.Time        `grove:"created_at,notnull"`
 	UpdatedAt       time.Time        `grove:"updated_at,notnull"`
 }
@@ -55,6 +57,8 @@ func roleToModel(r *role.Role) *roleModel {
 		IsDefault:     r.IsDefault,
 		MaxMembers:    r.MaxMembers,
 		Metadata:      md,
+		CreatedBy:     r.CreatedBy,
+		UpdatedBy:     r.UpdatedBy,
 		CreatedAt:     r.CreatedAt,
 		UpdatedAt:     r.UpdatedAt,
 	}
@@ -79,6 +83,8 @@ func roleFromModel(m *roleModel) *role.Role {
 		IsDefault:     m.IsDefault,
 		MaxMembers:    m.MaxMembers,
 		Metadata:      map[string]any(m.Metadata),
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     m.CreatedAt,
 		UpdatedAt:     m.UpdatedAt,
 	}
@@ -104,6 +110,8 @@ type permissionModel struct {
 	Action          string           `grove:"action,notnull"`
 	IsSystem        bool             `grove:"is_system,notnull"`
 	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
+	CreatedBy       string           `grove:"created_by,notnull"`
+	UpdatedBy       string           `grove:"updated_by,notnull"`
 	CreatedAt       time.Time        `grove:"created_at,notnull"`
 	UpdatedAt       time.Time        `grove:"updated_at,notnull"`
 }
@@ -124,6 +132,8 @@ func permissionToModel(p *permission.Permission) *permissionModel {
 		Action:        p.Action,
 		IsSystem:      p.IsSystem,
 		Metadata:      md,
+		CreatedBy:     p.CreatedBy,
+		UpdatedBy:     p.UpdatedBy,
 		CreatedAt:     p.CreatedAt,
 		UpdatedAt:     p.UpdatedAt,
 	}
@@ -142,6 +152,8 @@ func permissionFromModel(m *permissionModel) *permission.Permission {
 		Action:        m.Action,
 		IsSystem:      m.IsSystem,
 		Metadata:      map[string]any(m.Metadata),
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     m.CreatedAt,
 		UpdatedAt:     m.UpdatedAt,
 	}
@@ -283,6 +295,7 @@ type relationModel struct {
 	SubjectID       string           `grove:"subject_id,notnull"`
 	SubjectRelation string           `grove:"subject_relation"`
 	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
+	CreatedBy       string           `grove:"created_by,notnull"`
 	CreatedAt       time.Time        `grove:"created_at,notnull"`
 }
 
@@ -303,6 +316,7 @@ func relationToModel(t *relation.Tuple) *relationModel {
 		SubjectID:       t.SubjectID,
 		SubjectRelation: t.SubjectRelation,
 		Metadata:        md,
+		CreatedBy:       t.CreatedBy,
 		CreatedAt:       t.CreatedAt,
 	}
 }
@@ -321,6 +335,7 @@ func relationFromModel(m *relationModel) *relation.Tuple {
 		SubjectID:       m.SubjectID,
 		SubjectRelation: m.SubjectRelation,
 		Metadata:        map[string]any(m.Metadata),
+		CreatedBy:       m.CreatedBy,
 		CreatedAt:       m.CreatedAt,
 	}
 }
@@ -349,6 +364,8 @@ type policyModel struct {
 	Resources       jsonbSlice[string]              `grove:"resources,type:jsonb"`
 	Conditions      jsonbSlice[policy.Condition]    `grove:"conditions,type:jsonb"`
 	Metadata        pgdriver.JSONMap                `grove:"metadata,type:jsonb"`
+	CreatedBy       string                          `grove:"created_by,notnull"`
+	UpdatedBy       string                          `grove:"updated_by,notnull"`
 	CreatedAt       time.Time                       `grove:"created_at,notnull"`
 	UpdatedAt       time.Time                       `grove:"updated_at,notnull"`
 }
@@ -377,6 +394,8 @@ func policyToModel(p *policy.Policy) *policyModel {
 		Resources:     jsonbSlice[string](p.Resources),
 		Conditions:    jsonbSlice[policy.Condition](p.Conditions),
 		Metadata:      md,
+		CreatedBy:     p.CreatedBy,
+		UpdatedBy:     p.UpdatedBy,
 		CreatedAt:     p.CreatedAt,
 		UpdatedAt:     p.UpdatedAt,
 	}
@@ -403,6 +422,8 @@ func policyFromModel(m *policyModel) *policy.Policy {
 		Resources:     []string(m.Resources),
 		Conditions:    []policy.Condition(m.Conditions),
 		Metadata:      map[string]any(m.Metadata),
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     m.CreatedAt,
 		UpdatedAt:     m.UpdatedAt,
 	}
@@ -423,6 +444,8 @@ type resourceTypeModel struct {
 	Relations       jsonbSlice[resourcetype.RelationDef]   `grove:"relations,type:jsonb"`
 	Permissions     jsonbSlice[resourcetype.PermissionDef] `grove:"permissions,type:jsonb"`
 	Metadata        pgdriver.JSONMap                       `grove:"metadata,type:jsonb"`
+	CreatedBy       string                                 `grove:"created_by,notnull"`
+	UpdatedBy       string                                 `grove:"updated_by,notnull"`
 	CreatedAt       time.Time                              `grove:"created_at,notnull"`
 	UpdatedAt       time.Time                              `grove:"updated_at,notnull"`
 }
@@ -442,6 +465,8 @@ func resourceTypeToModel(rt *resourcetype.ResourceType) *resourceTypeModel {
 		Relations:     jsonbSlice[resourcetype.RelationDef](rt.Relations),
 		Permissions:   jsonbSlice[resourcetype.PermissionDef](rt.Permissions),
 		Metadata:      md,
+		CreatedBy:     rt.CreatedBy,
+		UpdatedBy:     rt.UpdatedBy,
 		CreatedAt:     rt.CreatedAt,
 		UpdatedAt:     rt.UpdatedAt,
 	}
@@ -459,6 +484,8 @@ func resourceTypeFromModel(m *resourceTypeModel) *resourcetype.ResourceType {
 		Relations:     []resourcetype.RelationDef(m.Relations),
 		Permissions:   []resourcetype.PermissionDef(m.Permissions),
 		Metadata:      map[string]any(m.Metadata),
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     m.CreatedAt,
 		UpdatedAt:     m.UpdatedAt,
 	}

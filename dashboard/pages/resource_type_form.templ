@@ -41,7 +41,7 @@ templ ResourceTypeCreatePage() {
 					expression: p.expression
 				}));
 				try {
-					const resp = await fetch('/v1/resource-types', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+					const resp = await fetch('/v1/resource-types', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}, body: JSON.stringify(data)});
 					if (resp.ok) { htmx.ajax('GET', '/resource-types', {target: '#content'}); }
 					else { const r = await resp.json(); this.error = r.error || r.message || 'Failed to create resource type'; }
 				} catch(e) { this.error = e.message; }

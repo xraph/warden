@@ -300,7 +300,7 @@ func policyFormAlpineData(p *policy.Policy) string {
 				data.subjects = data.subjects.filter(s => s.kind || s.id || s.role);
 				data.conditions = data.conditions.filter(c => c.field).map(c => ({field: c.field, operator: c.operator, value: c.value}));
 				try {
-					const resp = await fetch('/v1/policies', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+					const resp = await fetch('/v1/policies', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}, body: JSON.stringify(data)});
 					if (resp.ok) { htmx.ajax('GET', '/policies', {target: '#content'}); }
 					else { const r = await resp.json(); this.error = r.error || r.message || 'Failed to create policy'; }
 				} catch(e) { this.error = e.message; }
@@ -337,7 +337,7 @@ func policyFormAlpineData(p *policy.Policy) string {
 			data.subjects = data.subjects.filter(s => s.kind || s.id || s.role);
 			data.conditions = data.conditions.filter(c => c.field).map(c => ({field: c.field, operator: c.operator, value: c.value}));
 			try {
-				const resp = await fetch('/v1/policies/%s', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+				const resp = await fetch('/v1/policies/%s', {method: 'PUT', headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}, body: JSON.stringify(data)});
 				if (resp.ok) { htmx.ajax('GET', '/policies/detail?id=%s', {target: '#content'}); }
 				else { const r = await resp.json(); this.error = r.error || r.message || 'Failed to update policy'; }
 			} catch(e) { this.error = e.message; }

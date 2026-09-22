@@ -35,6 +35,8 @@ type roleModel struct {
 	ParentSlug      *string    `grove:"parent_slug"`
 	MaxMembers      int        `grove:"max_members,notnull"`
 	Metadata        string     `grove:"metadata"` // JSON text
+	CreatedBy       string     `grove:"created_by,notnull"`
+	UpdatedBy       string     `grove:"updated_by,notnull"`
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
@@ -56,6 +58,8 @@ func roleToModel(r *role.Role) (*roleModel, error) {
 		IsDefault:     r.IsDefault,
 		MaxMembers:    r.MaxMembers,
 		Metadata:      string(metadata),
+		CreatedBy:     r.CreatedBy,
+		UpdatedBy:     r.UpdatedBy,
 		CreatedAt:     sqliteTime(r.CreatedAt),
 		UpdatedAt:     sqliteTime(r.UpdatedAt),
 	}
@@ -86,6 +90,8 @@ func roleFromModel(m *roleModel) (*role.Role, error) {
 		IsDefault:     m.IsDefault,
 		MaxMembers:    m.MaxMembers,
 		Metadata:      metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     time.Time(m.CreatedAt),
 		UpdatedAt:     time.Time(m.UpdatedAt),
 	}
@@ -111,6 +117,8 @@ type permissionModel struct {
 	Action          string     `grove:"action,notnull"`
 	IsSystem        bool       `grove:"is_system,notnull"`
 	Metadata        string     `grove:"metadata"` // JSON text
+	CreatedBy       string     `grove:"created_by,notnull"`
+	UpdatedBy       string     `grove:"updated_by,notnull"`
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
@@ -131,6 +139,8 @@ func permissionToModel(p *permission.Permission) (*permissionModel, error) {
 		Action:        p.Action,
 		IsSystem:      p.IsSystem,
 		Metadata:      string(metadata),
+		CreatedBy:     p.CreatedBy,
+		UpdatedBy:     p.UpdatedBy,
 		CreatedAt:     sqliteTime(p.CreatedAt),
 		UpdatedAt:     sqliteTime(p.UpdatedAt),
 	}, nil
@@ -155,6 +165,8 @@ func permissionFromModel(m *permissionModel) (*permission.Permission, error) {
 		Action:        m.Action,
 		IsSystem:      m.IsSystem,
 		Metadata:      metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     time.Time(m.CreatedAt),
 		UpdatedAt:     time.Time(m.UpdatedAt),
 	}, nil
@@ -310,6 +322,7 @@ type relationModel struct {
 	SubjectID       string     `grove:"subject_id,notnull"`
 	SubjectRelation string     `grove:"subject_relation"`
 	Metadata        string     `grove:"metadata"` // JSON text
+	CreatedBy       string     `grove:"created_by,notnull"`
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 }
 
@@ -330,6 +343,7 @@ func relationToModel(t *relation.Tuple) (*relationModel, error) {
 		SubjectID:       t.SubjectID,
 		SubjectRelation: t.SubjectRelation,
 		Metadata:        string(metadata),
+		CreatedBy:       t.CreatedBy,
 		CreatedAt:       sqliteTime(t.CreatedAt),
 	}, nil
 }
@@ -354,6 +368,7 @@ func relationFromModel(m *relationModel) (*relation.Tuple, error) {
 		SubjectID:       m.SubjectID,
 		SubjectRelation: m.SubjectRelation,
 		Metadata:        metadata,
+		CreatedBy:       m.CreatedBy,
 		CreatedAt:       time.Time(m.CreatedAt),
 	}, nil
 }
@@ -382,6 +397,8 @@ type policyModel struct {
 	Resources       string      `grove:"resources"`  // JSON text
 	Conditions      string      `grove:"conditions"` // JSON text
 	Metadata        string      `grove:"metadata"`   // JSON text
+	CreatedBy       string      `grove:"created_by,notnull"`
+	UpdatedBy       string      `grove:"updated_by,notnull"`
 	CreatedAt       sqliteTime  `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime  `grove:"updated_at,notnull"`
 }
@@ -428,6 +445,8 @@ func policyToModel(p *policy.Policy) (*policyModel, error) {
 		Resources:     string(resources),
 		Conditions:    string(conditions),
 		Metadata:      string(metadata),
+		CreatedBy:     p.CreatedBy,
+		UpdatedBy:     p.UpdatedBy,
 		CreatedAt:     sqliteTime(p.CreatedAt),
 		UpdatedAt:     sqliteTime(p.UpdatedAt),
 	}
@@ -498,6 +517,8 @@ func policyFromModel(m *policyModel) (*policy.Policy, error) {
 		Resources:     resources,
 		Conditions:    conditions,
 		Metadata:      metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     time.Time(m.CreatedAt),
 		UpdatedAt:     time.Time(m.UpdatedAt),
 	}
@@ -537,6 +558,8 @@ type resourceTypeModel struct {
 	Relations       string     `grove:"relations"`   // JSON text
 	Permissions     string     `grove:"permissions"` // JSON text
 	Metadata        string     `grove:"metadata"`    // JSON text
+	CreatedBy       string     `grove:"created_by,notnull"`
+	UpdatedBy       string     `grove:"updated_by,notnull"`
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
@@ -564,6 +587,8 @@ func resourceTypeToModel(rt *resourcetype.ResourceType) (*resourceTypeModel, err
 		Relations:     string(relations),
 		Permissions:   string(permissions),
 		Metadata:      string(metadata),
+		CreatedBy:     rt.CreatedBy,
+		UpdatedBy:     rt.UpdatedBy,
 		CreatedAt:     sqliteTime(rt.CreatedAt),
 		UpdatedAt:     sqliteTime(rt.UpdatedAt),
 	}, nil
@@ -600,6 +625,8 @@ func resourceTypeFromModel(m *resourceTypeModel) (*resourcetype.ResourceType, er
 		Relations:     relations,
 		Permissions:   permissions,
 		Metadata:      metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     time.Time(m.CreatedAt),
 		UpdatedAt:     time.Time(m.UpdatedAt),
 	}, nil

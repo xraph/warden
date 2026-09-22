@@ -10,11 +10,19 @@ import (
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/policy"
 	"github.com/xraph/warden/relation"
 	"github.com/xraph/warden/resourcetype"
 	"github.com/xraph/warden/role"
 )
+
+// declarativeActor identifies the DSL applier as the actor for every
+// mutation it performs, for CreatedBy/UpdatedBy columns and the audit
+// trail. It is warden.SystemActor with Via overridden to "declarative" so
+// an audit event can distinguish an apply from other system-originated
+// writes (maintenance, migrations) that also use SystemActor.
+var declarativeActor = warden.Actor{Kind: warden.SystemActor.Kind, ID: warden.SystemActor.ID, Via: "declarative"}
 
 // ApplyOptions configures the DSL applier.
 type ApplyOptions struct {
@@ -54,7 +62,7 @@ type ApplyResult struct {
 func Apply(ctx context.Context, eng *warden.Engine, prog *Program, opts ApplyOptions) (*ApplyResult, error) {
 	tenantID := firstNonEmpty(opts.TenantID, prog.Tenant)
 	if opts.Prune && tenantID == "" {
-		return nil, errors.New("dsl: Prune requires a tenant — set ApplyOptions.TenantID or `tenant` in source; pruning the global (tenant-less) scope would delete every entity with an empty tenant_id across every caller that also uses the global scope")
+		return nil, errors.New("dsl: Prune requires a tenant: set ApplyOptions.TenantID or `tenant` in source; pruning the global (tenant-less) scope would delete every entity with an empty tenant_id across every caller that also uses the global scope")
 	}
 	if errs := Resolve(prog); len(errs) > 0 {
 		return nil, &DiagnosticError{Diags: errs}
@@ -131,6 +139,31 @@ type applier struct {
 	result *ApplyResult
 }
 
+// emitAudit records one audit event for a declarative mutation, through
+// the same plugin.Registry.EmitAudit hook every HTTP handler uses. A
+// no-op on a dry run (nothing was actually written) or when the engine
+// has no plugin registry configured.
+//
+// Each entity kind uses its normal typed action ("role.created",
+// "policy.updated", "relation.deleted", ...) rather than a single generic
+// "declarative.applied" for every mutation, so an Audit plugin filtering
+// on action names doesn't need a separate code path for declarative
+// applies versus API-driven ones; Actor.Via distinguishes the two.
+func (a *applier) emitAudit(action, entityID string, entity, before any) {
+	if a.dryRun || a.eng.Plugins() == nil {
+		return
+	}
+	a.eng.Plugins().EmitAudit(a.ctx, plugin.Event{
+		Actor:    declarativeActor,
+		At:       a.now,
+		Action:   action,
+		TenantID: a.tenantID,
+		EntityID: entityID,
+		Entity:   entity,
+		Before:   before,
+	})
+}
+
 func (a *applier) run(prog *Program) error {
 	if err := a.applyResourceTypes(prog); err != nil {
 		return err
@@ -166,6 +199,8 @@ func (a *applier) applyResourceTypes(prog *Program) error {
 			Description:   rt.Description,
 			Relations:     rtRelations(rt),
 			Permissions:   rtPermissions(rt),
+			CreatedBy:     declarativeActor.ID,
+			UpdatedBy:     declarativeActor.ID,
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
@@ -177,11 +212,13 @@ func (a *applier) applyResourceTypes(prog *Program) error {
 				if err := a.store.CreateResourceType(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create resource type %s: %w", rt.Name, err)
 				}
+				a.emitAudit("resourcetype.created", desired.ID.String(), desired, nil)
 			}
 			continue
 		}
 		desired.ID = existing.ID
 		desired.CreatedAt = existing.CreatedAt
+		desired.CreatedBy = existing.CreatedBy
 		if rtEquivalent(existing, desired) {
 			a.result.NoOps++
 			continue
@@ -191,6 +228,7 @@ func (a *applier) applyResourceTypes(prog *Program) error {
 			if err := a.store.UpdateResourceType(a.ctx, desired); err != nil {
 				return fmt.Errorf("update resource type %s: %w", rt.Name, err)
 			}
+			a.emitAudit("resourcetype.updated", desired.ID.String(), desired, existing)
 		}
 	}
 	if a.prune {
@@ -269,6 +307,7 @@ func (a *applier) pruneResourceTypes(declared map[string]struct{}) error {
 			if err := a.store.DeleteResourceType(a.ctx, a.tenantID, rt.ID); err != nil {
 				return fmt.Errorf("delete resource type %s: %w", rt.Name, err)
 			}
+			a.emitAudit("resourcetype.deleted", rt.ID.String(), nil, rt)
 		}
 	}
 	return nil
@@ -291,6 +330,8 @@ func (a *applier) applyPermissions(prog *Program) error {
 			Resource:      p.Resource,
 			Action:        p.Action,
 			IsSystem:      p.IsSystem,
+			CreatedBy:     declarativeActor.ID,
+			UpdatedBy:     declarativeActor.ID,
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
@@ -302,11 +343,13 @@ func (a *applier) applyPermissions(prog *Program) error {
 				if err := a.store.CreatePermission(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create permission %s: %w", p.Name, err)
 				}
+				a.emitAudit("permission.created", desired.ID.String(), desired, nil)
 			}
 			continue
 		}
 		desired.ID = existing.ID
 		desired.CreatedAt = existing.CreatedAt
+		desired.CreatedBy = existing.CreatedBy
 		if existing.Description == desired.Description &&
 			existing.Resource == desired.Resource &&
 			existing.Action == desired.Action &&
@@ -320,6 +363,7 @@ func (a *applier) applyPermissions(prog *Program) error {
 			if err := a.store.UpdatePermission(a.ctx, desired); err != nil {
 				return fmt.Errorf("update permission %s: %w", p.Name, err)
 			}
+			a.emitAudit("permission.updated", desired.ID.String(), desired, existing)
 		}
 	}
 	if a.prune {
@@ -340,6 +384,7 @@ func (a *applier) applyPermissions(prog *Program) error {
 				if err := a.store.DeletePermission(a.ctx, a.tenantID, p.ID); err != nil {
 					return fmt.Errorf("delete permission %s: %w", p.Name, err)
 				}
+				a.emitAudit("permission.deleted", p.ID.String(), nil, p)
 			}
 		}
 	}
@@ -369,6 +414,8 @@ func (a *applier) applyRoles(prog *Program) error {
 			IsDefault:     r.IsDefault,
 			ParentSlug:    parentSlugForStorage(r.Parent),
 			MaxMembers:    r.MaxMembers,
+			CreatedBy:     declarativeActor.ID,
+			UpdatedBy:     declarativeActor.ID,
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
@@ -380,11 +427,13 @@ func (a *applier) applyRoles(prog *Program) error {
 				if err := a.store.CreateRole(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create role %s: %w", r.Slug, err)
 				}
+				a.emitAudit("role.created", desired.ID.String(), desired, nil)
 			}
 			continue
 		}
 		desired.ID = existing.ID
 		desired.CreatedAt = existing.CreatedAt
+		desired.CreatedBy = existing.CreatedBy
 		if existing.Name == desired.Name &&
 			existing.Description == desired.Description &&
 			existing.IsSystem == desired.IsSystem &&
@@ -400,6 +449,7 @@ func (a *applier) applyRoles(prog *Program) error {
 			if err := a.store.UpdateRole(a.ctx, desired); err != nil {
 				return fmt.Errorf("update role %s: %w", r.Slug, err)
 			}
+			a.emitAudit("role.updated", desired.ID.String(), desired, existing)
 		}
 	}
 	if a.prune {
@@ -423,6 +473,7 @@ func (a *applier) applyRoles(prog *Program) error {
 				if err := a.store.DeleteRole(a.ctx, a.tenantID, r.ID); err != nil {
 					return fmt.Errorf("delete role %s: %w", r.Slug, err)
 				}
+				a.emitAudit("role.deleted", r.ID.String(), nil, r)
 			}
 		}
 	}
@@ -543,6 +594,8 @@ func (a *applier) applyPolicies(prog *Program) error {
 			Actions:       p.Actions,
 			Resources:     p.Resources,
 			Conditions:    flattenConditions(p.Conditions),
+			CreatedBy:     declarativeActor.ID,
+			UpdatedBy:     declarativeActor.ID,
 			CreatedAt:     a.now,
 			UpdatedAt:     a.now,
 		}
@@ -554,11 +607,13 @@ func (a *applier) applyPolicies(prog *Program) error {
 				if err := a.store.CreatePolicy(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create policy %s: %w", p.Name, err)
 				}
+				a.emitAudit("policy.created", desired.ID.String(), desired, nil)
 			}
 			continue
 		}
 		desired.ID = existing.ID
 		desired.CreatedAt = existing.CreatedAt
+		desired.CreatedBy = existing.CreatedBy
 		desired.Version = existing.Version + 1
 		if policyEquivalent(existing, desired) {
 			a.result.NoOps++
@@ -569,6 +624,7 @@ func (a *applier) applyPolicies(prog *Program) error {
 			if err := a.store.UpdatePolicy(a.ctx, desired); err != nil {
 				return fmt.Errorf("update policy %s: %w", p.Name, err)
 			}
+			a.emitAudit("policy.updated", desired.ID.String(), desired, existing)
 		}
 	}
 	if a.prune {
@@ -589,6 +645,7 @@ func (a *applier) applyPolicies(prog *Program) error {
 				if err := a.store.DeletePolicy(a.ctx, a.tenantID, p.ID); err != nil {
 					return fmt.Errorf("delete policy %s: %w", p.Name, err)
 				}
+				a.emitAudit("policy.deleted", p.ID.String(), nil, p)
 			}
 		}
 	}
@@ -698,6 +755,7 @@ func (a *applier) applyRelations(prog *Program) error {
 			SubjectType:     r.SubjectType,
 			SubjectID:       r.SubjectID,
 			SubjectRelation: r.SubjectRelation,
+			CreatedBy:       declarativeActor.ID,
 			CreatedAt:       a.now,
 		}
 		// Check if the tuple already exists. The filter pins every column
@@ -734,6 +792,7 @@ func (a *applier) applyRelations(prog *Program) error {
 			if err := a.store.CreateRelation(a.ctx, t); err != nil {
 				return fmt.Errorf("create relation: %w", err)
 			}
+			a.emitAudit("relation.written", t.ID.String(), t, nil)
 		}
 	}
 	return nil

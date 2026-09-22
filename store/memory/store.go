@@ -158,6 +158,7 @@ func (s *Store) UpdateRole(_ context.Context, r *role.Role) error {
 	updated.TenantID = existing.TenantID
 	updated.ID = existing.ID
 	updated.CreatedAt = existing.CreatedAt
+	updated.CreatedBy = existing.CreatedBy
 	s.roles[r.ID.String()] = updated
 	return nil
 }
@@ -440,6 +441,7 @@ func (s *Store) UpdatePermission(_ context.Context, p *permission.Permission) er
 	updated.TenantID = existing.TenantID
 	updated.ID = existing.ID
 	updated.CreatedAt = existing.CreatedAt
+	updated.CreatedBy = existing.CreatedBy
 	s.permissions[p.ID.String()] = updated
 	return nil
 }
@@ -1029,6 +1031,7 @@ func (s *Store) UpdatePolicy(_ context.Context, p *policy.Policy) error {
 	updated.TenantID = existing.TenantID
 	updated.ID = existing.ID
 	updated.CreatedAt = existing.CreatedAt
+	updated.CreatedBy = existing.CreatedBy
 	s.policies[p.ID.String()] = updated
 	return nil
 }
@@ -1184,6 +1187,7 @@ func (s *Store) UpdateResourceType(_ context.Context, rt *resourcetype.ResourceT
 	updated.TenantID = existing.TenantID
 	updated.ID = existing.ID
 	updated.CreatedAt = existing.CreatedAt
+	updated.CreatedBy = existing.CreatedBy
 	s.resourceTypes[rt.ID.String()] = updated
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/store/memory"
 )
 
@@ -330,5 +331,120 @@ role editor : ghost {
 	}
 	if !strings.Contains(err.Error(), "unknown parent") {
 		t.Errorf("got %v", err)
+	}
+}
+
+// recordingAuditPlugin implements plugin.Plugin and plugin.Audit,
+// recording every event it's handed.
+type recordingAuditPlugin struct {
+	events []plugin.Event
+}
+
+func (p *recordingAuditPlugin) Name() string { return "recording-audit" }
+
+func (p *recordingAuditPlugin) OnAudit(_ context.Context, ev plugin.Event) error {
+	p.events = append(p.events, ev)
+	return nil
+}
+
+func TestApply_SetsDeclarativeActorAndEmitsAudit(t *testing.T) {
+	src := `
+warden config 1
+tenant t1
+
+permission "doc:read" (document : read)
+role viewer {
+    name = "Viewer"
+    grants = ["doc:read"]
+}
+`
+	prog, errs := Parse("test.warden", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	s := memory.New()
+	rec := &recordingAuditPlugin{}
+	eng, err := warden.NewEngine(warden.WithStore(s), warden.WithPlugin(rec))
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, err := Apply(ctx, eng, prog, ApplyOptions{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	r, err := s.GetRoleBySlug(ctx, "t1", "", "viewer")
+	if err != nil {
+		t.Fatalf("GetRoleBySlug: %v", err)
+	}
+	if r.CreatedBy != warden.SystemActor.ID {
+		t.Errorf("role.CreatedBy = %q, want %q", r.CreatedBy, warden.SystemActor.ID)
+	}
+	if r.UpdatedBy != warden.SystemActor.ID {
+		t.Errorf("role.UpdatedBy = %q, want %q", r.UpdatedBy, warden.SystemActor.ID)
+	}
+
+	p, err := s.GetPermissionByName(ctx, "t1", "", "doc:read")
+	if err != nil {
+		t.Fatalf("GetPermissionByName: %v", err)
+	}
+	if p.CreatedBy != warden.SystemActor.ID {
+		t.Errorf("permission.CreatedBy = %q, want %q", p.CreatedBy, warden.SystemActor.ID)
+	}
+
+	if len(rec.events) != 2 {
+		t.Fatalf("expected 2 audit events (permission.created, role.created), got %d: %+v", len(rec.events), rec.events)
+	}
+	seenActions := map[string]bool{}
+	for _, ev := range rec.events {
+		seenActions[ev.Action] = true
+		actor, ok := ev.Actor.(warden.Actor)
+		if !ok {
+			t.Fatalf("event Actor is not a warden.Actor: %+v", ev.Actor)
+		}
+		if actor.Via != "declarative" {
+			t.Errorf("event %s: Actor.Via = %q, want %q", ev.Action, actor.Via, "declarative")
+		}
+		if actor.Kind != warden.SystemActor.Kind || actor.ID != warden.SystemActor.ID {
+			t.Errorf("event %s: Actor = %+v, want Kind/ID matching warden.SystemActor", ev.Action, actor)
+		}
+		if ev.TenantID != "t1" {
+			t.Errorf("event %s: TenantID = %q, want %q", ev.Action, ev.TenantID, "t1")
+		}
+	}
+	if !seenActions["role.created"] || !seenActions["permission.created"] {
+		t.Errorf("missing expected actions, got %+v", seenActions)
+	}
+}
+
+func TestApply_DryRunEmitsNoAudit(t *testing.T) {
+	prog, errs := Parse("test.warden", []byte(`
+warden config 1
+tenant t1
+
+permission "doc:read" (document : read)
+role viewer {
+    name = "Viewer"
+    grants = ["doc:read"]
+}
+`))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	s := memory.New()
+	rec := &recordingAuditPlugin{}
+	eng, err := warden.NewEngine(warden.WithStore(s), warden.WithPlugin(rec))
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	if _, err := Apply(context.Background(), eng, prog, ApplyOptions{DryRun: true}); err != nil {
+		t.Fatalf("dry-run apply: %v", err)
+	}
+	if len(rec.events) != 0 {
+		t.Errorf("dry run must not emit audit events, got %d: %+v", len(rec.events), rec.events)
 	}
 }

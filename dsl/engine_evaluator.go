@@ -37,6 +37,13 @@ func NewEngineEvaluator(s engineStore) *EngineEvaluator {
 	return ee
 }
 
+// Evaluator returns the underlying compiled-expression Evaluator, so a
+// caller can wire dsl.NewInvalidatorPlugin(ee.Evaluator()) onto the same
+// engine that uses this EngineEvaluator for expression evaluation. The
+// two share the compiled-AST cache, so invalidating one invalidates the
+// other.
+func (e *EngineEvaluator) Evaluator() *Evaluator { return e.ev }
+
 // resolvePerm implements dsl.PermResolver — looks up the compiled
 // expression for a permission on a resource type, walking the namespace
 // ancestor chain.

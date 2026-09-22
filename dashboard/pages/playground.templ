@@ -10,10 +10,15 @@ import (
 	"github.com/xraph/forgeui/icons"
 )
 
-// PlaygroundPage renders the authorization playground for testing access checks.
-templ PlaygroundPage() {
+// PlaygroundPage renders the authorization playground for testing access
+// checks. basePath is the URL prefix the warden extension mounted its API
+// under (extension.Config.BasePath, "/warden" by default); the check
+// request is posted there rather than at a hardcoded root path, so the
+// playground works regardless of where the host app mounted the API.
+templ PlaygroundPage(basePath string) {
 	<div
 		class="space-y-6"
+		data-base-path={ basePath }
 		x-data="{
 			request: {
 				subject_kind: 'user',
@@ -38,7 +43,8 @@ templ PlaygroundPage() {
 					delete data.context;
 				}
 				try {
-					const resp = await fetch('/v1/authz/check', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+					const base = this.$root.dataset.basePath || '';
+					const resp = await fetch(base + '/v1/authz/check', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}, body: JSON.stringify(data)});
 					if (resp.ok) { this.result = await resp.json(); }
 					else { const r = await resp.json(); this.error = r.error || r.message || 'Check failed'; }
 				} catch(e) { this.error = e.message; }

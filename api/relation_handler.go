@@ -6,12 +6,17 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/relation"
 )
 
 func (a *API) registerRelationRoutes(router forge.Router) error {
 	g := router.Group("/v1", forge.WithGroupTags("relations"))
+
+	manage := a.authorize("manage", "warden:relation")
+	read := a.authorize("read", "warden:relation")
 
 	if err := g.POST("/relations", a.writeRelation,
 		forge.WithSummary("Write relation"),
@@ -20,6 +25,7 @@ func (a *API) registerRelationRoutes(router forge.Router) error {
 		forge.WithRequestSchema(WriteRelationRequest{}),
 		forge.WithCreatedResponse(&relation.Tuple{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -31,6 +37,7 @@ func (a *API) registerRelationRoutes(router forge.Router) error {
 		forge.WithRequestSchema(DeleteRelationRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -41,6 +48,7 @@ func (a *API) registerRelationRoutes(router forge.Router) error {
 		forge.WithRequestSchema(ListRelationsRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Relation list", []*relation.Tuple{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	)
 }
 
@@ -73,6 +81,7 @@ func (a *API) writeRelation(ctx forge.Context, req *WriteRelationRequest) (*rela
 	}
 
 	appID, tenantID := scopeFromForgeContext(ctx)
+	actor, _ := warden.ActorFromContext(ctx.Context())
 	now := time.Now()
 	t := &relation.Tuple{
 		ID:              id.NewRelationID(),
@@ -84,6 +93,7 @@ func (a *API) writeRelation(ctx forge.Context, req *WriteRelationRequest) (*rela
 		SubjectType:     req.SubjectType,
 		SubjectID:       req.SubjectID,
 		SubjectRelation: req.SubjectRelation,
+		CreatedBy:       actor.ID,
 		CreatedAt:       now,
 	}
 
@@ -93,9 +103,13 @@ func (a *API) writeRelation(ctx forge.Context, req *WriteRelationRequest) (*rela
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitRelationWritten(ctx.Context(), t)
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: now, Action: "relation.written",
+			TenantID: tenantID, EntityID: t.ID.String(), Entity: t,
+		})
 	}
 
-	return t, ctx.JSON(http.StatusCreated, t)
+	return nil, ctx.JSON(http.StatusCreated, t)
 }
 
 func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*struct{}, error) {
@@ -106,6 +120,19 @@ func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*st
 	_, tenantID := scopeFromForgeContext(ctx)
 	if err := a.eng.Store().DeleteRelationTuple(ctx.Context(), tenantID, req.NamespacePath, req.ObjectType, req.ObjectID, req.Relation, req.SubjectType, req.SubjectID); err != nil {
 		return nil, mapError(err)
+	}
+
+	if a.eng.Plugins() != nil {
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: time.Now(), Action: "relation.deleted",
+			TenantID: tenantID,
+			EntityID: req.ObjectType + ":" + req.ObjectID + "#" + req.Relation + "@" + req.SubjectType + ":" + req.SubjectID,
+			Entity: map[string]string{
+				"object_type": req.ObjectType, "object_id": req.ObjectID, "relation": req.Relation,
+				"subject_type": req.SubjectType, "subject_id": req.SubjectID,
+			},
+		})
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)

@@ -7,12 +7,17 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
+	"github.com/xraph/warden/plugin"
 )
 
 func (a *API) registerPermissionRoutes(router forge.Router) error {
 	g := router.Group("/v1", forge.WithGroupTags("permissions"))
+
+	manage := a.authorize("manage", "warden:permission")
+	read := a.authorize("read", "warden:permission")
 
 	if err := g.POST("/permissions", a.createPermission,
 		forge.WithSummary("Create permission"),
@@ -21,6 +26,7 @@ func (a *API) registerPermissionRoutes(router forge.Router) error {
 		forge.WithRequestSchema(CreatePermissionRequest{}),
 		forge.WithCreatedResponse(&permission.Permission{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -30,6 +36,7 @@ func (a *API) registerPermissionRoutes(router forge.Router) error {
 		forge.WithOperationID("getPermission"),
 		forge.WithResponseSchema(http.StatusOK, "Permission details", &permission.Permission{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	); err != nil {
 		return err
 	}
@@ -39,6 +46,7 @@ func (a *API) registerPermissionRoutes(router forge.Router) error {
 		forge.WithOperationID("deletePermission"),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -49,6 +57,7 @@ func (a *API) registerPermissionRoutes(router forge.Router) error {
 		forge.WithRequestSchema(ListPermissionsRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Permission list", []*permission.Permission{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	)
 }
 
@@ -70,6 +79,7 @@ func (a *API) createPermission(ctx forge.Context, req *CreatePermissionRequest) 
 	}
 
 	appID, tenantID := scopeFromForgeContext(ctx)
+	actor, _ := warden.ActorFromContext(ctx.Context())
 	now := time.Now()
 	p := &permission.Permission{
 		ID:          id.NewPermissionID(),
@@ -79,8 +89,9 @@ func (a *API) createPermission(ctx forge.Context, req *CreatePermissionRequest) 
 		Resource:    req.Resource,
 		Action:      req.Action,
 		Description: req.Description,
-		IsSystem:    req.IsSystem,
 		Metadata:    req.Metadata,
+		CreatedBy:   actor.ID,
+		UpdatedBy:   actor.ID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -91,9 +102,13 @@ func (a *API) createPermission(ctx forge.Context, req *CreatePermissionRequest) 
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitPermissionCreated(ctx.Context(), p)
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: now, Action: "permission.created",
+			TenantID: tenantID, EntityID: p.ID.String(), Entity: p,
+		})
 	}
 
-	return p, ctx.JSON(http.StatusCreated, p)
+	return nil, ctx.JSON(http.StatusCreated, p)
 }
 
 func (a *API) getPermission(ctx forge.Context, _ *GetPermissionRequest) (*permission.Permission, error) {
@@ -109,7 +124,7 @@ func (a *API) getPermission(ctx forge.Context, _ *GetPermissionRequest) (*permis
 		return nil, mapError(err)
 	}
 
-	return p, ctx.JSON(http.StatusOK, p)
+	return p, nil
 }
 
 func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*struct{}, error) {
@@ -119,6 +134,7 @@ func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*str
 	}
 
 	_, tenantID := scopeFromForgeContext(ctx)
+	before, getErr := a.eng.Store().GetPermission(ctx.Context(), tenantID, permID)
 
 	if err := a.eng.Store().DeletePermission(ctx.Context(), tenantID, permID); err != nil {
 		return nil, mapError(err)
@@ -126,6 +142,15 @@ func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*str
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitPermissionDeleted(ctx.Context(), permID)
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		ev := plugin.Event{
+			Actor: actor, At: time.Now(), Action: "permission.deleted",
+			TenantID: tenantID, EntityID: permID.String(),
+		}
+		if getErr == nil {
+			ev.Before = before
+		}
+		a.eng.Plugins().EmitAudit(ctx.Context(), ev)
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)

@@ -680,6 +680,48 @@ ALTER TABLE warden_role_permissions DROP COLUMN IF EXISTS tenant_id;
 			},
 		},
 		&migrate.Migration{
+			Name:    "actor_columns",
+			Version: "20260922000004",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Every admin mutation must record who made it. Assignments
+				// already carry granted_by; this adds the equivalent
+				// created_by/updated_by pair to the remaining mutable
+				// entities. Relations have no update path, so created_by is
+				// the only column there.
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_roles
+    ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS updated_by TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE warden_permissions
+    ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS updated_by TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE warden_policies
+    ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS updated_by TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE warden_resource_types
+    ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS updated_by TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE warden_relations
+    ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '';
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_roles          DROP COLUMN IF EXISTS created_by, DROP COLUMN IF EXISTS updated_by;
+ALTER TABLE warden_permissions    DROP COLUMN IF EXISTS created_by, DROP COLUMN IF EXISTS updated_by;
+ALTER TABLE warden_policies       DROP COLUMN IF EXISTS created_by, DROP COLUMN IF EXISTS updated_by;
+ALTER TABLE warden_resource_types DROP COLUMN IF EXISTS created_by, DROP COLUMN IF EXISTS updated_by;
+ALTER TABLE warden_relations      DROP COLUMN IF EXISTS created_by;
+`)
+				return err
+			},
+		},
+		&migrate.Migration{
 			Name:    "check_logs_indexes",
 			Version: "20260922000005",
 			Up: func(ctx context.Context, exec migrate.Executor) error {

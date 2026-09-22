@@ -14,7 +14,7 @@ import (
 
 // TestFetchRoles_BoundedForDropdown pins the dropdown fetches to an explicit
 // cap. They feed <select> elements, so the bound has to be the dashboard's
-// own decision rather than whatever limit the backend happens to default to —
+// own decision rather than whatever limit the backend happens to default to:
 // the memory backend applies none and the SQL backends apply 1000.
 func TestFetchRoles_BoundedForDropdown(t *testing.T) {
 	const n = dropdownOptionLimit + 137

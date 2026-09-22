@@ -30,6 +30,7 @@ type Tuple struct {
 	SubjectID       string         `json:"subject_id" db:"subject_id"`
 	SubjectRelation string         `json:"subject_relation,omitempty" db:"subject_relation"`
 	Metadata        map[string]any `json:"metadata,omitempty" db:"metadata"`
+	CreatedBy       string         `json:"created_by,omitempty" db:"created_by"`
 	CreatedAt       time.Time      `json:"created_at" db:"created_at"`
 }
 

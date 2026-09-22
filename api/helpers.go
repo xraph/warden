@@ -2,6 +2,9 @@ package api
 
 import (
 	"errors"
+	"net"
+	"regexp"
+	"strings"
 
 	"github.com/xraph/forge"
 
@@ -57,4 +60,55 @@ func defaultLimit(limit int) int {
 		return 1000
 	}
 	return limit
+}
+
+// tenantReasonPattern matches the "in tenant "<id>"" fragment the engine
+// appends to some deny reasons (see engine.go's DecisionDenyNoRoles path).
+// sanitizeReason strips it before a Reason string goes out over HTTP so a
+// caller without read access to the tenant catalog can't fingerprint
+// tenant IDs from check responses.
+var tenantReasonPattern = regexp.MustCompile(`\s*in tenant "[^"]*"`)
+
+// sanitizeReason strips tenant-identifying fragments from a CheckResult
+// reason string before it's returned to an HTTP caller.
+func sanitizeReason(reason string) string {
+	return strings.TrimSpace(tenantReasonPattern.ReplaceAllString(reason, ""))
+}
+
+// validSubjectKinds are the only subject kinds an actor-binding write
+// (role assignment) may name. Relation tuples are intentionally excluded:
+// their subject_type is a Zanzibar-style resource type (e.g. "group",
+// "folder"), not a warden.SubjectKind, so constraining it here would
+// break ordinary ReBAC usage.
+var validSubjectKinds = map[string]struct{}{
+	string(warden.SubjectUser):        {},
+	string(warden.SubjectAPIKey):      {},
+	string(warden.SubjectService):     {},
+	string(warden.SubjectServiceAcct): {},
+}
+
+// validSubjectKind reports whether kind is one of the four subject kinds
+// the engine recognizes.
+func validSubjectKind(kind string) bool {
+	_, ok := validSubjectKinds[kind]
+	return ok
+}
+
+// requestIP extracts the caller's IP from the first hop of
+// X-Forwarded-For, falling back to the connection's remote address.
+func requestIP(ctx forge.Context) string {
+	if xff := ctx.Header("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	req := ctx.Request()
+	if req == nil {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+		return host
+	}
+	return req.RemoteAddr
 }
