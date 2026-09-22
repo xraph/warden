@@ -20,14 +20,14 @@ var Migrations = migrate.NewGroup("warden")
 // connection it opens (see sqlitedriver.SqliteDB.Open), and under FK
 // enforcement a bare `DROP TABLE` on a table something else references can
 // cascade-delete or fail depending on the referencing table's ON DELETE
-// clause — not what a schema migration wants. recreateTable disables FK
+// clause, which is not what a schema migration wants. recreateTable disables FK
 // enforcement for the duration, runs sqlStmts (expected to create the new
 // table, copy rows, drop the old table and rename), verifies no dangling
 // reference was left behind with `PRAGMA foreign_key_check`, and only then
 // commits and re-enables enforcement.
 //
 // PRAGMA foreign_keys is a no-op while a transaction is open, so it has to
-// be issued before BEGIN and after COMMIT — never inside. Grove's
+// be issued before BEGIN and after COMMIT, never inside. Grove's
 // migrate.Executor here doesn't expose a single pinned connection (it wraps
 // the driver's pool), so this relies on migrations running sequentially on
 // one goroutine, which is how the orchestrator always calls them: with no
@@ -544,7 +544,7 @@ CREATE INDEX IF NOT EXISTS idx_warden_clogs_created ON warden_check_logs (create
 				// enforcement on (the default for every connection this
 				// store opens), SQLite's DROP TABLE runs an implicit DELETE
 				// against the table first, which fires that cascade and
-				// wipes both referencing tables — recreateTable is what
+				// wipes both referencing tables: recreateTable is what
 				// keeps this migration from silently deleting every
 				// assignment and role-permission grant on a fresh upgrade.
 				return recreateTable(ctx, exec, `

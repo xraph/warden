@@ -31,6 +31,7 @@ func RunListFiltersContract(t *testing.T, mk MakeStore) {
 	t.Run("Relations", func(t *testing.T) { runListFilterRelations(t, mk) })
 	t.Run("CheckLogs", func(t *testing.T) { runListFilterCheckLogs(t, mk) })
 	t.Run("CountIgnoresLimitOffset", func(t *testing.T) { runCountIgnoresLimitOffset(t, mk) })
+	t.Run("DefaultLimitCap", func(t *testing.T) { runListDefaultLimitCap(t, mk) })
 }
 
 func runListFilterRoles(t *testing.T, mk MakeStore) {
@@ -275,8 +276,41 @@ func runCountIgnoresLimitOffset(t *testing.T, mk MakeStore) {
 	}
 }
 
+// runListDefaultLimitCap asserts the L6 default: a List* call with no
+// explicit Limit still caps at 1000 rows, on every backend, while Count*
+// keeps reporting the true total. Roles is enough to exercise the shared
+// pagination path: postgres and sqlite apply the same fanoutLimit/listLimit
+// helper across every entity, and memory's applyPagination is generic over
+// all of them too.
+func runListDefaultLimitCap(t *testing.T, mk MakeStore) {
+	s, cleanup := mk(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	const seeded = 1001
+	for i := range seeded {
+		seedRole(t, s, "t1", "", slugFor("cap", i))
+	}
+
+	got, err := s.ListRoles(ctx, &role.ListFilter{TenantID: "t1"})
+	if err != nil {
+		t.Fatalf("ListRoles with no Limit: %v", err)
+	}
+	if len(got) != 1000 {
+		t.Errorf("ListRoles with no Limit set: want the default cap of 1000 rows, got %d", len(got))
+	}
+
+	count, err := s.CountRoles(ctx, &role.ListFilter{TenantID: "t1"})
+	if err != nil {
+		t.Fatalf("CountRoles with no Limit: %v", err)
+	}
+	if count != seeded {
+		t.Errorf("CountRoles must report every matching row regardless of List's default cap: want %d, got %d", seeded, count)
+	}
+}
+
 // assertNamespaces checks that got contains exactly one entry for each
-// namespace path in want (by count, not identity) and nothing else — in
+// namespace path in want (by count, not identity) and nothing else: in
 // particular, nothing from the "other" decoy namespace used throughout this
 // file.
 func assertNamespaces[T any](t *testing.T, label string, got []T, nsOf func(T) string, want ...string) {

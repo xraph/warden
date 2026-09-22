@@ -7,7 +7,7 @@
 // busy_timeout is configured, in which case it retries for that long before
 // giving up. busy_timeout is a per-connection setting, and grove's sqlite
 // driver opens a pool of connections (default size 10), so setting it after
-// the pool exists — as Store's WithBusyTimeout option does — only reaches
+// the pool exists, as Store's WithBusyTimeout option does, only reaches
 // whichever connection that call happens to land on.
 //
 // For a setting that reliably reaches every connection the pool ever opens,

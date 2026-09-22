@@ -14,7 +14,7 @@ import (
 
 // TestSQLite_MigrationUpgrade_PreservesData is the regression test for the
 // unsafe table-recreate bug: with `PRAGMA foreign_keys=ON` in effect (grove
-// enables it for every sqlite connection it opens — see
+// enables it for every sqlite connection it opens, see
 // sqlitedriver.SqliteDB.Open), a migration that recreates warden_roles or
 // warden_role_permissions by dropping and rebuilding the table can cascade
 // or fail depending on FK enforcement, unless it's done with foreign keys
@@ -24,7 +24,7 @@ import (
 // by reading github.com/xraph/grove/migrate@v1.6.3: Migrate always runs
 // every pending migration in the group), so this test reaches into the
 // registered Migrations group and runs each migration's Up function
-// directly, in version order, up to and including 20240101000008 — the
+// directly, in version order, up to and including 20240101000008: the
 // exact "create_*" migrations that predate any table recreate. That leaves
 // the database on the original schema (warden_roles with a parent_id
 // column and no namespace_path; warden_role_permissions keyed on
@@ -41,7 +41,7 @@ func TestSQLite_MigrationUpgrade_PreservesData(t *testing.T) {
 	t.Cleanup(func() { _ = drv.Close() })
 
 	// Apply the early, pre-recreate schema by running each migration's Up
-	// directly (no orchestrator bookkeeping — this is a hand-rolled partial
+	// directly (no orchestrator bookkeeping: this is a hand-rolled partial
 	// migrate, not a real Migrate() call).
 	rawExec := sqlitemigrate.New(drv)
 	const cutoff = "20240101000008"
@@ -100,8 +100,8 @@ func TestSQLite_MigrationUpgrade_PreservesData(t *testing.T) {
 		}
 	}
 
-	// Now run the real, full Migrate — this is where the unsafe recreate
-	// bug bites: warden_roles and warden_role_permissions each get
+	// Now run the real, full Migrate: this is where the unsafe recreate
+	// bug bites, since warden_roles and warden_role_permissions each get
 	// recreated at least once on the way to the current schema.
 	db, err := grove.Open(drv)
 	if err != nil {

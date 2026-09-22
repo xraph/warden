@@ -35,7 +35,7 @@ var _ store.Store = (*Store)(nil)
 var nowFunc = time.Now
 
 // defaultFanout caps a relation hop, an access-review page, or any other
-// List* call when the caller passes 0 — otherwise an unbounded filter (or
+// List* call when the caller passes 0: otherwise an unbounded filter (or
 // none at all) could pull an entire table into memory in one round trip.
 const defaultFanout = 1000
 
@@ -49,8 +49,8 @@ func fanoutLimit(limit int) int {
 }
 
 // escapeLike escapes the three characters that are significant to
-// Postgres's LIKE operator — the escape character itself, then the two
-// wildcards — so a caller-supplied search term is matched literally. Every
+// Postgres's LIKE operator (the escape character itself, then the two
+// wildcards) so a caller-supplied search term is matched literally. Every
 // LIKE built from caller input pairs this with "ESCAPE '\'" in the query.
 func escapeLike(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
@@ -119,7 +119,7 @@ type storeConfig struct {
 // doesn't expose pgxpool's AfterConnect hook through a driver.Option, so
 // there is no way to guarantee every connection the pool ever opens picks
 // this up. Store applies it as a session-level SET on the connection it
-// acquires immediately at construction (best-effort — useful for a
+// acquires immediately at construction (best-effort, useful for a
 // single-connection pool, or as a default before traffic arrives). For a
 // setting that reliably reaches every connection the pool opens, prefer the
 // DSN's `options` startup parameter instead, which pgx applies at connect

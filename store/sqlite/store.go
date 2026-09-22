@@ -50,7 +50,7 @@ func listLimit(limit int) int {
 }
 
 // escapeLike escapes the three characters that are significant to SQLite's
-// LIKE operator — the escape character itself, then the two wildcards — so a
+// LIKE operator (the escape character itself, then the two wildcards) so a
 // caller-supplied search term is matched literally. Every LIKE built from
 // caller input pairs this with "ESCAPE '\'" in the query.
 func escapeLike(s string) string {

@@ -1514,8 +1514,8 @@ func applyPagination[T any](items []*T, p pagOpts) []*T {
 	} else if p.offset >= len(items) {
 		return nil
 	}
-	if p.limit > 0 && p.limit < len(items) {
-		items = items[:p.limit]
+	if limit := fanoutLimit(p.limit); limit < len(items) {
+		items = items[:limit]
 	}
 	return items
 }

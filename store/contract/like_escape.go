@@ -14,11 +14,11 @@ import (
 // The bug this guards: ListRoles (and every other Search filter built as
 // `LIKE '%'||term||'%'`) passed the caller's search term straight into the
 // pattern. A role named "100%" searched for with "100%" happened to still
-// match, but searching "100_" would ALSO match it — because the "_"
-// wildcard matches any single character, including the literal "%" in the
-// stored name — which is not what a caller typing an underscore meant. The
-// fix escapes \, % and _ in the term before building the pattern and adds
-// `ESCAPE '\'` to the query.
+// match, but searching "100_" would ALSO match it: the "_" wildcard matches
+// any single character, including the literal "%" in the stored name, which
+// is not what a caller typing an underscore meant. The fix escapes \, % and
+// _ in the term before building the pattern and adds `ESCAPE '\'` to the
+// query.
 func RunLikeEscapeContract(t *testing.T, mk MakeStore) {
 	t.Helper()
 

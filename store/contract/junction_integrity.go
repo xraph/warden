@@ -12,7 +12,7 @@ import (
 
 // RunJunctionIntegrityContract asserts that the role/permission junction
 // can't reference a permission that doesn't exist, and that deleting a
-// permission fully scrubs the grants that pointed at it — so recreating a
+// permission fully scrubs the grants that pointed at it, so recreating a
 // permission with the same natural key never silently hands its grants
 // back to roles that lost them.
 func RunJunctionIntegrityContract(t *testing.T, mk MakeStore) {
@@ -73,7 +73,7 @@ func runDeleteRecreatePermission(t *testing.T, mk MakeStore) {
 	}
 
 	// Recreate a permission with the exact same natural key. The role must
-	// not regain the grant just because the name matches again — the
+	// not regain the grant just because the name matches again: the
 	// original junction row is gone, and nothing re-attaches it.
 	recreated := &permission.Permission{
 		ID: id.NewPermissionID(), TenantID: "t1", NamespacePath: p.NamespacePath,

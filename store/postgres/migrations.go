@@ -24,7 +24,7 @@ var Migrations = migrate.NewGroup("warden")
 // differently-named constraint left over from a partial run), the DROP
 // becomes a no-op and the migration proceeds as if the swap happened when
 // the old, narrower constraint is still live. This checks the constraint's
-// actual definition — not its name — so it catches that case regardless of
+// actual definition, not its name, so it catches that case regardless of
 // what the leftover constraint happens to be called.
 func uniqueConstraintGuard(table string, columns ...string) string {
 	def := "UNIQUE (" + strings.Join(columns, ", ") + ")"
