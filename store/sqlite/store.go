@@ -28,9 +28,35 @@ import (
 // Compile-time interface check.
 var _ store.Store = (*Store)(nil)
 
+// nowFunc returns the current time. Tests override it to pin "now" when
+// asserting expiry behavior without sleeping.
+var nowFunc = time.Now
+
 // defaultFanout caps a relation hop or an access-review page when the caller
 // passes 0.
 const defaultFanout = 1000
+
+// defaultListLimit caps any List* call that did not ask for a specific
+// limit, so an unbounded filter (or none at all) can't pull an entire table
+// into memory in one round trip.
+const defaultListLimit = 1000
+
+// listLimit resolves a caller-supplied filter limit: <= 0 means the default.
+func listLimit(limit int) int {
+	if limit <= 0 {
+		return defaultListLimit
+	}
+	return limit
+}
+
+// escapeLike escapes the three characters that are significant to SQLite's
+// LIKE operator — the escape character itself, then the two wildcards — so a
+// caller-supplied search term is matched literally. Every LIKE built from
+// caller input pairs this with "ESCAPE '\'" in the query.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
 
 // fanoutLimit resolves a caller-supplied limit: 0 (or negative) means the
 // default.
@@ -88,12 +114,45 @@ type Store struct {
 	sdb *sqlitedriver.SqliteDB
 }
 
-// New creates a new SQLite store.
-func New(db *grove.DB) *Store {
-	return &Store{
+// Option configures a Store at construction time.
+type Option func(*storeConfig)
+
+type storeConfig struct {
+	busyTimeout time.Duration
+}
+
+// WithBusyTimeout returns an Option that sets SQLite's busy_timeout (how
+// long a writer waits on a locked database before returning SQLITE_BUSY)
+// for the connection New acquires immediately to apply it.
+//
+// This pragma is per-connection, and grove's sqlite driver hands out
+// connections from a pool (default size 10; see sqlitedriver.SqliteDB.Open),
+// so a single SET issued here is not guaranteed to reach every connection
+// the pool later opens. For a guarantee that covers the whole pool, prefer
+// the DSN form documented in this package's doc comment
+// (file:foo.db?_pragma=busy_timeout(5000)), which modernc.org/sqlite applies
+// to every physical connection at open time. WithBusyTimeout is a
+// best-effort supplement for callers who only control the *grove.DB handle.
+func WithBusyTimeout(d time.Duration) Option {
+	return func(c *storeConfig) { c.busyTimeout = d }
+}
+
+// New creates a new SQLite store. See WithBusyTimeout for the caveats of
+// setting busy_timeout after the pool already exists.
+func New(db *grove.DB, opts ...Option) *Store {
+	cfg := &storeConfig{}
+	for _, o := range opts {
+		o(cfg)
+	}
+	s := &Store{
 		db:  db,
 		sdb: sqlitedriver.Unwrap(db),
 	}
+	if cfg.busyTimeout > 0 {
+		ms := cfg.busyTimeout.Milliseconds()
+		_, _ = s.sdb.Exec(context.Background(), fmt.Sprintf("PRAGMA busy_timeout = %d", ms)) //nolint:errcheck // best-effort; see WithBusyTimeout doc
+	}
+	return s
 }
 
 // inPlaceholders builds an "IN (?, ?, …)" body and the matching []any args for
@@ -285,6 +344,13 @@ func (s *Store) ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.IsSystem != nil {
 			q = q.Where("is_system = ?", *filter.IsSystem)
 		}
@@ -295,14 +361,16 @@ func (s *Store) ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role
 			q = q.Where("parent_slug = ?", *filter.ParentSlug)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(listLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles: %w", err)
@@ -324,6 +392,13 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.IsSystem != nil {
 			q = q.Where("is_system = ?", *filter.IsSystem)
 		}
@@ -334,7 +409,7 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 			q = q.Where("parent_slug = ?", *filter.ParentSlug)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
 	}
 	count, err := q.Count(ctx)
@@ -440,16 +515,38 @@ func (s *Store) AttachPermission(ctx context.Context, tenantID string, roleID id
 	if err := s.requireRole(ctx, tenantID, roleID); err != nil {
 		return err
 	}
+	tx, err := s.sdb.BeginTxQuery(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("warden: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback on error is intentional
+
+	count, err := tx.NewSelect((*permissionModel)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("namespace_path = ?", ref.NamespacePath).
+		Where("name = ?", ref.Name).
+		Count(ctx)
+	if err != nil {
+		return fmt.Errorf("warden: resolve permission: %w", err)
+	}
+	if count == 0 {
+		return fmt.Errorf("permission %q in ns %q: %w", ref.Name, ref.NamespacePath, wardenerr.ErrPermissionNotFound)
+	}
+
 	m := &rolePermissionModel{
 		RoleID:            roleID.String(),
 		PermNamespacePath: ref.NamespacePath,
 		PermName:          ref.Name,
+		TenantID:          tenantID,
 	}
-	_, err := s.sdb.NewInsert(m).
+	if _, err := tx.NewInsert(m).
 		OnConflict("(role_id, perm_namespace_path, perm_name) DO NOTHING").
-		Exec(ctx)
-	if err != nil {
+		Exec(ctx); err != nil {
 		return fmt.Errorf("warden: attach permission: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("warden: commit tx: %w", err)
 	}
 	return nil
 }
@@ -493,6 +590,7 @@ func (s *Store) SetRolePermissions(ctx context.Context, tenantID string, roleID 
 				RoleID:            roleID.String(),
 				PermNamespacePath: ref.NamespacePath,
 				PermName:          ref.Name,
+				TenantID:          tenantID,
 			}
 		}
 		_, err = tx.NewInsert(&models).Exec(ctx)
@@ -641,7 +739,14 @@ func (s *Store) DeletePermission(ctx context.Context, tenantID string, permID id
 	if err != nil {
 		return err
 	}
-	res, err := s.sdb.NewDelete((*permissionModel)(nil)).
+
+	tx, err := s.sdb.BeginTxQuery(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("warden: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback on error is intentional
+
+	res, err := tx.NewDelete((*permissionModel)(nil)).
 		Where("id = ?", permID.String()).
 		Where("tenant_id = ?", tenantID).
 		Exec(ctx)
@@ -651,8 +756,12 @@ func (s *Store) DeletePermission(ctx context.Context, tenantID string, permID id
 	if rowsChanged(res) == 0 {
 		return fmt.Errorf("permission %s: %w", permID, wardenerr.ErrPermissionNotFound)
 	}
-	if _, err := s.sdb.NewRaw(deletePermissionGrantsSQL, p.NamespacePath, p.Name, tenantID).Exec(ctx); err != nil {
+	if _, err := tx.NewRaw(deletePermissionGrantsSQL, p.NamespacePath, p.Name, tenantID).Exec(ctx); err != nil {
 		return fmt.Errorf("warden: delete permission grants: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("warden: commit tx: %w", err)
 	}
 	return nil
 }
@@ -664,6 +773,13 @@ func (s *Store) ListPermissions(ctx context.Context, filter *permission.ListFilt
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.Resource != "" {
 			q = q.Where("resource = ?", filter.Resource)
 		}
@@ -674,14 +790,16 @@ func (s *Store) ListPermissions(ctx context.Context, filter *permission.ListFilt
 			q = q.Where("is_system = ?", *filter.IsSystem)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(listLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list permissions: %w", err)
@@ -703,6 +821,13 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.Resource != "" {
 			q = q.Where("resource = ?", filter.Resource)
 		}
@@ -713,7 +838,7 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 			q = q.Where("is_system = ?", *filter.IsSystem)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
 	}
 	count, err := q.Count(ctx)
@@ -835,6 +960,13 @@ func (s *Store) ListAssignments(ctx context.Context, filter *assignment.ListFilt
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.RoleID != nil {
 			q = q.Where("role_id = ?", filter.RoleID.String())
 		}
@@ -850,12 +982,14 @@ func (s *Store) ListAssignments(ctx context.Context, filter *assignment.ListFilt
 		if filter.ResourceID != "" {
 			q = q.Where("resource_id = ?", filter.ResourceID)
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(listLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list assignments: %w", err)
@@ -876,6 +1010,13 @@ func (s *Store) CountAssignments(ctx context.Context, filter *assignment.ListFil
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
+		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
 		}
 		if filter.RoleID != nil {
 			q = q.Where("role_id = ?", filter.RoleID.String())
@@ -906,7 +1047,8 @@ func (s *Store) ListRolesForSubject(ctx context.Context, tenantID string, namesp
 		Where("tenant_id = ?", tenantID).
 		Where("subject_kind = ?", subjectKind).
 		Where("subject_id = ?", subjectID).
-		Where("resource_type = ''")
+		Where("resource_type = ''").
+		Where("(expires_at IS NULL OR expires_at > ?)", sqliteTime(nowFunc()))
 	if len(namespacePaths) > 0 {
 		ph, nsArgs := inPlaceholders(namespacePaths)
 		q = q.Where("namespace_path IN ("+ph+")", nsArgs...)
@@ -931,7 +1073,8 @@ func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID stri
 		Where("subject_kind = ?", subjectKind).
 		Where("subject_id = ?", subjectID).
 		Where("resource_type = ?", resourceType).
-		Where("resource_id = ?", resourceID)
+		Where("resource_id = ?", resourceID).
+		Where("(expires_at IS NULL OR expires_at > ?)", sqliteTime(nowFunc()))
 	if len(namespacePaths) > 0 {
 		ph, nsArgs := inPlaceholders(namespacePaths)
 		q = q.Where("namespace_path IN ("+ph+")", nsArgs...)
@@ -996,7 +1139,7 @@ func (s *Store) ListExpiringAssignments(ctx context.Context, tenantID string, be
 func (s *Store) DeleteExpiredAssignments(ctx context.Context, now time.Time) (int64, error) {
 	res, err := s.sdb.NewDelete((*assignmentModel)(nil)).
 		Where("expires_at IS NOT NULL").
-		Where("expires_at < ?", now).
+		Where("expires_at < ?", sqliteTime(now)).
 		Exec(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("warden: delete expired assignments: %w", err)
@@ -1103,6 +1246,13 @@ func (s *Store) ListRelations(ctx context.Context, filter *relation.ListFilter) 
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.ObjectType != "" {
 			q = q.Where("object_type = ?", filter.ObjectType)
 		}
@@ -1121,12 +1271,14 @@ func (s *Store) ListRelations(ctx context.Context, filter *relation.ListFilter) 
 		if filter.SubjectRelation != "" {
 			q = q.Where("subject_relation = ?", filter.SubjectRelation)
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(listLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list relations: %w", err)
@@ -1147,6 +1299,13 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
+		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
 		}
 		if filter.ObjectType != "" {
 			q = q.Where("object_type = ?", filter.ObjectType)
@@ -1386,6 +1545,13 @@ func (s *Store) ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.Effect != "" {
 			q = q.Where("effect = ?", string(filter.Effect))
 		}
@@ -1393,14 +1559,16 @@ func (s *Store) ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]
 			q = q.Where("is_active = ?", *filter.IsActive)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(listLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list policies: %w", err)
@@ -1422,6 +1590,13 @@ func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (i
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.Effect != "" {
 			q = q.Where("effect = ?", string(filter.Effect))
 		}
@@ -1429,7 +1604,7 @@ func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (i
 			q = q.Where("is_active = ?", *filter.IsActive)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
 	}
 	count, err := q.Count(ctx)
@@ -1597,15 +1772,24 @@ func (s *Store) ListResourceTypes(ctx context.Context, filter *resourcetype.List
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(listLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list resource types: %w", err)
@@ -1627,8 +1811,15 @@ func (s *Store) CountResourceTypes(ctx context.Context, filter *resourcetype.Lis
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
 	}
 	count, err := q.Count(ctx)
@@ -1694,6 +1885,13 @@ func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter)
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.SubjectKind != "" {
 			q = q.Where("subject_kind = ?", filter.SubjectKind)
 		}
@@ -1713,17 +1911,19 @@ func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter)
 			q = q.Where("decision = ?", filter.Decision)
 		}
 		if filter.After != nil {
-			q = q.Where("created_at >= ?", *filter.After)
+			q = q.Where("created_at >= ?", sqliteTime(*filter.After))
 		}
 		if filter.Before != nil {
-			q = q.Where("created_at <= ?", *filter.Before)
+			q = q.Where("created_at <= ?", sqliteTime(*filter.Before))
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(listLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list check logs: %w", err)
@@ -1745,6 +1945,13 @@ func (s *Store) CountCheckLogs(ctx context.Context, filter *checklog.QueryFilter
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.SubjectKind != "" {
 			q = q.Where("subject_kind = ?", filter.SubjectKind)
 		}
@@ -1764,10 +1971,10 @@ func (s *Store) CountCheckLogs(ctx context.Context, filter *checklog.QueryFilter
 			q = q.Where("decision = ?", filter.Decision)
 		}
 		if filter.After != nil {
-			q = q.Where("created_at >= ?", *filter.After)
+			q = q.Where("created_at >= ?", sqliteTime(*filter.After))
 		}
 		if filter.Before != nil {
-			q = q.Where("created_at <= ?", *filter.Before)
+			q = q.Where("created_at <= ?", sqliteTime(*filter.Before))
 		}
 	}
 	count, err := q.Count(ctx)
@@ -1779,7 +1986,7 @@ func (s *Store) CountCheckLogs(ctx context.Context, filter *checklog.QueryFilter
 
 func (s *Store) PurgeCheckLogs(ctx context.Context, before time.Time) (int64, error) {
 	res, err := s.sdb.NewDelete((*checkLogModel)(nil)).
-		Where("created_at < ?", before).Exec(ctx)
+		Where("created_at < ?", sqliteTime(before)).Exec(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("warden: purge check logs: %w", err)
 	}

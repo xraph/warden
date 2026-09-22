@@ -32,6 +32,10 @@ var (
 	_ checklog.Store     = (*Store)(nil)
 )
 
+// nowFunc returns the current time. Tests override it to pin "now" when
+// asserting expiry behavior without sleeping.
+var nowFunc = time.Now
+
 // Store is a thread-safe in-memory store for all Warden entities.
 type Store struct {
 	mu sync.RWMutex
@@ -176,9 +180,7 @@ func (s *Store) DeleteRole(_ context.Context, tenantID string, roleID id.RoleID)
 	return nil
 }
 
-func (s *Store) ListRoles(_ context.Context, filter *role.ListFilter) ([]*role.Role, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterRoles(filter *role.ListFilter) []*role.Role {
 	result := make([]*role.Role, 0, len(s.roles))
 	for _, r := range s.roles {
 		if filter != nil {
@@ -206,15 +208,19 @@ func (s *Store) ListRoles(_ context.Context, filter *role.ListFilter) ([]*role.R
 		}
 		result = append(result, copyRole(r))
 	}
-	return applyPagination(result, paginationOpts(filter)), nil
+	return result
 }
 
-func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64, error) {
-	list, err := s.ListRoles(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListRoles(_ context.Context, filter *role.ListFilter) ([]*role.Role, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPagination(s.filterRoles(filter), paginationOpts(filter)), nil
+}
+
+func (s *Store) CountRoles(_ context.Context, filter *role.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterRoles(filter))), nil
 }
 
 // permRefKey encodes a (namespace_path, name) pair as a single map key.
@@ -293,10 +299,26 @@ func (s *Store) requireRole(tenantID string, roleID id.RoleID) error {
 	return nil
 }
 
+// requirePermission reports whether a permission with the given natural key
+// exists in the tenant, so a grant can't be attached to a permission that
+// was never created (or was deleted and never recreated). The caller holds
+// the write lock.
+func (s *Store) requirePermission(tenantID string, ref permission.Ref) error {
+	for _, p := range s.permissions {
+		if p.TenantID == tenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
+			return nil
+		}
+	}
+	return fmt.Errorf("permission %q in ns %q: %w", ref.Name, ref.NamespacePath, wardenerr.ErrPermissionNotFound)
+}
+
 func (s *Store) AttachPermission(_ context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.requireRole(tenantID, roleID); err != nil {
+		return err
+	}
+	if err := s.requirePermission(tenantID, ref); err != nil {
 		return err
 	}
 	rk := roleID.String()
@@ -443,13 +465,17 @@ func (s *Store) DeletePermission(_ context.Context, tenantID string, permID id.P
 	return nil
 }
 
-func (s *Store) ListPermissions(_ context.Context, filter *permission.ListFilter) ([]*permission.Permission, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterPermissions(filter *permission.ListFilter) []*permission.Permission {
 	result := make([]*permission.Permission, 0, len(s.permissions))
 	for _, p := range s.permissions {
 		if filter != nil {
 			if filter.TenantID != "" && p.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && p.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(p.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.Resource != "" && p.Resource != filter.Resource {
@@ -467,15 +493,19 @@ func (s *Store) ListPermissions(_ context.Context, filter *permission.ListFilter
 		}
 		result = append(result, copyPermission(p))
 	}
-	return applyPaginationPerm(result, paginationOptsPerm(filter)), nil
+	return result
 }
 
-func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFilter) (int64, error) {
-	list, err := s.ListPermissions(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListPermissions(_ context.Context, filter *permission.ListFilter) ([]*permission.Permission, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationPerm(s.filterPermissions(filter), paginationOptsPerm(filter)), nil
+}
+
+func (s *Store) CountPermissions(_ context.Context, filter *permission.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterPermissions(filter))), nil
 }
 
 func (s *Store) ListPermissionsByRole(ctx context.Context, tenantID string, roleID id.RoleID) ([]*permission.Permission, error) {
@@ -587,13 +617,17 @@ func (s *Store) DeleteAssignment(_ context.Context, tenantID string, assID id.As
 	return nil
 }
 
-func (s *Store) ListAssignments(_ context.Context, filter *assignment.ListFilter) ([]*assignment.Assignment, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterAssignments(filter *assignment.ListFilter) []*assignment.Assignment {
 	result := make([]*assignment.Assignment, 0, len(s.assignments))
 	for _, a := range s.assignments {
 		if filter != nil {
 			if filter.TenantID != "" && a.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && a.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(a.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.SubjectKind != "" && a.SubjectKind != filter.SubjectKind {
@@ -605,30 +639,44 @@ func (s *Store) ListAssignments(_ context.Context, filter *assignment.ListFilter
 			if filter.RoleID != nil && a.RoleID.String() != filter.RoleID.String() {
 				continue
 			}
+			if filter.ResourceType != "" && a.ResourceType != filter.ResourceType {
+				continue
+			}
+			if filter.ResourceID != "" && a.ResourceID != filter.ResourceID {
+				continue
+			}
 		}
 		result = append(result, copyAssignment(a))
 	}
-	return applyPaginationAssign(result, paginationOptsAssign(filter)), nil
+	return result
 }
 
-func (s *Store) CountAssignments(ctx context.Context, filter *assignment.ListFilter) (int64, error) {
-	list, err := s.ListAssignments(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListAssignments(_ context.Context, filter *assignment.ListFilter) ([]*assignment.Assignment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationAssign(s.filterAssignments(filter), paginationOptsAssign(filter)), nil
+}
+
+func (s *Store) CountAssignments(_ context.Context, filter *assignment.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterAssignments(filter))), nil
 }
 
 func (s *Store) ListRolesForSubject(_ context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID string) ([]id.RoleID, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	nsSet := namespacePathSet(namespacePaths)
+	now := nowFunc()
 	var result []id.RoleID
 	for _, a := range s.assignments {
 		if a.TenantID != tenantID || a.SubjectKind != subjectKind || a.SubjectID != subjectID || a.ResourceType != "" {
 			continue
 		}
 		if !nsSet.matches(a.NamespacePath) {
+			continue
+		}
+		if a.ExpiresAt != nil && !a.ExpiresAt.After(now) {
 			continue
 		}
 		result = append(result, a.RoleID)
@@ -640,6 +688,7 @@ func (s *Store) ListRolesForSubjectOnResource(_ context.Context, tenantID string
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	nsSet := namespacePathSet(namespacePaths)
+	now := nowFunc()
 	var result []id.RoleID
 	for _, a := range s.assignments {
 		if a.TenantID != tenantID || a.SubjectKind != subjectKind || a.SubjectID != subjectID {
@@ -649,6 +698,9 @@ func (s *Store) ListRolesForSubjectOnResource(_ context.Context, tenantID string
 			continue
 		}
 		if !nsSet.matches(a.NamespacePath) {
+			continue
+		}
+		if a.ExpiresAt != nil && !a.ExpiresAt.After(now) {
 			continue
 		}
 		result = append(result, a.RoleID)
@@ -748,6 +800,20 @@ func (s *Store) CreateRelation(_ context.Context, t *relation.Tuple) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.relations {
+		if existing.TenantID == t.TenantID &&
+			existing.NamespacePath == t.NamespacePath &&
+			existing.ObjectType == t.ObjectType &&
+			existing.ObjectID == t.ObjectID &&
+			existing.Relation == t.Relation &&
+			existing.SubjectType == t.SubjectType &&
+			existing.SubjectID == t.SubjectID &&
+			existing.SubjectRelation == t.SubjectRelation {
+			return fmt.Errorf("relation %s:%s#%s@%s:%s in tenant %q ns %q: %w",
+				t.ObjectType, t.ObjectID, t.Relation, t.SubjectType, t.SubjectID,
+				t.TenantID, t.NamespacePath, wardenerr.ErrDuplicateRelation)
+		}
+	}
 	s.relations[t.ID.String()] = copyTuple(t)
 	return nil
 }
@@ -775,13 +841,17 @@ func (s *Store) DeleteRelationTuple(_ context.Context, tenantID, namespacePath, 
 	return nil
 }
 
-func (s *Store) ListRelations(_ context.Context, filter *relation.ListFilter) ([]*relation.Tuple, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterRelations(filter *relation.ListFilter) []*relation.Tuple {
 	result := make([]*relation.Tuple, 0, len(s.relations))
 	for _, t := range s.relations {
 		if filter != nil {
 			if filter.TenantID != "" && t.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && t.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(t.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.ObjectType != "" && t.ObjectType != filter.ObjectType {
@@ -799,18 +869,25 @@ func (s *Store) ListRelations(_ context.Context, filter *relation.ListFilter) ([
 			if filter.SubjectID != "" && t.SubjectID != filter.SubjectID {
 				continue
 			}
+			if filter.SubjectRelation != "" && t.SubjectRelation != filter.SubjectRelation {
+				continue
+			}
 		}
 		result = append(result, copyTuple(t))
 	}
-	return applyPaginationRel(result, paginationOptsRel(filter)), nil
+	return result
 }
 
-func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter) (int64, error) {
-	list, err := s.ListRelations(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListRelations(_ context.Context, filter *relation.ListFilter) ([]*relation.Tuple, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationRel(s.filterRelations(filter), paginationOptsRel(filter)), nil
+}
+
+func (s *Store) CountRelations(_ context.Context, filter *relation.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterRelations(filter))), nil
 }
 
 func (s *Store) ListRelationSubjects(_ context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string, limit int) ([]*relation.Tuple, error) {
@@ -967,13 +1044,17 @@ func (s *Store) DeletePolicy(_ context.Context, tenantID string, polID id.Policy
 	return nil
 }
 
-func (s *Store) ListPolicies(_ context.Context, filter *policy.ListFilter) ([]*policy.Policy, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterPolicies(filter *policy.ListFilter) []*policy.Policy {
 	result := make([]*policy.Policy, 0, len(s.policies))
 	for _, p := range s.policies {
 		if filter != nil {
 			if filter.TenantID != "" && p.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && p.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(p.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.Effect != "" && p.Effect != filter.Effect {
@@ -988,15 +1069,19 @@ func (s *Store) ListPolicies(_ context.Context, filter *policy.ListFilter) ([]*p
 		}
 		result = append(result, copyPolicy(p))
 	}
-	return applyPaginationPol(result, paginationOptsPol(filter)), nil
+	return result
 }
 
-func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (int64, error) {
-	list, err := s.ListPolicies(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListPolicies(_ context.Context, filter *policy.ListFilter) ([]*policy.Policy, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationPol(s.filterPolicies(filter), paginationOptsPol(filter)), nil
+}
+
+func (s *Store) CountPolicies(_ context.Context, filter *policy.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterPolicies(filter))), nil
 }
 
 func (s *Store) ListActivePolicies(_ context.Context, tenantID string, namespacePaths []string) ([]*policy.Policy, error) {
@@ -1114,13 +1199,17 @@ func (s *Store) DeleteResourceType(_ context.Context, tenantID string, rtID id.R
 	return nil
 }
 
-func (s *Store) ListResourceTypes(_ context.Context, filter *resourcetype.ListFilter) ([]*resourcetype.ResourceType, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterResourceTypes(filter *resourcetype.ListFilter) []*resourcetype.ResourceType {
 	result := make([]*resourcetype.ResourceType, 0, len(s.resourceTypes))
 	for _, rt := range s.resourceTypes {
 		if filter != nil {
 			if filter.TenantID != "" && rt.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && rt.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(rt.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.Search != "" && !strings.Contains(strings.ToLower(rt.Name), strings.ToLower(filter.Search)) {
@@ -1129,15 +1218,19 @@ func (s *Store) ListResourceTypes(_ context.Context, filter *resourcetype.ListFi
 		}
 		result = append(result, copyResourceType(rt))
 	}
-	return applyPaginationRT(result, paginationOptsRT(filter)), nil
+	return result
 }
 
-func (s *Store) CountResourceTypes(ctx context.Context, filter *resourcetype.ListFilter) (int64, error) {
-	list, err := s.ListResourceTypes(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListResourceTypes(_ context.Context, filter *resourcetype.ListFilter) ([]*resourcetype.ResourceType, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationRT(s.filterResourceTypes(filter), paginationOptsRT(filter)), nil
+}
+
+func (s *Store) CountResourceTypes(_ context.Context, filter *resourcetype.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterResourceTypes(filter))), nil
 }
 
 func (s *Store) DeleteResourceTypesByTenant(_ context.Context, tenantID string) error {
@@ -1178,13 +1271,17 @@ func (s *Store) GetCheckLog(_ context.Context, tenantID string, logID id.CheckLo
 	return copyCheckLog(e), nil
 }
 
-func (s *Store) ListCheckLogs(_ context.Context, filter *checklog.QueryFilter) ([]*checklog.Entry, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterCheckLogs(filter *checklog.QueryFilter) []*checklog.Entry {
 	result := make([]*checklog.Entry, 0, len(s.checkLogs))
 	for _, e := range s.checkLogs {
 		if filter != nil {
 			if filter.TenantID != "" && e.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && e.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(e.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.SubjectKind != "" && e.SubjectKind != filter.SubjectKind {
@@ -1199,6 +1296,9 @@ func (s *Store) ListCheckLogs(_ context.Context, filter *checklog.QueryFilter) (
 			if filter.ResourceType != "" && e.ResourceType != filter.ResourceType {
 				continue
 			}
+			if filter.ResourceID != "" && e.ResourceID != filter.ResourceID {
+				continue
+			}
 			if filter.Decision != "" && e.Decision != filter.Decision {
 				continue
 			}
@@ -1211,15 +1311,19 @@ func (s *Store) ListCheckLogs(_ context.Context, filter *checklog.QueryFilter) (
 		}
 		result = append(result, copyCheckLog(e))
 	}
-	return applyPaginationCL(result, paginationOptsCL(filter)), nil
+	return result
 }
 
-func (s *Store) CountCheckLogs(ctx context.Context, filter *checklog.QueryFilter) (int64, error) {
-	list, err := s.ListCheckLogs(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListCheckLogs(_ context.Context, filter *checklog.QueryFilter) ([]*checklog.Entry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationCL(s.filterCheckLogs(filter), paginationOptsCL(filter)), nil
+}
+
+func (s *Store) CountCheckLogs(_ context.Context, filter *checklog.QueryFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterCheckLogs(filter))), nil
 }
 
 func (s *Store) PurgeCheckLogs(_ context.Context, before time.Time) (int64, error) {

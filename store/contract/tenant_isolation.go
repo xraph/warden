@@ -522,7 +522,7 @@ func tiRole(t *testing.T, s store.Store, tenantID, slug string) *role.Role { //n
 	return r
 }
 
-func tiPermission(t *testing.T, s store.Store, tenantID, name string) *permission.Permission {
+func tiPermission(t *testing.T, s store.Store, tenantID, name string) *permission.Permission { //nolint:unparam // shared seed helper; tenantID kept as a parameter so each case reads as "seed for this tenant"
 	t.Helper()
 	p := &permission.Permission{
 		ID: id.NewPermissionID(), TenantID: tenantID, NamespacePath: "",

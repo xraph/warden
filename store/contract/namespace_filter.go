@@ -231,7 +231,7 @@ func createAssignment(t *testing.T, s store.Store, a *assignment.Assignment) {
 	}
 }
 
-func createPolicy(t *testing.T, s store.Store, tenant, ns, name string) id.PolicyID {
+func createPolicy(t *testing.T, s store.Store, tenant, ns, name string) id.PolicyID { //nolint:unparam // shared seed helper; tenant kept as a parameter so each case reads as "seed for this tenant"
 	t.Helper()
 	p := &policy.Policy{
 		ID: id.NewPolicyID(), TenantID: tenant, NamespacePath: ns,

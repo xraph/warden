@@ -31,10 +31,18 @@ type Store interface {
 	// ListRolesForSubject returns role IDs assigned to a subject (global)
 	// across the given namespace paths. Pass nil or an empty slice to match
 	// any namespace (legacy/unscoped behavior).
+	//
+	// An assignment whose ExpiresAt has passed is excluded, as if the row
+	// did not exist: the backend applies `expires_at IS NULL OR
+	// expires_at > now` in the same query, so an expired grant can never
+	// leak into a Check() decision between expiring and a cleanup sweep
+	// (DeleteExpiredAssignments) getting around to deleting it.
 	ListRolesForSubject(ctx context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID string) ([]id.RoleID, error)
 
 	// ListRolesForSubjectOnResource returns role IDs assigned to a subject
 	// scoped to a specific resource, across the given namespace paths.
+	//
+	// Expired assignments are excluded the same way as ListRolesForSubject.
 	ListRolesForSubjectOnResource(ctx context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID, resourceType, resourceID string) ([]id.RoleID, error)
 
 	// ListSubjectsForRole returns all assignments for a given role within a

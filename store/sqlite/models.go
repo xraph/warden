@@ -208,6 +208,12 @@ type rolePermissionModel struct {
 	RoleID            string `grove:"role_id,pk"`
 	PermNamespacePath string `grove:"perm_namespace_path,pk"`
 	PermName          string `grove:"perm_name,pk"`
+	// TenantID denormalizes the granting role's tenant onto the junction
+	// row. It's redundant with the warden_roles join every read already
+	// does, but it lets an audit query or a future scoped read filter the
+	// junction directly without that join, and migration
+	// 20260922000002_role_permissions_tenant indexes on it.
+	TenantID string `grove:"tenant_id"`
 }
 
 // ──────────────────────────────────────────────────

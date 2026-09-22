@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/xraph/grove/migrate"
@@ -9,6 +10,63 @@ import (
 
 // Migrations is the grove migration group for the Warden store (SQLite).
 var Migrations = migrate.NewGroup("warden")
+
+// recreateTable runs a "create new table, copy rows, drop old, rename"
+// migration body safely under SQLite's foreign-key enforcement.
+//
+// SQLite can't ALTER a UNIQUE constraint or drop a column in place, so
+// widening a unique key (or any other structural change) means recreating
+// the table. But the store enables `PRAGMA foreign_keys=ON` for every
+// connection it opens (see sqlitedriver.SqliteDB.Open), and under FK
+// enforcement a bare `DROP TABLE` on a table something else references can
+// cascade-delete or fail depending on the referencing table's ON DELETE
+// clause — not what a schema migration wants. recreateTable disables FK
+// enforcement for the duration, runs sqlStmts (expected to create the new
+// table, copy rows, drop the old table and rename), verifies no dangling
+// reference was left behind with `PRAGMA foreign_key_check`, and only then
+// commits and re-enables enforcement.
+//
+// PRAGMA foreign_keys is a no-op while a transaction is open, so it has to
+// be issued before BEGIN and after COMMIT — never inside. Grove's
+// migrate.Executor here doesn't expose a single pinned connection (it wraps
+// the driver's pool), so this relies on migrations running sequentially on
+// one goroutine, which is how the orchestrator always calls them: with no
+// concurrent access, Go's database/sql connection pool reuses the same idle
+// connection for each subsequent call, so PRAGMA, BEGIN, the DDL, the check
+// and COMMIT land on the same physical connection in practice.
+func recreateTable(ctx context.Context, exec migrate.Executor, sqlStmts string) error {
+	if _, err := exec.Exec(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("sqlite recreate: disable foreign keys: %w", err)
+	}
+	// Always try to restore enforcement, even on a failure path below.
+	defer func() { _, _ = exec.Exec(ctx, "PRAGMA foreign_keys=ON") }() //nolint:errcheck // best-effort restore
+
+	if _, err := exec.Exec(ctx, "BEGIN"); err != nil {
+		return fmt.Errorf("sqlite recreate: begin: %w", err)
+	}
+
+	if _, err := exec.Exec(ctx, sqlStmts); err != nil {
+		_, _ = exec.Exec(ctx, "ROLLBACK") //nolint:errcheck // best-effort rollback on the error path
+		return fmt.Errorf("sqlite recreate: exec: %w", err)
+	}
+
+	rows, err := exec.Query(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		_, _ = exec.Exec(ctx, "ROLLBACK") //nolint:errcheck // best-effort rollback on the error path
+		return fmt.Errorf("sqlite recreate: foreign key check: %w", err)
+	}
+	hasViolation := rows.Next()
+	_ = rows.Close()
+	if hasViolation {
+		_, _ = exec.Exec(ctx, "ROLLBACK") //nolint:errcheck // best-effort rollback on the error path
+		return fmt.Errorf("sqlite recreate: foreign key violations found after recreate")
+	}
+
+	if _, err := exec.Exec(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("sqlite recreate: commit: %w", err)
+	}
+	return nil
+}
 
 func init() {
 	Migrations.MustRegister(
@@ -237,7 +295,7 @@ CREATE INDEX IF NOT EXISTS idx_warden_rtypes_tenant ON warden_resource_types (te
 			Up: func(ctx context.Context, exec migrate.Executor) error {
 				// Backfill perm natural keys, recreate the table with the new
 				// schema (SQLite can't drop columns or change PK in-place).
-				_, err := exec.Exec(ctx, `
+				return recreateTable(ctx, exec, `
 CREATE TABLE warden_role_permissions_new (
     role_id              TEXT NOT NULL REFERENCES warden_roles(id) ON DELETE CASCADE,
     perm_namespace_path  TEXT NOT NULL,
@@ -258,10 +316,9 @@ ALTER TABLE warden_role_permissions_new RENAME TO warden_role_permissions;
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_role ON warden_role_permissions (role_id);
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_perm ON warden_role_permissions (perm_namespace_path, perm_name);
 `)
-				return err
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
-				_, err := exec.Exec(ctx, `
+				return recreateTable(ctx, exec, `
 CREATE TABLE warden_role_permissions_old (
     role_id         TEXT NOT NULL REFERENCES warden_roles(id) ON DELETE CASCADE,
     permission_id   TEXT NOT NULL REFERENCES warden_permissions(id) ON DELETE CASCADE,
@@ -285,7 +342,6 @@ ALTER TABLE warden_role_permissions_old RENAME TO warden_role_permissions;
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_role ON warden_role_permissions (role_id);
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_perm ON warden_role_permissions (permission_id);
 `)
-				return err
 			},
 		},
 		&migrate.Migration{
@@ -330,7 +386,7 @@ DROP INDEX IF EXISTS idx_warden_rel_ns;
 			Up: func(ctx context.Context, exec migrate.Executor) error {
 				// SQLite cannot drop columns or change FK constraints in place,
 				// so recreate the table with the new schema.
-				_, err := exec.Exec(ctx, `
+				return recreateTable(ctx, exec, `
 CREATE TABLE warden_roles_new (
     id              TEXT PRIMARY KEY,
     tenant_id       TEXT NOT NULL,
@@ -370,10 +426,9 @@ CREATE INDEX IF NOT EXISTS idx_warden_roles_tenant ON warden_roles (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_parent_slug ON warden_roles (tenant_id, parent_slug) WHERE parent_slug IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_warden_roles_system ON warden_roles (tenant_id, is_system);
 `)
-				return err
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
-				_, err := exec.Exec(ctx, `
+				return recreateTable(ctx, exec, `
 CREATE TABLE warden_roles_old (
     id              TEXT PRIMARY KEY,
     tenant_id       TEXT NOT NULL,
@@ -412,7 +467,6 @@ CREATE INDEX IF NOT EXISTS idx_warden_roles_tenant ON warden_roles (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_parent ON warden_roles (parent_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_system ON warden_roles (tenant_id, is_system);
 `)
-				return err
 			},
 		},
 		&migrate.Migration{
@@ -484,7 +538,16 @@ CREATE INDEX IF NOT EXISTS idx_warden_clogs_created ON warden_check_logs (create
 			// Only the constraint and the FK widening differ from the original
 			// schema — column lists and types stay the same.
 			Up: func(ctx context.Context, exec migrate.Executor) error {
-				_, err := exec.Exec(ctx, `
+				// This recreates warden_roles among others, and
+				// warden_assignments and warden_role_permissions both hold
+				// an `ON DELETE CASCADE` FK to warden_roles(id). With FK
+				// enforcement on (the default for every connection this
+				// store opens), SQLite's DROP TABLE runs an implicit DELETE
+				// against the table first, which fires that cascade and
+				// wipes both referencing tables — recreateTable is what
+				// keeps this migration from silently deleting every
+				// assignment and role-permission grant on a fresh upgrade.
+				return recreateTable(ctx, exec, `
 -- ─── warden_roles (drop self-FK first; widen unique; widen FK) ───
 DROP INDEX IF EXISTS idx_warden_roles_tenant;
 DROP INDEX IF EXISTS idx_warden_roles_parent_slug;
@@ -682,7 +745,6 @@ CREATE INDEX IF NOT EXISTS idx_warden_assign_resource ON warden_assignments (ten
 CREATE INDEX IF NOT EXISTS idx_warden_assign_expires  ON warden_assignments (expires_at);
 CREATE INDEX IF NOT EXISTS idx_warden_assign_ns       ON warden_assignments (tenant_id, namespace_path, subject_kind, subject_id);
 `)
-				return err
 			},
 			Down: func(_ context.Context, _ migrate.Executor) error {
 				// SQLite down for table-recreate migrations is intentionally
@@ -732,6 +794,106 @@ CREATE INDEX IF NOT EXISTS idx_warden_clogs_tenant_created
 				// indexed columns, so the added columns stay. They are all
 				// defaulted, which keeps the older schema readable.
 				return nil
+			},
+		},
+		&migrate.Migration{
+			Name:    "relations_namespace_unique",
+			Version: "20260922000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Widening a UNIQUE constraint means recreating the table;
+				// SQLite can't ALTER a constraint in place.
+				return recreateTable(ctx, exec, `
+DROP INDEX IF EXISTS idx_warden_rel_object;
+DROP INDEX IF EXISTS idx_warden_rel_subject;
+DROP INDEX IF EXISTS idx_warden_rel_check;
+DROP INDEX IF EXISTS idx_warden_rel_ns;
+
+CREATE TABLE warden_relations_new (
+    id                TEXT PRIMARY KEY,
+    tenant_id         TEXT NOT NULL,
+    namespace_path    TEXT NOT NULL DEFAULT '',
+    app_id            TEXT NOT NULL DEFAULT '',
+    object_type       TEXT NOT NULL,
+    object_id         TEXT NOT NULL,
+    relation          TEXT NOT NULL,
+    subject_type      TEXT NOT NULL,
+    subject_id        TEXT NOT NULL,
+    subject_relation  TEXT NOT NULL DEFAULT '',
+    metadata          TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(tenant_id, namespace_path, object_type, object_id, relation, subject_type, subject_id, subject_relation)
+);
+
+INSERT INTO warden_relations_new (
+    id, tenant_id, namespace_path, app_id, object_type, object_id, relation,
+    subject_type, subject_id, subject_relation, metadata, created_at
+) SELECT
+    id, tenant_id, namespace_path, app_id, object_type, object_id, relation,
+    subject_type, subject_id, subject_relation, metadata, created_at
+FROM warden_relations;
+
+DROP TABLE warden_relations;
+ALTER TABLE warden_relations_new RENAME TO warden_relations;
+
+CREATE INDEX IF NOT EXISTS idx_warden_rel_object  ON warden_relations (tenant_id, object_type, object_id, relation);
+CREATE INDEX IF NOT EXISTS idx_warden_rel_subject ON warden_relations (tenant_id, subject_type, subject_id, relation);
+CREATE INDEX IF NOT EXISTS idx_warden_rel_check   ON warden_relations (tenant_id, object_type, object_id, relation, subject_type, subject_id);
+CREATE INDEX IF NOT EXISTS idx_warden_rel_ns      ON warden_relations (tenant_id, namespace_path, object_type, object_id);
+`)
+			},
+			Down: func(_ context.Context, _ migrate.Executor) error {
+				// Table-recreate migrations don't implement a down path here;
+				// the forward migration is idempotent (widening a unique key
+				// never loses rows unless two already violate it).
+				return nil
+			},
+		},
+		&migrate.Migration{
+			Name:    "role_permissions_tenant",
+			Version: "20260922000002",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// A plain ADD COLUMN + backfill + index; no PK/unique change,
+				// so this doesn't need the recreate-table dance.
+				if _, err := exec.Exec(ctx, `ALTER TABLE warden_role_permissions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
+					if !strings.Contains(err.Error(), "duplicate column name") {
+						return err
+					}
+				}
+				_, err := exec.Exec(ctx, `
+UPDATE warden_role_permissions
+SET tenant_id = (SELECT r.tenant_id FROM warden_roles r WHERE r.id = warden_role_permissions.role_id)
+WHERE tenant_id = '';
+
+CREATE INDEX IF NOT EXISTS idx_warden_role_perms_tenant_perm
+    ON warden_role_permissions (tenant_id, perm_namespace_path, perm_name);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `DROP INDEX IF EXISTS idx_warden_role_perms_tenant_perm`)
+				if err != nil {
+					return err
+				}
+				// SQLite only learned DROP COLUMN in 3.35 and refuses it for
+				// indexed columns, so tenant_id stays; it is defaulted, which
+				// keeps the older schema readable.
+				return nil
+			},
+		},
+		&migrate.Migration{
+			Name:    "check_logs_indexes",
+			Version: "20260922000005",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// idx_warden_clogs_tenant is redundant: every query that used
+				// it is also served by idx_warden_clogs_tenant_created's
+				// leading column.
+				_, err := exec.Exec(ctx, `DROP INDEX IF EXISTS idx_warden_clogs_tenant`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_warden_clogs_tenant ON warden_check_logs (tenant_id)`)
+				return err
 			},
 		},
 	)
