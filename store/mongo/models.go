@@ -17,6 +17,32 @@ import (
 	"github.com/xraph/warden/role"
 )
 
+// nonNilMap returns m unchanged unless it is nil, in which case it returns
+// a non-nil empty map. MongoDB's generated $jsonSchema validator types a Go
+// map field as strictly "object" (see buildFieldSchema in
+// grove/drivers/mongodriver — only pointer-kind fields get the "or null"
+// treatment). grove's insert path writes every field into the document
+// regardless of Go zero value (it does not honor `omitempty`), so a nil map
+// serializes to BSON null and the validator rejects it with "type did not
+// match". Every *ToModel below normalizes its map/slice fields through this
+// (and nonNilSlice) so a caller who never set Metadata still gets a valid,
+// insertable document — an empty object/array instead of null.
+func nonNilMap[K comparable, V any](m map[K]V) map[K]V {
+	if m == nil {
+		return map[K]V{}
+	}
+	return m
+}
+
+// nonNilSlice is nonNilMap's counterpart for slice fields typed "array" by
+// the same generated validator.
+func nonNilSlice[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
 // ──────────────────────────────────────────────────
 // Role model
 // ──────────────────────────────────────────────────
@@ -51,7 +77,7 @@ func roleToModel(r *role.Role) *roleModel {
 		IsSystem:      r.IsSystem,
 		IsDefault:     r.IsDefault,
 		MaxMembers:    r.MaxMembers,
-		Metadata:      r.Metadata,
+		Metadata:      nonNilMap(r.Metadata),
 		CreatedAt:     r.CreatedAt,
 		UpdatedAt:     r.UpdatedAt,
 	}
@@ -116,7 +142,7 @@ func permissionToModel(p *permission.Permission) *permissionModel {
 		Resource:      p.Resource,
 		Action:        p.Action,
 		IsSystem:      p.IsSystem,
-		Metadata:      p.Metadata,
+		Metadata:      nonNilMap(p.Metadata),
 		CreatedAt:     p.CreatedAt,
 		UpdatedAt:     p.UpdatedAt,
 	}
@@ -144,11 +170,22 @@ func permissionFromModel(m *permissionModel) *permission.Permission {
 // Role-Permission junction model
 // ──────────────────────────────────────────────────
 
+// rolePermissionModel's uniqueness comes from the compound index on
+// (role_id, perm_namespace_path, perm_name) created in migrations.go, not
+// from a `pk`-tagged field: none of the three map to Mongo's actual `_id`
+// (only a field whose grove Column is literally "id" does), so marking them
+// `pk` bought nothing except grove's structToMapInsert treating each one as
+// an independent auto-generated key and skipping it from the insert
+// whenever its own value happens to be the Go zero value. perm_namespace_path
+// is legitimately "" for the tenant root namespace, so that skip silently
+// dropped the field from the document — which the collection's generated
+// $jsonSchema then rejected as missing a required property. Plain (non-pk)
+// grove tags avoid the skip; Mongo still auto-generates its own _id.
 type rolePermissionModel struct {
 	grove.BaseModel   `grove:"table:warden_role_permissions"`
-	RoleID            string `grove:"role_id,pk"             bson:"role_id"`
-	PermNamespacePath string `grove:"perm_namespace_path,pk" bson:"perm_namespace_path"`
-	PermName          string `grove:"perm_name,pk"           bson:"perm_name"`
+	RoleID            string `grove:"role_id"             bson:"role_id"`
+	PermNamespacePath string `grove:"perm_namespace_path" bson:"perm_namespace_path"`
+	PermName          string `grove:"perm_name"           bson:"perm_name"`
 }
 
 // ──────────────────────────────────────────────────
@@ -185,7 +222,7 @@ func assignmentToModel(a *assignment.Assignment) *assignmentModel {
 		ResourceID:    a.ResourceID,
 		ExpiresAt:     a.ExpiresAt,
 		GrantedBy:     a.GrantedBy,
-		Metadata:      a.Metadata,
+		Metadata:      nonNilMap(a.Metadata),
 		CreatedAt:     a.CreatedAt,
 	}
 }
@@ -242,7 +279,7 @@ func relationToModel(t *relation.Tuple) *relationModel {
 		SubjectType:     t.SubjectType,
 		SubjectID:       t.SubjectID,
 		SubjectRelation: t.SubjectRelation,
-		Metadata:        t.Metadata,
+		Metadata:        nonNilMap(t.Metadata),
 		CreatedAt:       t.CreatedAt,
 	}
 }
@@ -294,10 +331,6 @@ type policyModel struct {
 }
 
 func policyToModel(p *policy.Policy) *policyModel {
-	obligations := p.Obligations
-	if obligations == nil {
-		obligations = []string{}
-	}
 	return &policyModel{
 		ID:            p.ID.String(),
 		TenantID:      p.TenantID,
@@ -310,13 +343,13 @@ func policyToModel(p *policy.Policy) *policyModel {
 		IsActive:      p.IsActive,
 		NotBefore:     p.NotBefore,
 		NotAfter:      p.NotAfter,
-		Obligations:   obligations,
+		Obligations:   nonNilSlice(p.Obligations),
 		Version:       p.Version,
-		Subjects:      p.Subjects,
-		Actions:       p.Actions,
-		Resources:     p.Resources,
-		Conditions:    p.Conditions,
-		Metadata:      p.Metadata,
+		Subjects:      nonNilSlice(p.Subjects),
+		Actions:       nonNilSlice(p.Actions),
+		Resources:     nonNilSlice(p.Resources),
+		Conditions:    nonNilSlice(p.Conditions),
+		Metadata:      nonNilMap(p.Metadata),
 		CreatedAt:     p.CreatedAt,
 		UpdatedAt:     p.UpdatedAt,
 	}
@@ -375,9 +408,9 @@ func resourceTypeToModel(rt *resourcetype.ResourceType) *resourceTypeModel {
 		AppID:         rt.AppID,
 		Name:          rt.Name,
 		Description:   rt.Description,
-		Relations:     rt.Relations,
-		Permissions:   rt.Permissions,
-		Metadata:      rt.Metadata,
+		Relations:     nonNilSlice(rt.Relations),
+		Permissions:   nonNilSlice(rt.Permissions),
+		Metadata:      nonNilMap(rt.Metadata),
 		CreatedAt:     rt.CreatedAt,
 		UpdatedAt:     rt.UpdatedAt,
 	}
@@ -442,15 +475,15 @@ func checkLogToModel(e *checklog.Entry) *checkLogModel {
 		ResourceID:    e.ResourceID,
 		Decision:      e.Decision,
 		Reason:        e.Reason,
-		MatchedBy:     e.MatchedBy,
-		Obligations:   e.Obligations,
+		MatchedBy:     nonNilSlice(e.MatchedBy),
+		Obligations:   nonNilSlice(e.Obligations),
 		EvalTimeNs:    e.EvalTimeNs,
 		RequestIP:     e.RequestIP,
 		RequestID:     e.RequestID,
 		TraceID:       e.TraceID,
 		Cached:        e.Cached,
 		Error:         e.Error,
-		Metadata:      e.Metadata,
+		Metadata:      nonNilMap(e.Metadata),
 		CreatedAt:     e.CreatedAt,
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -66,6 +67,9 @@ type Store struct {
 	db          *grove.DB
 	mdb         *mongodriver.MongoDB
 	checkLogTTL time.Duration
+
+	txSupportOnce sync.Once
+	txSupport     bool
 }
 
 // Option configures a Store at construction time.
@@ -137,29 +141,51 @@ func (s *Store) ensureCheckLogTTLIndex(ctx context.Context) error {
 	return nil
 }
 
+// supportsTransactions reports whether the connected deployment supports
+// multi-document transactions (a replica set, or a mongos in front of a
+// sharded cluster). The result is a `hello` command run once and cached for
+// the Store's lifetime.
+//
+// This is deliberately not a StartTransaction/AbortTransaction probe: in the
+// v2 driver, both of those are local, lazy client-side operations — neither
+// sends anything to the server until the first real command runs inside the
+// transaction — so a probe built from them can't actually detect a
+// standalone deployment; it only defers the "Transaction numbers are only
+// allowed on a replica set member or mongos" error to the first live write,
+// which is worse than not probing at all. `hello` gives a real, one-round-trip
+// answer up front.
+func (s *Store) supportsTransactions(ctx context.Context) bool {
+	s.txSupportOnce.Do(func() {
+		var reply bson.M
+		err := s.mdb.Database().RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&reply)
+		if err != nil {
+			s.txSupport = false
+			return
+		}
+		_, hasSetName := reply["setName"]
+		msg, isString := reply["msg"].(string)
+		s.txSupport = hasSetName || (isString && msg == "isdbgrid")
+	})
+	return s.txSupport
+}
+
 // withTransaction runs fn inside a MongoDB session transaction when the
-// server supports them (a replica set or sharded cluster). Multi-document
-// transactions are not available on a standalone mongod — notably the
-// default single-node container the test harness starts when
-// WARDEN_TEST_MONGO_URI is unset — so this probes support by starting and
-// immediately aborting a transaction; if that fails, fn runs directly
-// against ctx as a plain sequence of writes with no atomicity guarantee.
-// See the package doc comment for the operational tradeoff this implies.
+// server supports them (a replica set or sharded cluster, per
+// supportsTransactions). Multi-document transactions are not available on a
+// standalone mongod — notably the default single-node container the test
+// harness starts when WARDEN_TEST_MONGO_URI is unset — so on a standalone
+// deployment fn runs directly against ctx as a plain sequence of writes with
+// no atomicity guarantee. See the package doc comment for the operational
+// tradeoff this implies.
 func (s *Store) withTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	if !s.supportsTransactions(ctx) {
+		return fn(ctx)
+	}
 	sess, err := s.mdb.Client().StartSession()
 	if err != nil {
 		return fn(ctx)
 	}
 	defer sess.EndSession(ctx)
-
-	if probeErr := sess.StartTransaction(); probeErr != nil {
-		// Standalone server: no transaction support. Fall back to running
-		// fn as plain sequential writes.
-		return fn(ctx)
-	}
-	if abortErr := sess.AbortTransaction(ctx); abortErr != nil {
-		return fn(ctx)
-	}
 
 	_, err = sess.WithTransaction(ctx, func(sessCtx context.Context) (any, error) {
 		return nil, fn(sessCtx)
