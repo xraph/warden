@@ -117,7 +117,7 @@ func (e *Evaluator) CompileAndCache(tenantID, ns, resourceType, permName, exprSr
 }
 
 // CompileAndCacheVersioned is CompileAndCache plus a freshness check: a
-// cached entry is only reused when updatedAt is zero (freshness unknown —
+// cached entry is only reused when updatedAt is zero (freshness unknown,
 // same behavior as CompileAndCache) or not newer than the timestamp the
 // cached entry was compiled with. A newer updatedAt means the resource
 // type's permission definition changed since the AST was cached, so the
@@ -158,7 +158,7 @@ func (e *Evaluator) Invalidate(tenantID, resourceType string) {
 
 // InvalidateTenant clears every cached expression for a tenant, across
 // every resource type. Used when a mutation doesn't carry enough
-// information to invalidate a single resource type precisely — e.g. a
+// information to invalidate a single resource type precisely: e.g. a
 // delete audit event, which only carries an EntityID, not the deleted
 // resource type's Name (the cache key).
 func (e *Evaluator) InvalidateTenant(tenantID string) {
@@ -202,7 +202,7 @@ func (p *invalidatorPlugin) OnAudit(_ context.Context, ev plugin.Event) error {
 		return nil
 	}
 	// No typed entity to read a Name from (a delete event only carries an
-	// EntityID) — fall back to a full tenant flush so nothing can outlive
+	// EntityID), so fall back to a full tenant flush so nothing can outlive
 	// the resource type that produced it.
 	p.ev.InvalidateTenant(ev.TenantID)
 	return nil

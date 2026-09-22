@@ -138,12 +138,12 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 			}
 
 			// Indirect: only a subject SET (t.SubjectRelation != "") denotes a
-			// group/relation whose members should be enumerated — e.g.
+			// group/relation whose members should be enumerated, e.g.
 			// `document:1#viewer@group:eng#member` means "every member of
 			// group:eng's `member` relation is a viewer", so the walker must
 			// recurse into (group:eng, member). A tuple with no
 			// SubjectRelation names a single concrete subject (a user, an
-			// api_key, ...) — that subject already failed the direct-match
+			// api_key, ...): that subject already failed the direct-match
 			// check above and must NOT be treated as another subject set to
 			// traverse, or an unrelated subject with a same-named relation
 			// would incorrectly grant access.

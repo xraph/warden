@@ -56,7 +56,7 @@ func TestInvalidatorPlugin_FallsBackToTenantFlushOnDelete(t *testing.T) {
 	exprFolder1, _ := ev.CompileAndCache("t1", "", "folder", "read", "viewer")
 
 	p := NewInvalidatorPlugin(ev)
-	// A delete event carries no typed Entity, only an EntityID — the
+	// A delete event carries no typed Entity, only an EntityID, so the
 	// plugin can't know which resource type's Name to target, so it must
 	// fall back to flushing the whole tenant.
 	if err := p.(plugin.Audit).OnAudit(context.Background(), plugin.Event{

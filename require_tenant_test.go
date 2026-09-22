@@ -10,7 +10,7 @@ import (
 
 // TestCheck_RequireTenantDefaultsToErrorWhenTenantMissing verifies M3:
 // with RequireTenant at its default (true), Check returns ErrTenantRequired
-// when the resolved scope has no tenant — no WithTenant in context, no
+// when the resolved scope has no tenant: no WithTenant in context, no
 // CheckRequest.TenantID, no CallOption override.
 func TestCheck_RequireTenantDefaultsToErrorWhenTenantMissing(t *testing.T) {
 	s := memory.New()

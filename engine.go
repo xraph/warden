@@ -237,7 +237,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 		e.plugins.EmitBeforeCheck(ctx, req)
 	}
 
-	// 1. Cache hit? Hooks and the check log still fire on a hit — only the
+	// 1. Cache hit? Hooks and the check log still fire on a hit: only the
 	// RBAC/ReBAC/ABAC evaluation itself is skipped.
 	if e.cache != nil {
 		if cached, ok := e.cache.Get(ctx, scope.tenantID, scope.namespacePath, req); ok {
@@ -263,7 +263,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	}
 
 	// 3. ReBAC: check relation tuples → walk graph. Skipped once RBAC has
-	// already allowed the request, unless EvaluateAllModels is set — the
+	// already allowed the request, unless EvaluateAllModels is set: the
 	// graph walk is the most expensive of the three evaluators.
 	var rebacResult *CheckResult
 	if e.config.rebacEnabled() && (rbacResult == nil || !rbacResult.Allowed || e.config.EvaluateAllModels) {
@@ -298,7 +298,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	// 7. Extension hooks: per-obligation, then after check.
 	e.emitAfterCheck(ctx, req, result)
 
-	// 8. Write check log entry (via the bounded batching writer — never a
+	// 8. Write check log entry (via the bounded batching writer, never a
 	// per-call goroutine).
 	e.writeCheckLog(ctx, scope, req, result, false, "")
 
@@ -431,8 +431,8 @@ func toMatchRefs(in []MatchInfo) []checklog.MatchRef {
 }
 
 // resolveAssignedRoles resolves the full set of roles held by the request's
-// subject — direct (global + resource-scoped) assignments, plus every role
-// reached by walking ParentSlug inheritance — as full Role objects, so
+// subject: direct (global + resource-scoped) assignments, plus every role
+// reached by walking ParentSlug inheritance, as full Role objects, so
 // callers can read both permissions (RBAC) and slugs (role-scoped ABAC
 // matching, see matchesSubject) from the same resolution.
 func (e *Engine) resolveAssignedRoles(ctx context.Context, scope tenantScope, req *CheckRequest) ([]*role.Role, error) {
@@ -477,7 +477,7 @@ func (e *Engine) resolveInheritedRoleObjects(ctx context.Context, initial []*rol
 	// depth <= 20 (not <) matches the original recursive walker's cap
 	// ("if depth > 20 { return }" before appending), which permits 21
 	// levels total (depth 0 through 20 inclusive) before the safety limit
-	// bites — a chain shallower than that must resolve every level.
+	// bites, a chain shallower than that must resolve every level.
 	for depth := 0; len(level) > 0 && depth <= 20; depth++ {
 		var nextLevel []*role.Role
 		parentCache := make(map[string]*role.Role)
@@ -643,9 +643,9 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 
 func (e *Engine) evaluateABAC(ctx context.Context, scope tenantScope, req *CheckRequest, roleSlugs []string) (*CheckResult, error) {
 	if !e.config.rbacEnabled() {
-		// RBAC didn't already resolve roles for us — do it here so
-		// role-scoped policies (policy.SubjectMatch.Role) still work when
-		// RBAC evaluation itself is disabled.
+		// RBAC didn't already resolve roles for us, so resolve them here.
+		// This keeps role-scoped policies (policy.SubjectMatch.Role)
+		// working even when RBAC evaluation itself is disabled.
 		roles, err := e.resolveAssignedRoles(ctx, scope, req)
 		if err != nil {
 			e.logger.Warn("warden: abac role slug resolution failed", log.Error(err))

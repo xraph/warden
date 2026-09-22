@@ -26,7 +26,7 @@ const memoryCacheShardCount = 32
 // bounded, TTL'd LRU with O(1)-ish tenant/subject invalidation. It lives in
 // the root package (rather than the cache/ subpackage) because the engine
 // must be able to construct it directly from Config.CacheTTL /
-// Config.CacheMaxSize without an import cycle — cache/ imports warden.
+// Config.CacheMaxSize without an import cycle: cache/ imports warden.
 type MemoryCache struct {
 	shards  [memoryCacheShardCount]*cacheShard
 	ttl     time.Duration

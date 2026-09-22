@@ -155,7 +155,7 @@ func TestEval_Cache(t *testing.T) {
 
 // TestEval_CacheVersioned_RecompilesOnNewerUpdatedAt verifies M5: a cache
 // entry compiled with an older UpdatedAt is treated as stale (and
-// recompiled) once a call arrives with a newer one — as happens when a
+// recompiled) once a call arrives with a newer one, as happens when a
 // resource type's permission expression is edited between two Checks.
 func TestEval_CacheVersioned_RecompilesOnNewerUpdatedAt(t *testing.T) {
 	s := memory.New()

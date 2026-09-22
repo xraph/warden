@@ -18,7 +18,7 @@ import (
 // Postgres and SQLite backends: rows come back ordered by creation time and
 // truncated at storeDefaultLimit when the caller leaves Limit at zero.
 //
-// The memory backend does neither — it returns every row, in Go map order,
+// The memory backend does neither: it returns every row, in Go map order,
 // which is randomised per call. Testing pagination against it would both hide
 // the truncation these tests exist to catch and make offset paging
 // meaningless. The ordering here is the tiebroken order a backend needs for

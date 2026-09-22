@@ -115,7 +115,7 @@ func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Poli
 			Detail: fmt.Sprintf("policy %q (%s)", pol.Name, pol.Effect),
 		}
 
-		// Anything that isn't an explicit allow is treated as deny —
+		// Anything that isn't an explicit allow is treated as deny:
 		// defense in depth against an unvalidated/garbage Effect value.
 		if pol.Effect != policy.EffectAllow {
 			result := &CheckResult{

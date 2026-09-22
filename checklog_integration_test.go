@@ -35,7 +35,7 @@ func drainCheckLogs(t *testing.T, s *memory.Store, tenantID string, n int) []*ch
 
 // TestCheckLog_UncachedEntryPopulatesFields verifies H5: the entry built
 // for an uncached Check carries NamespacePath, MatchedBy, RequestID,
-// TraceID, and RequestIP — not just the bare decision/reason the
+// TraceID, and RequestIP, not just the bare decision/reason the
 // pre-hardening writer produced.
 func TestCheckLog_UncachedEntryPopulatesFields(t *testing.T) {
 	s := memory.New()
@@ -91,7 +91,7 @@ func TestCheckLog_UncachedEntryPopulatesFields(t *testing.T) {
 }
 
 // TestCheckLog_CachedEntryMarksCachedTrue verifies H5: a cache-hit check
-// still produces a check log entry, with Cached=true — the pre-hardening
+// still produces a check log entry, with Cached=true: the pre-hardening
 // engine skipped the check log entirely on a cache hit.
 func TestCheckLog_CachedEntryMarksCachedTrue(t *testing.T) {
 	s := memory.New()

@@ -163,7 +163,7 @@ func TestEvaluate_SortByPriorityDescendingStableByName(t *testing.T) {
 	}
 
 	// Deny is normally "sticky" (wins regardless of scan order in the old
-	// implementation once found) — but since only the FIRST match per
+	// implementation once found), but since only the FIRST match per
 	// effect bucket is kept, priority ordering changes which allow/deny
 	// pair is "first". Use two same-effect policies to observe ordering
 	// directly via MatchedBy.
@@ -188,7 +188,7 @@ func TestEvaluate_SortByPriorityDescendingStableByName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// low is a deny, high is an allow — deny always wins regardless of
+	// low is a deny, high is an allow: deny always wins regardless of
 	// priority (explicit deny semantics), so this just confirms both were
 	// considered (deny wins).
 	if res2.Decision != DecisionDenyExplicit {

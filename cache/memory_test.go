@@ -180,7 +180,7 @@ func TestMemoryCacheInvalidateSubjectAcrossNamespaces(t *testing.T) {
 }
 
 // TestMemoryCacheMaxSize checks the cache stays bounded (LRU eviction keeps
-// it from growing without limit) purely through the public API — the
+// it from growing without limit) purely through the public API: the
 // underlying warden.MemoryCache shards internally, so a raw entry count
 // isn't observable from here the way it was with the old single-map
 // implementation.

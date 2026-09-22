@@ -19,7 +19,7 @@ import (
 // Hooks that carry the mutated entity (Created/Updated, and the assignment
 // hooks) invalidate precisely: by tenant, or by subject for a role
 // assignment change. Hooks that only carry a bare ID with no tenant context
-// — every *Deleted hook, plus permission attach/detach — cannot target a
+// (every *Deleted hook, plus permission attach/detach) cannot target a
 // tenant, so they fall back to a full Clear. A stale cache entry is the
 // exact bug this hardening pass exists to close, so an occasional full
 // flush on a less-common delete path is the right trade against that.

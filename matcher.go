@@ -7,7 +7,7 @@ import "strings"
 // A trailing '*' is only treated as a wildcard when it stands for an
 // entire colon- or dot-separated segment ("document:*", "doc.*") or when
 // the pattern has no separator at all ("prefix*"). A pattern like
-// "document:1*" is NOT a prefix match against "document:1999" — the
+// "document:1*" is NOT a prefix match against "document:1999": the
 // segment after the colon is "1*", not "*", so no wildcard expansion
 // happens and the pattern simply fails to match. This keeps an
 // administrator from accidentally writing a policy resource/action glob

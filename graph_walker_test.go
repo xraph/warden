@@ -22,10 +22,10 @@ func (f *fakeGraphMetrics) GraphBudgetExceeded()    { f.budgetExceeded++ }
 func (f *fakeGraphMetrics) GraphNodesVisited(n int) { f.nodesVisited = append(f.nodesVisited, n) }
 
 func TestGraphWalker_PlainSubjectIsNotASubjectSet(t *testing.T) {
-	// document:1#viewer@group:eng (no SubjectRelation — a literal grant to
+	// document:1#viewer@group:eng (no SubjectRelation: a literal grant to
 	// the group object itself, NOT "members of group:eng's viewer
 	// relation"). group:eng#viewer@user:bob must NOT transitively grant
-	// bob viewer access on document:1 — that would be the H9 semantic bug.
+	// bob viewer access on document:1, that would be the H9 semantic bug.
 	ctx := context.Background()
 	s := memory.New()
 	_ = s.CreateRelation(ctx, &relation.Tuple{
@@ -52,7 +52,7 @@ func TestGraphWalker_PlainSubjectIsNotASubjectSet(t *testing.T) {
 }
 
 func TestGraphWalker_SubjectSetGrants(t *testing.T) {
-	// document:1#viewer@group:eng#member (subject SET — every member of
+	// document:1#viewer@group:eng#member (subject SET: every member of
 	// group:eng's `member` relation is a viewer). group:eng#member@user:bob
 	// must grant bob viewer access on document:1.
 	ctx := context.Background()

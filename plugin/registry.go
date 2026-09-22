@@ -157,7 +157,7 @@ func (r *Registry) SetMetrics(m MetricsRecorder) {
 // hook caches. Plugins are notified in registration order.
 //
 // If the plugin implements none of the known hook interfaces, Register
-// logs a Warn — a plugin that only implements Plugin does nothing, which
+// logs a Warn: a plugin that only implements Plugin does nothing, which
 // is almost always a wiring mistake (wrong interface signature, typo'd
 // method name, etc).
 func (r *Registry) Register(p Plugin) {

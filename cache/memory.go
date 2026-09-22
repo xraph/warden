@@ -1,6 +1,6 @@
 // Package cache provides caching implementations for Warden check results.
 //
-// Memory is a thin wrapper around the root package's warden.MemoryCache —
+// Memory is a thin wrapper around the root package's warden.MemoryCache:
 // the sharded LRU actually lives in package warden (cache_memory.go)
 // because the engine must be able to construct it directly from
 // Config.CacheTTL/CacheMaxSize without an import cycle (this package

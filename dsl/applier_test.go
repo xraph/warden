@@ -252,7 +252,7 @@ role current {
 
 // TestApply_PruneRefusesEmptyTenant guards against a Prune=true apply with
 // no tenant set (neither opts.TenantID nor `tenant` in source) deleting
-// every entity in the shared global (tenant-less) scope — a single-tenant
+// every entity in the shared global (tenant-less) scope: a single-tenant
 // app's whole dataset, since Apply without a tenant writes there by
 // design (see TestApply_NoTenantAppliesToGlobalScope).
 func TestApply_PruneRefusesEmptyTenant(t *testing.T) {

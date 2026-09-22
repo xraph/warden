@@ -254,7 +254,7 @@ func TestEngine_InvalidateSubjectAndTenant(t *testing.T) {
 	eng.InvalidateSubject(ctx, "t1", SubjectUser, "u1")
 	// Indirect assertion: after invalidation a subsequent identical Check
 	// must not blow up and must still return a valid (denied, no data)
-	// result — this exercises the InvalidateSubject wiring end to end via
+	// result: this exercises the InvalidateSubject wiring end to end via
 	// the engine rather than the cache directly.
 	res, err := eng.Check(ctx, req)
 	if err != nil {
