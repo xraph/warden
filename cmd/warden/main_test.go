@@ -49,14 +49,14 @@ func TestCLI_ApplyMemory(t *testing.T) {
 	if !strings.Contains(out, "applied") {
 		t.Errorf("expected 'applied' marker, got: %s", out)
 	}
-	// Memory store is ephemeral per-process — there's no persistent state to
+	// Memory store is ephemeral per-process: there's no persistent state to
 	// re-check across CLI invocations. The test above proves the binary
 	// wired everything together; idempotency is covered by dsl/applier_test.
 }
 
 // TestCLI_ApplySQLiteIdempotent runs apply twice against a sqlite file and
 // verifies the second run is a no-op (every entity already exists). Acts as
-// a regression test for the sqlite time.Time scan fix — without that fix,
+// a regression test for the sqlite time.Time scan fix: without that fix,
 // the first apply itself failed.
 func TestCLI_ApplySQLiteIdempotent(t *testing.T) {
 	bin := buildBin(t)
@@ -101,6 +101,31 @@ func TestCLI_LintInvalidExitsNonZero(t *testing.T) {
 	if err := cmd.Run(); err == nil {
 		t.Fatal("expected non-zero exit on lint failure")
 	}
+}
+
+func TestResolveStoreDSN(t *testing.T) {
+	t.Run("flag wins when set", func(t *testing.T) {
+		t.Setenv("WARDEN_STORE_DSN", "postgres://env-user:env-pass@env-host/db")
+		got := resolveStoreDSN("memory:")
+		if got != "memory:" {
+			t.Errorf("resolveStoreDSN(%q) = %q, want %q", "memory:", got, "memory:")
+		}
+	})
+
+	t.Run("falls back to env when flag is empty", func(t *testing.T) {
+		t.Setenv("WARDEN_STORE_DSN", "sqlite:/tmp/from-env.db")
+		got := resolveStoreDSN("")
+		if got != "sqlite:/tmp/from-env.db" {
+			t.Errorf("resolveStoreDSN(\"\") = %q, want %q", got, "sqlite:/tmp/from-env.db")
+		}
+	})
+
+	t.Run("empty when neither is set", func(t *testing.T) {
+		t.Setenv("WARDEN_STORE_DSN", "")
+		if got := resolveStoreDSN(""); got != "" {
+			t.Errorf("resolveStoreDSN(\"\") = %q, want empty", got)
+		}
+	})
 }
 
 func buildBin(t *testing.T) string {

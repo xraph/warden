@@ -13,7 +13,7 @@ project_name: warden
 
 before:
   hooks:
-    - go mod tidy
+    - go mod download
     - go mod verify
 
 builds:
@@ -29,7 +29,7 @@ builds:
     goarch:
       - amd64
       - arm64
-    # Skip windows/arm64 — uncommon and no obvious user demand.
+    # Skip windows/arm64: uncommon and no obvious user demand.
     ignore:
       - goos: windows
         goarch: arm64
@@ -84,6 +84,25 @@ archives:
 
 checksum:
   name_template: 'checksums.txt'
+
+sboms:
+  - artifacts: archive
+
+signs:
+  # Keyless signing via cosign + Sigstore. Signs the checksums file so a
+  # single verification covers every archive it lists. The CI job
+  # installs cosign before this step runs; there's nothing to configure
+  # locally unless you also want to sign snapshot builds.
+  - cmd: cosign
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--output-signature=${signature}'
+      - '--output-certificate=${certificate}'
+      - '${artifact}'
+      - '--yes'
+    artifacts: checksum
+    output: true
 
 changelog:
   sort: asc

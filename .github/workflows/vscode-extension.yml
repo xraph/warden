@@ -17,13 +17,13 @@ on:
         required: false
         type: string
       dry_run:
-        description: 'Dry run — package but do not publish'
+        description: 'Dry run: package but do not publish'
         required: false
         type: boolean
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 defaults:
   run:
@@ -33,18 +33,21 @@ defaults:
 jobs:
   # -------------------------------------------------------------------
   # Job: validate
-  # Compiles TypeScript, packages the .vsix, and uploads as artifact.
-  # Runs on every push/PR that touches editor/vscode-warden/.
+  # Compiles TypeScript, audits dependencies, packages the .vsix, and
+  # uploads it as an artifact. Runs on every push/PR that touches
+  # editor/vscode-warden/.
   # -------------------------------------------------------------------
   validate:
     name: Validate & Package
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20
           cache: npm
@@ -52,6 +55,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Audit dependencies (high severity, production only)
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Lint (type-check)
         run: npm run lint
@@ -66,7 +72,7 @@ jobs:
         run: npx @vscode/vsce ls --no-dependencies
 
       - name: Upload .vsix artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vscode-warden-vsix
           path: editor/vscode-warden/*.vsix
@@ -84,12 +90,15 @@ jobs:
     if: >-
       (startsWith(github.ref, 'refs/tags/vscode-warden/v'))
       || (github.event_name == 'workflow_dispatch' && inputs.dry_run != true)
+    environment: Production
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20
           cache: npm
@@ -128,12 +137,12 @@ jobs:
 
       - name: Publish to Open VSX Registry
         if: env.OVSX_PAT != ''
-        run: npx ovsx publish *.vsix
+        run: npx ovsx publish ./*.vsix
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: vscode-warden/v${{ steps.version.outputs.version }}
           name: Warden VS Code Extension v${{ steps.version.outputs.version }}

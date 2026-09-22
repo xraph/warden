@@ -1,4 +1,4 @@
-.PHONY: help build run test clean fmt lint lint-fix vet tidy deps install dev hot check coverage b r t c f l lf v check-deps templ templ-watch vscode-build vscode-install vscode-uninstall release-snapshot release-check
+.PHONY: help build run test clean fmt lint lint-fix vet tidy deps install dev hot check coverage coverage-html test-coverage coverage-check b r t c f l lf v check-deps templ templ-watch vscode-build vscode-install vscode-uninstall release-snapshot release-check
 
 # Default target
 .DEFAULT_GOAL := help
@@ -62,7 +62,7 @@ help:
 	@echo "  make docs           - Serve documentation locally"
 	@echo "  make docs-build     - Build documentation"
 	@echo ""
-	@echo "$(GREEN)Editor Support (contributor dev — Marketplace is the canonical install):$(NC)"
+	@echo "$(GREEN)Editor Support (contributor dev, Marketplace is the canonical install):$(NC)"
 	@echo "  make vscode-build      - Build the VS Code extension into a .vsix"
 	@echo "  make vscode-install    - Install your local build (for testing pre-release changes)"
 	@echo "  make vscode-uninstall  - Remove the installed local build"
@@ -153,10 +153,10 @@ check:
 	@$(MAKE) lint
 	@echo "$(GREEN)✓ All checks passed$(NC)"
 
-## test (t): Run tests
+## test (t): Run tests (race detector on by default)
 test t:
 	@echo "$(BLUE)Running tests...$(NC)"
-	$(GO) test -v ./...
+	$(GO) test -race -v ./...
 	@echo "$(GREEN)✓ Tests complete$(NC)"
 
 ## test-verbose: Run tests with verbose output
@@ -190,6 +190,36 @@ coverage-html: coverage
 	@echo "$(GREEN)✓ HTML coverage report: coverage.html$(NC)"
 	@command -v open >/dev/null 2>&1 && open coverage.html || echo "Open coverage.html in your browser"
 
+## test-coverage: Run tests with race detector and atomic coverage counting (CI)
+test-coverage:
+	@echo "$(BLUE)Running tests with coverage (race, atomic)...$(NC)"
+	$(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
+	@echo "$(GREEN)✓ Coverage profile written: coverage.out$(NC)"
+
+## coverage-check: Fail if total coverage < 70%, or api/middleware/store/memory/store/sqlite < 60%
+coverage-check: test-coverage
+	@echo "$(BLUE)Checking coverage thresholds...$(NC)"
+	@TOTAL=$$($(GO) tool cover -func=coverage.out | tail -1 | awk '{gsub("%","",$$3); print $$3}'); \
+	echo "Total coverage: $${TOTAL}%"; \
+	awk -v t="$$TOTAL" 'BEGIN { if (t+0 < 70) { print "FAIL: total coverage " t "% is below the 70% floor"; exit 1 } }'; \
+	FAIL=$$?; \
+	for pkg in api middleware store/memory store/sqlite; do \
+	  TMPFILE=$$(mktemp); \
+	  echo "mode: atomic" > "$$TMPFILE"; \
+	  grep "github.com/xraph/warden/$$pkg/" coverage.out >> "$$TMPFILE" || true; \
+	  if [ "$$(wc -l < "$$TMPFILE")" -le 1 ]; then \
+	    echo "SKIP: no coverage data for $$pkg"; \
+	    rm -f "$$TMPFILE"; \
+	    continue; \
+	  fi; \
+	  PCT=$$($(GO) tool cover -func="$$TMPFILE" | tail -1 | awk '{gsub("%","",$$3); print $$3}'); \
+	  rm -f "$$TMPFILE"; \
+	  echo "$$pkg coverage: $${PCT}%"; \
+	  awk -v p="$$PCT" -v name="$$pkg" 'BEGIN { if (p+0 < 60) { print "FAIL: " name " coverage " p "% is below the 60% floor"; exit 1 } }' || FAIL=1; \
+	done; \
+	if [ "$$FAIL" != "0" ]; then exit 1; fi
+	@echo "$(GREEN)✓ Coverage thresholds met$(NC)"
+
 ## tidy: Tidy and verify modules
 tidy:
 	@echo "$(BLUE)Tidying modules...$(NC)"
@@ -197,17 +227,17 @@ tidy:
 	$(GO) mod verify
 	@echo "$(GREEN)✓ Modules tidied$(NC)"
 
-## deps: Install development dependencies
+## deps: Install development dependencies (versions pinned; bump deliberately, not via @latest)
 deps:
 	@echo "$(BLUE)Installing development dependencies...$(NC)"
 	@echo "Installing goimports..."
-	@go install golang.org/x/tools/cmd/goimports@latest
+	@go install golang.org/x/tools/cmd/goimports@v0.50.0
 	@echo "Installing air (hot reload)..."
-	@go install github.com/cosmtrek/air@latest
+	@go install github.com/air-verse/air@v1.67.4
 	@echo "Installing golangci-lint..."
-	@command -v golangci-lint >/dev/null 2>&1 || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin
+	@go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 	@echo "Installing templ..."
-	@go install github.com/a-h/templ/cmd/templ@latest
+	@go install github.com/a-h/templ/cmd/templ@v0.3.1020
 	@echo "$(GREEN)✓ Development dependencies installed$(NC)"
 
 ## check-deps: Check if required tools are installed
@@ -257,10 +287,10 @@ templ-watch:
 ## vscode-build: Build the VS Code extension into a .vsix package
 ##
 ## Uses npm to match the CI pipeline (.github/workflows/vscode-extension.yml).
-## bun works equivalently if you prefer — `cd editor/vscode-warden && bun run package`.
+## bun works equivalently if you prefer: `cd editor/vscode-warden && bun run package`.
 vscode-build:
 	@echo "$(BLUE)Building Warden VS Code extension...$(NC)"
-	@command -v npm >/dev/null 2>&1 || { echo "$(RED)npm not found — install Node.js (>=20) from https://nodejs.org$(NC)"; exit 1; }
+	@command -v npm >/dev/null 2>&1 || { echo "$(RED)npm not found, install Node.js (>=20) from https://nodejs.org$(NC)"; exit 1; }
 	@cd editor/vscode-warden && \
 	  if [ ! -d node_modules ]; then echo "$(YELLOW)Installing deps...$(NC)"; npm ci --silent; fi && \
 	  npm run compile --silent && \
@@ -269,7 +299,7 @@ vscode-build:
 
 # resolve-code: shell snippet that locates a usable code-CLI binary.
 # Tries (in order):
-#   1. $(CODE) on PATH — honours user override (CODE=code-insiders, CODE=cursor, etc.)
+#   1. $(CODE) on PATH, honours user override (CODE=code-insiders, CODE=cursor, etc.)
 #   2. Standard macOS app-bundle paths for VS Code, Insiders, Cursor, VSCodium
 # Sets $$CLI to the resolved binary path, or empty if nothing matched.
 # Path-with-spaces ("Visual Studio Code.app") is quoted throughout.
@@ -295,7 +325,7 @@ vscode-install: vscode-build
 	if [ -z "$$CLI" ]; then \
 	  echo "$(RED)Could not locate the VS Code CLI.$(NC)"; \
 	  echo "  Tried: $(BLUE)$(CODE)$(NC) on PATH, plus the standard macOS app bundles for VS Code / Insiders / Cursor / VSCodium."; \
-	  echo "  Fix: install the shell command — $(BLUE)Cmd+Shift+P → Shell Command: Install 'code' command in PATH$(NC)"; \
+	  echo "  Fix: install the shell command: $(BLUE)Cmd+Shift+P → Shell Command: Install 'code' command in PATH$(NC)"; \
 	  echo "       or override: $(BLUE)make vscode-install CODE=code-insiders$(NC)  (also: cursor, /abs/path/to/code)"; \
 	  exit 1; \
 	fi; \
@@ -336,7 +366,7 @@ release-snapshot:
 	  echo "  Install: $(BLUE)brew install goreleaser$(NC)  or  $(BLUE)go install github.com/goreleaser/goreleaser/v2@latest$(NC)"; exit 1; }
 	@echo "$(BLUE)Building snapshot release...$(NC)"
 	goreleaser release --snapshot --clean --skip=publish
-	@echo "$(GREEN)✓ Snapshot built in dist/ — inspect with 'ls dist/'$(NC)"
+	@echo "$(GREEN)✓ Snapshot built in dist/, inspect with 'ls dist/'$(NC)"
 
 ## all: Run templ generate, check, test, and build
 all: templ check test build
