@@ -1,0 +1,83 @@
+---
+title: Retention
+description: Check-log retention, the maintenance loop, and erasure requests.
+---
+
+## check_log_retention and the maintenance loop
+
+`Config.CheckLogRetention` (YAML: `check_log_retention`, default 90 days, `2160h`) controls how long `warden_check_logs` rows live before they're purged. Setting it to `0` disables purging entirely: rows accumulate forever, which is only appropriate if something else outside Warden is responsible for pruning them.
+
+`RunMaintenance` does the purging:
+
+```go
+func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error)
+```
+
+Each run:
+
+1. Deletes expired role assignments (`DeleteExpiredAssignments`), regardless of `CheckLogRetention`.
+2. If `CheckLogRetention > 0`, deletes check-log entries older than `now - CheckLogRetention` (`PurgeCheckLogs`).
+3. If either purge actually removed rows and a cache is configured, clears the whole cache (`Cache.Clear`). There's no per-tenant "list every tenant" cache operation, and a maintenance run is infrequent enough that a full flush is cheap next to serving one stale permission.
+
+`Config.MaintenanceInterval` (YAML: `maintenance_interval`, default 1 hour) controls how often this runs in the background. `Engine.Start` calls `StartMaintenance`, which starts a goroutine ticking on that interval until the engine's `Stop` context is cancelled; setting the interval to `0` disables the loop (you'd then need to call `RunMaintenance` yourself, e.g. from a cron job, to get any purging at all).
+
+A run that purges anything increments `warden_assignments_purged_total` and/or `warden_checklogs_purged_total`; see [Monitoring](/docs/operations/monitoring).
+
+## Per-subject and per-tenant erasure
+
+Retention-window purging is time-based and blind to *who* the rows belong to. For a "delete this specific person's data" request (a GDPR/CCPA-style erasure request, or offboarding a subject), call the targeted deletes directly instead of waiting for the retention window:
+
+```go
+// Erase one subject's check-log history within a tenant.
+n, err := store.DeleteCheckLogsBySubject(ctx, tenantID, subjectKind, subjectID)
+
+// Erase every check-log row for a tenant (e.g. tenant offboarding).
+err := store.DeleteCheckLogsByTenant(ctx, tenantID)
+```
+
+Both are on `checklog.Store` (`checklog/store.go`). The equivalent for role assignments lives on `assignment.Store`:
+
+```go
+err := store.DeleteAssignmentsBySubject(ctx, tenantID, subjectKind, subjectID)
+err := store.DeleteAssignmentsByTenant(ctx, tenantID)
+```
+
+None of these go through the engine's cache invalidation automatically. If you have a cache configured, call `eng.InvalidateSubject` or `eng.InvalidateTenant` afterward so a stale cached decision doesn't outlive the row you just erased.
+
+## request_ip is PII
+
+`checklog.Entry.RequestIP` (column `request_ip`) records the caller's IP address, captured by the API's and the middleware's `captureRequestIP` from `X-Forwarded-For` or `RemoteAddr`. Treat it as personal data in your data-protection assessment: it identifies a person or a household in most jurisdictions' definitions, even though it's stored purely for security/debugging purposes (tracing an anomalous access pattern back to a network origin).
+
+Practically, this means:
+
+- Include `request_ip` explicitly when you scope a data-processing or privacy impact assessment for the check log, not just `subject_id`.
+- `DeleteCheckLogsBySubject` removes it along with the rest of that subject's check-log rows when you service an erasure request. There's no separate "redact just the IP" operation, so erasure is row-level, not field-level.
+- If your `check_log_retention` window is longer than your IP-retention policy requires, shorten it; there's no independent retention knob for `request_ip` alone.
+
+## The Postgres append-only trigger
+
+On Postgres, `warden_check_logs` is append-only at the database level. The `check_logs_indexes` migration installs a trigger:
+
+```sql
+CREATE OR REPLACE FUNCTION warden_check_logs_immutable() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'warden_check_logs is append-only';
+END
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER warden_check_logs_no_update
+    BEFORE UPDATE ON warden_check_logs
+    FOR EACH ROW EXECUTE FUNCTION warden_check_logs_immutable();
+```
+
+Any `UPDATE` against the table (from application code, a migration you write yourself, or a manual `psql` session) fails with `warden_check_logs is append-only`. `DELETE` is still allowed, which is what `PurgeCheckLogs`, `DeleteCheckLogsBySubject`, and `DeleteCheckLogsByTenant` rely on. This guarantees a logged decision can never be edited after the fact, only removed outright by one of those explicit, auditable code paths. An auditor reading a surviving row can trust it reflects the decision as originally made.
+
+SQLite and MongoDB stores don't currently enforce this at the storage layer; if you need the same guarantee there, enforce it at the application layer (don't call anything but `CreateCheckLog` and the purge/delete methods against that store).
+
+## Recommended grant model
+
+Because the append-only trigger already blocks `UPDATE` for any role, the database grants you hand out are about narrowing *who can `DELETE`*, not about re-enforcing immutability:
+
+- Grant the application's normal runtime database role `SELECT`, `INSERT` on `warden_check_logs` (it only ever calls `CreateCheckLog` and `ListCheckLogs`/`CountCheckLogs`), and skip `UPDATE` entirely: the trigger would reject it anyway, but omitting the grant means a compromised application credential can't even attempt it, and can't `DROP TRIGGER` or `ALTER` the function without also holding ownership/DDL rights you shouldn't grant it.
+- Reserve `DELETE` on `warden_check_logs` for the credential that runs maintenance (the same process running `RunMaintenance`/`StartMaintenance`) and for whatever operator tooling services erasure requests. If those run as the same application process as normal traffic, this is less about a separate database role and more about making sure only `PurgeCheckLogs`, `DeleteCheckLogsBySubject`, and `DeleteCheckLogsByTenant` are the code paths that ever issue a `DELETE`. Don't add ad-hoc delete queries elsewhere against this table.
+- Don't grant `TRIGGER` or table-ownership rights on `warden_check_logs` to the application role. Only a migration-running credential (the one that calls `store.Migrate`) needs DDL rights on this table.

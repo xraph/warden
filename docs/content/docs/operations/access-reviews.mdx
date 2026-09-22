@@ -1,0 +1,60 @@
+---
+title: Access reviews
+description: Finding who has what, and exporting assignments for a periodic review.
+---
+
+A quarterly (or however often your compliance program requires) access review needs two things from Warden: a list of everyone with standing access, and enough provenance on each grant to tell whether it's still justified.
+
+## granted_by
+
+Every `assignment.Assignment` carries `GrantedBy` (column `granted_by`), the actor ID that created the grant. It's populated from `warden.Actor` at assignment time, the same actor identity the audit log records, so a reviewer can trace a grant back to who approved it, not just who holds it. An empty `granted_by` on an older row means it predates this column; treat those as needing extra scrutiny during a review, since there's no recorded approver.
+
+`GrantedBy` is a plain string, not a foreign key to any user table Warden owns. Resolve it against your own identity system (the same one `subject_id` values come from) to get a human-readable name.
+
+## Listing current assignments
+
+For a review of "who currently has access," page through `GET /v1/assignments` (permission: `read` on `warden:assignment`), which returns `[]*assignment.Assignment` filtered by `ListAssignmentsRequest` (`subject_kind`, `subject_id`, `role_id`, `limit`, `offset`) and scoped to whatever tenant the request resolves to. There's no `tenant_id` query parameter. Tenant scope comes from how your deployment resolves it per request (a header, subdomain, or whatever your Forge app's tenant-resolution middleware does), the same as every other route.
+
+If you're reviewing programmatically instead of through the API (e.g. from a scheduled job with direct store access), page through `assignment.Store.ListAssignments` with an explicit tenant filter:
+
+```go
+filter := &assignment.ListFilter{
+    TenantID: tenantID,
+    Limit:    200,
+}
+var all []*assignment.Assignment
+for {
+    page, err := store.ListAssignments(ctx, filter)
+    if err != nil {
+        return err
+    }
+    all = append(all, page...)
+    if len(page) < filter.Limit {
+        break
+    }
+    filter.Offset += filter.Limit
+}
+```
+
+## ListExpiringAssignments
+
+For the narrower "what's about to expire, and should it be renewed or left to lapse" question, `assignment.Store` has a dedicated method:
+
+```go
+ListExpiringAssignments(ctx context.Context, tenantID string, before time.Time, limit int) ([]*Assignment, error)
+```
+
+It returns the tenant's assignments expiring before `before`, oldest expiry first; `limit == 0` uses the backend default of 1000. This isn't wired to a REST endpoint today, so call it from Go (a scheduled job, a one-off script, or a CLI you write against `eng.Store()`) rather than expecting an HTTP route for it:
+
+```go
+cutoff := time.Now().Add(30 * 24 * time.Hour) // expiring in the next 30 days
+expiring, err := store.ListExpiringAssignments(ctx, tenantID, cutoff, 0)
+```
+
+Run this on a schedule that matches your review cadence (e.g. monthly, feeding a quarterly rollup) so expiring grants surface before they lapse silently. An assignment past its `expires_at` stops granting access immediately (the engine's `ListRolesForSubject` excludes it) but isn't deleted from the table until the next `RunMaintenance` pass purges it.
+
+## Building a quarterly export
+
+There's no built-in "export assignments to CSV" command. `warden export` (the CLI) exports the declarative catalog (roles, permissions, policies, resource types) to `.warden` source files, not runtime assignments, so it isn't the right tool here. For a per-tenant review artifact, write a small script against the pattern above: page through `ListAssignments` (or `ListExpiringAssignments` for the expiry-focused view) for each tenant you need to review, and emit whatever format your review process consumes (CSV, a spreadsheet import, a ticket per stale grant). Include at minimum: `subject_kind`, `subject_id`, `role_id` (resolve to the role's `slug`/`name` via `GetRole`), `resource_type`/`resource_id` if resource-scoped, `granted_by`, `expires_at`, and `created_at`: that's enough for a reviewer to decide keep/revoke without a second round trip.
+
+Pair this with the audit log (`plugin/auditlog`, or your own `Audit` plugin) if you need to show not just current state but the history of grants and revocations over the review period. The check log and the audit trail answer different questions: the check log says who was actually checked against what, the assignment table and audit trail say who was granted what and by whom.

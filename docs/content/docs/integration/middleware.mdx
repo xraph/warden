@@ -3,11 +3,11 @@ title: Middleware
 description: Authorization middleware for Forge HTTP handlers.
 ---
 
-Warden provides middleware that enforces authorization on Forge routes.
+Warden provides HTTP middleware for guarding routes on an embedding application. `Require`, `RequireAny` and `RequireAll` live in `github.com/xraph/warden/middleware` and are meant for your own routes; Warden's own management API (mounted under `base_path`, `/warden` by default) authenticates and authorizes itself through `api.API`'s own middleware chain. See [Forge Extension](/docs/integration/forge-extension).
 
 ## Require
 
-The `Require` middleware enforces that the current subject has permission for a specific action on a resource type:
+`Require` enforces that the current subject has permission for a specific action on a resource type:
 
 ```go
 import "github.com/xraph/warden/middleware"
@@ -19,63 +19,65 @@ app.GET("/documents/:id", getDocument,
 )
 ```
 
-If the check fails, the middleware returns `403 Forbidden`.
+If the caller has no resolvable identity, the middleware returns `401 Unauthorized` (unless `AllowAnonymous` is set, see below). If the check runs but is denied, it returns `403 Forbidden`. If the store or evaluator errors while running the check, it returns `503 Service Unavailable`: a tenant-resolution error (`warden.ErrTenantRequired`) is the one exception and comes back as `400 Bad Request` instead, since that's the caller's fault, not an outage.
 
 ## RequireAny
 
-Allows access if any of the specified checks pass:
+Allows the request if ANY of the given checks pass:
 
 ```go
 app.PUT("/documents/:id", updateDocument,
     forge.WithMiddleware(
-        middleware.RequireAny(eng,
-            middleware.Check("write", "document"),
-            middleware.Check("admin", "document"),
-        ),
+        middleware.RequireAny(eng, []warden.CheckRequest{
+            {Action: warden.Action{Name: "write"}, Resource: warden.Resource{Type: "document"}},
+            {Action: warden.Action{Name: "admin"}, Resource: warden.Resource{Type: "document"}},
+        }),
     ),
 )
 ```
 
 ## RequireAll
 
-Requires all specified checks to pass:
+Requires all of the given checks to pass:
 
 ```go
 app.DELETE("/documents/:id", deleteDocument,
     forge.WithMiddleware(
-        middleware.RequireAll(eng,
-            middleware.Check("delete", "document"),
-            middleware.Check("manage", "project"),
-        ),
+        middleware.RequireAll(eng, []warden.CheckRequest{
+            {Action: warden.Action{Name: "delete"}, Resource: warden.Resource{Type: "document"}},
+            {Action: warden.Action{Name: "manage"}, Resource: warden.Resource{Type: "project"}},
+        }),
     ),
 )
 ```
 
+`RequireAny` and `RequireAll` both fill in `Subject` from the resolved caller on every check you pass; you only supply `Action` and `Resource`.
+
 ## Subject Resolution
 
-The middleware automatically resolves the subject from the request context:
+The middleware resolves the caller's subject with `forge.UserIDFromContext`, which shares its context key with `warden.ActorFromContext`'s fallback chain. A resolved user ID becomes `warden.Subject{Kind: warden.SubjectUser, ID: userID}`.
 
-1. **Authsome user** — If an Authsome JWT is present, uses `user` as subject kind and the user ID
-2. **Keysmith API key** — If a Keysmith API key is validated, uses `api_key` as subject kind
-3. **Anonymous** — Falls back to `anonymous` with empty ID
+Forge doesn't currently expose an API-key subject in context, so there's no separate API-key branch here: a caller authenticated only by API key resolves as "no identity" in this middleware until that support lands upstream. If you need API-key subjects today, resolve them yourself and set `warden.Subject` on the request via a `WithContext` function, or write a small wrapper middleware that calls `eng.Check` directly.
+
+By default, an unresolved subject gets `401 Unauthorized` before the engine is ever consulted, so a route can never be reached by a subject nobody actually asked for.
+
+### AllowAnonymous
+
+Pass `middleware.AllowAnonymous()` to let a request with no resolvable identity through as an explicit `{Kind: warden.SubjectUser, ID: "anonymous"}` subject instead of the default 401:
 
 ```go
-// The middleware builds a CheckRequest like:
-&warden.CheckRequest{
-    Subject:      resolvedSubject,
-    Action:       "read",
-    ResourceType: "document",
-    ResourceID:   extractedFromURL, // from :id param
-}
+middleware.Require(eng, "read", "document", middleware.AllowAnonymous())
 ```
+
+Because `"anonymous"` is a fixed, well-known subject ID rather than whatever a caller happened to send, it can only ever match roles an operator explicitly assigned to it. There's no way for a request to spoof its way into a different anonymous identity.
 
 ## Resource ID Extraction
 
-The middleware automatically extracts the resource ID from URL parameters. For a route like `/documents/:id`, it extracts the `:id` parameter.
+The middleware automatically extracts the resource ID from URL parameters. For a route like `/documents/:id`, it reads the `:id` path parameter into `Resource.ID`.
 
 ## Custom Context
 
-Pass additional attributes for ABAC evaluation:
+`WithContext` lets you inject extra attributes into the `warden.CheckRequest.Context` map built for each request, e.g. business context an ABAC policy condition might match on. It's called once per request; a nil return means no extra context.
 
 ```go
 middleware.Require(eng, "read", "document",
@@ -87,3 +89,11 @@ middleware.Require(eng, "read", "document",
     }),
 )
 ```
+
+## Request IP capture
+
+Every middleware call (`Require`, `RequireAny`, `RequireAll`) also captures the caller's IP (the first hop of `X-Forwarded-For` if present, otherwise `RemoteAddr`) and overlays it onto the request context via `warden.WithRequestIP`. The check-log entry the engine writes for that `Check` records it in `RequestIP`. See [Retention](/docs/operations/retention) for why that field needs its own erasure path.
+
+## Denied and error logging
+
+A denied check logs `warden: access denied` at `Info` through `forge.LoggerFromContext`, with the subject, action, resource type, and decision: this is normal traffic, not an incident. A store or evaluator error logs `warden: authorization store error` at `Warn` instead, so an operator notices an outage rather than mistaking a wave of 503s for a wave of legitimate denials.
