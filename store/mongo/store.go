@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/drivers/mongodriver"
+	"github.com/xraph/grove/migrate"
 
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/checklog"
@@ -61,31 +63,108 @@ func byID(tenantID, docID string) bson.M {
 
 // Store is a MongoDB implementation of the composite Warden store.
 type Store struct {
-	db  *grove.DB
-	mdb *mongodriver.MongoDB
+	db          *grove.DB
+	mdb         *mongodriver.MongoDB
+	checkLogTTL time.Duration
+}
+
+// Option configures a Store at construction time.
+type Option func(*Store)
+
+// WithCheckLogTTL enables MongoDB's background TTL reaper on
+// warden_check_logs: documents are deleted d after their created_at. When
+// this option is not supplied (the default), Migrate creates no TTL index
+// at all and check-log retention is left entirely to the calling
+// engine/job — matching the postgres and sqlite backends, which have no
+// TTL mechanism of their own.
+func WithCheckLogTTL(d time.Duration) Option {
+	return func(s *Store) { s.checkLogTTL = d }
 }
 
 // New creates a new MongoDB store backed by Grove ORM.
-func New(db *grove.DB) *Store {
-	return &Store{
+func New(db *grove.DB, opts ...Option) *Store {
+	s := &Store{
 		db:  db,
 		mdb: mongodriver.Unwrap(db),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
-// Migrate creates indexes for all warden collections.
+// Migrate runs the versioned migration group through the grove orchestrator
+// (collection creation, indexes, and the namespace-scoped uniqueness fix all
+// live in migrations.go), then — only when the store was constructed with
+// WithCheckLogTTL — ensures the check-log TTL index.
 func (s *Store) Migrate(ctx context.Context) error {
-	indexes := migrationIndexes()
-	for col, models := range indexes {
-		if len(models) == 0 {
-			continue
-		}
-		_, err := s.mdb.Collection(col).Indexes().CreateMany(ctx, models)
-		if err != nil {
-			return fmt.Errorf("warden/mongo: migrate %s indexes: %w", col, err)
+	executor, err := migrate.NewExecutorFor(s.mdb)
+	if err != nil {
+		return fmt.Errorf("warden: create migration executor: %w", err)
+	}
+	orch := migrate.NewOrchestrator(executor, Migrations)
+	if _, err := orch.Migrate(ctx); err != nil {
+		return fmt.Errorf("warden: migration failed: %w", err)
+	}
+	if s.checkLogTTL > 0 {
+		if err := s.ensureCheckLogTTLIndex(ctx); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// checkLogTTLIndexName is fixed so a later Migrate() with a different TTL
+// can find and replace the index rather than accumulate duplicates.
+const checkLogTTLIndexName = "idx_warden_check_logs_ttl"
+
+// ensureCheckLogTTLIndex (re)creates the TTL index on warden_check_logs's
+// created_at. Mongo rejects re-creating an index under the same name with a
+// different ExpireAfterSeconds, so the previous one is dropped first; the
+// drop is a no-op (ignored) the first time the index doesn't exist yet.
+func (s *Store) ensureCheckLogTTLIndex(ctx context.Context) error {
+	coll := s.mdb.Collection(colCheckLogs)
+	_ = coll.Indexes().DropOne(ctx, checkLogTTLIndexName) //nolint:errcheck // idempotent drop, ok if missing
+	_, err := coll.Indexes().CreateOne(ctx, mongod.IndexModel{
+		Keys: bson.D{{Key: "created_at", Value: 1}},
+		Options: options.Index().
+			SetName(checkLogTTLIndexName).
+			SetExpireAfterSeconds(int32(s.checkLogTTL.Seconds())),
+	})
+	if err != nil {
+		return fmt.Errorf("warden: create check log TTL index: %w", err)
+	}
+	return nil
+}
+
+// withTransaction runs fn inside a MongoDB session transaction when the
+// server supports them (a replica set or sharded cluster). Multi-document
+// transactions are not available on a standalone mongod — notably the
+// default single-node container the test harness starts when
+// WARDEN_TEST_MONGO_URI is unset — so this probes support by starting and
+// immediately aborting a transaction; if that fails, fn runs directly
+// against ctx as a plain sequence of writes with no atomicity guarantee.
+// See the package doc comment for the operational tradeoff this implies.
+func (s *Store) withTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	sess, err := s.mdb.Client().StartSession()
+	if err != nil {
+		return fn(ctx)
+	}
+	defer sess.EndSession(ctx)
+
+	if probeErr := sess.StartTransaction(); probeErr != nil {
+		// Standalone server: no transaction support. Fall back to running
+		// fn as plain sequential writes.
+		return fn(ctx)
+	}
+	if abortErr := sess.AbortTransaction(ctx); abortErr != nil {
+		return fn(ctx)
+	}
+
+	_, err = sess.WithTransaction(ctx, func(sessCtx context.Context) (any, error) {
+		return nil, fn(sessCtx)
+	})
+	return err
 }
 
 // Ping verifies the database connection.
@@ -108,94 +187,35 @@ func isNoDocuments(err error) bool {
 	return errors.Is(err, mongod.ErrNoDocuments)
 }
 
-// migrationIndexes returns the index definitions for all warden collections.
-func migrationIndexes() map[string][]mongod.IndexModel {
-	return map[string][]mongod.IndexModel{
-		colRoles: {
-			{
-				Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "slug", Value: 1}},
-				Options: options.Index().SetUnique(true),
-			},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}}},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "parent_slug", Value: 1}}},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "is_system", Value: 1}}},
-		},
-		colPermissions: {
-			{
-				Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "name", Value: 1}},
-				Options: options.Index().SetUnique(true),
-			},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}}},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "resource", Value: 1}, {Key: "action", Value: 1}}},
-		},
-		colRolePermissions: {
-			{
-				Keys: bson.D{
-					{Key: "role_id", Value: 1},
-					{Key: "perm_namespace_path", Value: 1},
-					{Key: "perm_name", Value: 1},
-				},
-				Options: options.Index().SetUnique(true),
-			},
-			{Keys: bson.D{{Key: "role_id", Value: 1}}},
-			{Keys: bson.D{{Key: "perm_namespace_path", Value: 1}, {Key: "perm_name", Value: 1}}},
-		},
-		colAssignments: {
-			{
-				Keys: bson.D{
-					{Key: "tenant_id", Value: 1},
-					{Key: "role_id", Value: 1},
-					{Key: "subject_kind", Value: 1},
-					{Key: "subject_id", Value: 1},
-					{Key: "resource_type", Value: 1},
-					{Key: "resource_id", Value: 1},
-				},
-				Options: options.Index().SetUnique(true),
-			},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}}},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "subject_kind", Value: 1}, {Key: "subject_id", Value: 1}}},
-			{Keys: bson.D{{Key: "role_id", Value: 1}}},
-			{Keys: bson.D{{Key: "expires_at", Value: 1}}},
-		},
-		colRelations: {
-			{
-				Keys: bson.D{
-					{Key: "tenant_id", Value: 1},
-					{Key: "object_type", Value: 1},
-					{Key: "object_id", Value: 1},
-					{Key: "relation", Value: 1},
-					{Key: "subject_type", Value: 1},
-					{Key: "subject_id", Value: 1},
-					{Key: "subject_relation", Value: 1},
-				},
-				Options: options.Index().SetUnique(true),
-			},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "object_type", Value: 1}, {Key: "object_id", Value: 1}, {Key: "relation", Value: 1}}},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "subject_type", Value: 1}, {Key: "subject_id", Value: 1}, {Key: "relation", Value: 1}}},
-		},
-		colPolicies: {
-			{
-				Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "name", Value: 1}},
-				Options: options.Index().SetUnique(true),
-			},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}}},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "is_active", Value: 1}, {Key: "priority", Value: 1}}},
-		},
-		colResourceTypes: {
-			{
-				Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "name", Value: 1}},
-				Options: options.Index().SetUnique(true),
-			},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}}},
-		},
-		colCheckLogs: {
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}}},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "subject_kind", Value: 1}, {Key: "subject_id", Value: 1}}},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "resource_type", Value: 1}, {Key: "resource_id", Value: 1}}},
-			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "decision", Value: 1}}},
-			{Keys: bson.D{{Key: "created_at", Value: -1}}},
-		},
+// applyNamespaceFilter adds an exact-match or prefix-match namespace_path
+// clause to f. An exact NamespacePath wins over NamespacePrefix when both
+// are set; an empty prefix (or a nil path) leaves f unfiltered by
+// namespace. The prefix match mirrors store/memory's nsHasPrefix: "eng"
+// matches "eng" and every "eng/..." descendant, "" matches everything.
+func applyNamespaceFilter(f bson.M, path *string, prefix string) {
+	if path != nil {
+		f["namespace_path"] = *path
+		return
 	}
+	if prefix != "" {
+		f["namespace_path"] = bson.M{"$regex": "^" + regexp.QuoteMeta(prefix) + "(/|$)"}
+	}
+}
+
+// maxSearchLen caps a free-text search filter so a caller can't hand a
+// megabyte-long string to the regex engine.
+const maxSearchLen = 128
+
+// searchFilter builds a case-insensitive "contains" filter for a free-text
+// search field. The input is truncated to maxSearchLen runes and escaped
+// with regexp.QuoteMeta so user-supplied regex metacharacters (".*", "(",
+// etc.) are matched literally rather than compiled as a pattern.
+func searchFilter(search string) bson.M {
+	r := []rune(search)
+	if len(r) > maxSearchLen {
+		search = string(r[:maxSearchLen])
+	}
+	return bson.M{"$regex": regexp.QuoteMeta(search), "$options": "i"}
 }
 
 // ──────────────────────────────────────────────────
@@ -215,6 +235,10 @@ func (s *Store) CreateRole(ctx context.Context, r *role.Role) error {
 	}
 	m := roleToModel(r)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
+		if mongod.IsDuplicateKeyError(err) {
+			return fmt.Errorf("role %q in tenant %q ns %q: %w",
+				r.Slug, r.TenantID, r.NamespacePath, wardenerr.ErrDuplicateRole)
+		}
 		return fmt.Errorf("warden: create role: %w", err)
 	}
 	return nil
@@ -316,6 +340,7 @@ func (s *Store) ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.IsSystem != nil {
 			f["is_system"] = *filter.IsSystem
 		}
@@ -326,7 +351,7 @@ func (s *Store) ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role
 			f["parent_slug"] = *filter.ParentSlug
 		}
 		if filter.Search != "" {
-			f["name"] = bson.M{"$regex": filter.Search, "$options": "i"}
+			f["name"] = searchFilter(filter.Search)
 		}
 	}
 	q := s.mdb.NewFind(&models).
@@ -356,6 +381,7 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.IsSystem != nil {
 			f["is_system"] = *filter.IsSystem
 		}
@@ -366,7 +392,7 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 			f["parent_slug"] = *filter.ParentSlug
 		}
 		if filter.Search != "" {
-			f["name"] = bson.M{"$regex": filter.Search, "$options": "i"}
+			f["name"] = searchFilter(filter.Search)
 		}
 	}
 	count, err := s.mdb.NewFind((*roleModel)(nil)).
@@ -474,22 +500,24 @@ func (s *Store) requireRole(ctx context.Context, tenantID string, roleID id.Role
 }
 
 func (s *Store) AttachPermission(ctx context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
-	if err := s.requireRole(ctx, tenantID, roleID); err != nil {
-		return err
-	}
-	m := &rolePermissionModel{
-		RoleID:            roleID.String(),
-		PermNamespacePath: ref.NamespacePath,
-		PermName:          ref.Name,
-	}
-	_, err := s.mdb.NewInsert(m).Exec(ctx)
-	if err != nil {
-		if mongod.IsDuplicateKeyError(err) {
-			return nil // already attached
+	return s.withTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.requireRole(txCtx, tenantID, roleID); err != nil {
+			return err
 		}
-		return fmt.Errorf("warden: attach permission: %w", err)
-	}
-	return nil
+		m := &rolePermissionModel{
+			RoleID:            roleID.String(),
+			PermNamespacePath: ref.NamespacePath,
+			PermName:          ref.Name,
+		}
+		_, err := s.mdb.NewInsert(m).Exec(txCtx)
+		if err != nil {
+			if mongod.IsDuplicateKeyError(err) {
+				return nil // already attached
+			}
+			return fmt.Errorf("warden: attach permission: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) DetachPermission(ctx context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
@@ -513,29 +541,31 @@ func (s *Store) SetRolePermissions(ctx context.Context, tenantID string, roleID 
 	if err := s.requireRole(ctx, tenantID, roleID); err != nil {
 		return err
 	}
-	// Delete all existing role permissions.
-	_, err := s.mdb.NewDelete((*rolePermissionModel)(nil)).
-		Many().
-		Filter(bson.M{"role_id": roleID.String()}).
-		Exec(ctx)
-	if err != nil {
-		return fmt.Errorf("warden: clear role permissions: %w", err)
-	}
+	return s.withTransaction(ctx, func(txCtx context.Context) error {
+		// Delete all existing role permissions.
+		_, err := s.mdb.NewDelete((*rolePermissionModel)(nil)).
+			Many().
+			Filter(bson.M{"role_id": roleID.String()}).
+			Exec(txCtx)
+		if err != nil {
+			return fmt.Errorf("warden: clear role permissions: %w", err)
+		}
 
-	if len(refs) > 0 {
-		models := make([]rolePermissionModel, len(refs))
-		for i, ref := range refs {
-			models[i] = rolePermissionModel{
-				RoleID:            roleID.String(),
-				PermNamespacePath: ref.NamespacePath,
-				PermName:          ref.Name,
+		if len(refs) > 0 {
+			models := make([]rolePermissionModel, len(refs))
+			for i, ref := range refs {
+				models[i] = rolePermissionModel{
+					RoleID:            roleID.String(),
+					PermNamespacePath: ref.NamespacePath,
+					PermName:          ref.Name,
+				}
+			}
+			if _, err := s.mdb.NewInsert(&models).Exec(txCtx); err != nil {
+				return fmt.Errorf("warden: set role permissions: %w", err)
 			}
 		}
-		if _, err := s.mdb.NewInsert(&models).Exec(ctx); err != nil {
-			return fmt.Errorf("warden: set role permissions: %w", err)
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (s *Store) ListChildRoles(ctx context.Context, tenantID, parentSlug string) ([]*role.Role, error) {
@@ -581,6 +611,10 @@ func (s *Store) CreatePermission(ctx context.Context, p *permission.Permission) 
 	}
 	m := permissionToModel(p)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
+		if mongod.IsDuplicateKeyError(err) {
+			return fmt.Errorf("permission %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePermission)
+		}
 		return fmt.Errorf("warden: create permission: %w", err)
 	}
 	return nil
@@ -681,6 +715,7 @@ func (s *Store) ListPermissions(ctx context.Context, filter *permission.ListFilt
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.Resource != "" {
 			f["resource"] = filter.Resource
 		}
@@ -691,7 +726,7 @@ func (s *Store) ListPermissions(ctx context.Context, filter *permission.ListFilt
 			f["is_system"] = *filter.IsSystem
 		}
 		if filter.Search != "" {
-			f["name"] = bson.M{"$regex": filter.Search, "$options": "i"}
+			f["name"] = searchFilter(filter.Search)
 		}
 	}
 	q := s.mdb.NewFind(&models).
@@ -721,6 +756,7 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.Resource != "" {
 			f["resource"] = filter.Resource
 		}
@@ -731,7 +767,7 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 			f["is_system"] = *filter.IsSystem
 		}
 		if filter.Search != "" {
-			f["name"] = bson.M{"$regex": filter.Search, "$options": "i"}
+			f["name"] = searchFilter(filter.Search)
 		}
 	}
 	count, err := s.mdb.NewFind((*permissionModel)(nil)).
@@ -829,6 +865,11 @@ func (s *Store) CreateAssignment(ctx context.Context, a *assignment.Assignment) 
 	}
 	m := assignmentToModel(a)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
+		if mongod.IsDuplicateKeyError(err) {
+			return fmt.Errorf("assignment role=%s subject=%s:%s in tenant %q ns %q: %w",
+				a.RoleID, a.SubjectKind, a.SubjectID, a.TenantID, a.NamespacePath,
+				wardenerr.ErrDuplicateAssignment)
+		}
 		return fmt.Errorf("warden: create assignment: %w", err)
 	}
 	return nil
@@ -868,6 +909,7 @@ func (s *Store) ListAssignments(ctx context.Context, filter *assignment.ListFilt
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.RoleID != nil {
 			f["role_id"] = filter.RoleID.String()
 		}
@@ -911,6 +953,7 @@ func (s *Store) CountAssignments(ctx context.Context, filter *assignment.ListFil
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.RoleID != nil {
 			f["role_id"] = filter.RoleID.String()
 		}
@@ -943,6 +986,10 @@ func (s *Store) ListRolesForSubject(ctx context.Context, tenantID string, namesp
 		"subject_kind":  subjectKind,
 		"subject_id":    subjectID,
 		"resource_type": "",
+		"$or": []bson.M{
+			{"expires_at": nil},
+			{"expires_at": bson.M{"$gt": now()}},
+		},
 	}
 	if len(namespacePaths) > 0 {
 		filter["namespace_path"] = bson.M{"$in": namespacePaths}
@@ -968,6 +1015,10 @@ func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID stri
 		"subject_id":    subjectID,
 		"resource_type": resourceType,
 		"resource_id":   resourceID,
+		"$or": []bson.M{
+			{"expires_at": nil},
+			{"expires_at": bson.M{"$gt": now()}},
+		},
 	}
 	if len(namespacePaths) > 0 {
 		filter["namespace_path"] = bson.M{"$in": namespacePaths}
@@ -1085,6 +1136,11 @@ func (s *Store) CreateRelation(ctx context.Context, t *relation.Tuple) error {
 	}
 	m := relationToModel(t)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
+		if mongod.IsDuplicateKeyError(err) {
+			return fmt.Errorf("relation %s:%s#%s@%s:%s in tenant %q: %w",
+				t.ObjectType, t.ObjectID, t.Relation, t.SubjectType, t.SubjectID,
+				t.TenantID, wardenerr.ErrDuplicateRelation)
+		}
 		return fmt.Errorf("warden: create relation: %w", err)
 	}
 	return nil
@@ -1129,6 +1185,7 @@ func (s *Store) ListRelations(ctx context.Context, filter *relation.ListFilter) 
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.ObjectType != "" {
 			f["object_type"] = filter.ObjectType
 		}
@@ -1175,6 +1232,7 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.ObjectType != "" {
 			f["object_type"] = filter.ObjectType
 		}
@@ -1329,6 +1387,10 @@ func (s *Store) CreatePolicy(ctx context.Context, p *policy.Policy) error {
 	}
 	m := policyToModel(p)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
+		if mongod.IsDuplicateKeyError(err) {
+			return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+		}
 		return fmt.Errorf("warden: create policy: %w", err)
 	}
 	return nil
@@ -1398,6 +1460,7 @@ func (s *Store) ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.Effect != "" {
 			f["effect"] = string(filter.Effect)
 		}
@@ -1405,7 +1468,7 @@ func (s *Store) ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]
 			f["is_active"] = *filter.IsActive
 		}
 		if filter.Search != "" {
-			f["name"] = bson.M{"$regex": filter.Search, "$options": "i"}
+			f["name"] = searchFilter(filter.Search)
 		}
 	}
 	q := s.mdb.NewFind(&models).
@@ -1435,6 +1498,7 @@ func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (i
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.Effect != "" {
 			f["effect"] = string(filter.Effect)
 		}
@@ -1442,7 +1506,7 @@ func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (i
 			f["is_active"] = *filter.IsActive
 		}
 		if filter.Search != "" {
-			f["name"] = bson.M{"$regex": filter.Search, "$options": "i"}
+			f["name"] = searchFilter(filter.Search)
 		}
 	}
 	count, err := s.mdb.NewFind((*policyModel)(nil)).
@@ -1519,6 +1583,10 @@ func (s *Store) CreateResourceType(ctx context.Context, rt *resourcetype.Resourc
 	}
 	m := resourceTypeToModel(rt)
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
+		if mongod.IsDuplicateKeyError(err) {
+			return fmt.Errorf("resource type %q in tenant %q ns %q: %w",
+				rt.Name, rt.TenantID, rt.NamespacePath, wardenerr.ErrDuplicateResourceType)
+		}
 		return fmt.Errorf("warden: create resource type: %w", err)
 	}
 	return nil
@@ -1588,8 +1656,9 @@ func (s *Store) ListResourceTypes(ctx context.Context, filter *resourcetype.List
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.Search != "" {
-			f["name"] = bson.M{"$regex": filter.Search, "$options": "i"}
+			f["name"] = searchFilter(filter.Search)
 		}
 	}
 	q := s.mdb.NewFind(&models).
@@ -1619,8 +1688,9 @@ func (s *Store) CountResourceTypes(ctx context.Context, filter *resourcetype.Lis
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.Search != "" {
-			f["name"] = bson.M{"$regex": filter.Search, "$options": "i"}
+			f["name"] = searchFilter(filter.Search)
 		}
 	}
 	count, err := s.mdb.NewFind((*resourceTypeModel)(nil)).
@@ -1682,6 +1752,7 @@ func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter)
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.SubjectKind != "" {
 			f["subject_kind"] = filter.SubjectKind
 		}
@@ -1738,6 +1809,7 @@ func (s *Store) CountCheckLogs(ctx context.Context, filter *checklog.QueryFilter
 		if filter.TenantID != "" {
 			f["tenant_id"] = filter.TenantID
 		}
+		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
 		if filter.SubjectKind != "" {
 			f["subject_kind"] = filter.SubjectKind
 		}

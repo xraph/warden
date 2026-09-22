@@ -628,5 +628,147 @@ func init() {
 				return mexec.DropCollection(ctx, (*checkLogModel)(nil))
 			},
 		},
+		&migrate.Migration{
+			// namespace_unique widens every entity's uniqueness key to
+			// include namespace_path. Before this migration, "roles"
+			// enforced (tenant_id, slug) — the same slug in two different
+			// namespaces of the same tenant collided even though the store
+			// contract (and the postgres/sqlite schemas) treat namespaces
+			// as independent scopes. Same story for permissions, policies
+			// and resource types keyed on (tenant_id, name), and for the
+			// assignment/relation compound keys.
+			Name:    "namespace_unique",
+			Version: "20260922000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				db := mexec.DB().Database()
+
+				roles := db.Collection(colRoles)
+				_ = roles.Indexes().DropOne(ctx, "tenant_id_1_slug_1") //nolint:errcheck // idempotent drop, ok if missing
+				if _, err := roles.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "namespace_path", Value: 1}, {Key: "slug", Value: 1}},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return fmt.Errorf("warden: create roles namespace-unique index: %w", err)
+				}
+
+				for _, coll := range []string{colPermissions, colPolicies, colResourceTypes} {
+					c := db.Collection(coll)
+					_ = c.Indexes().DropOne(ctx, "tenant_id_1_name_1") //nolint:errcheck // idempotent drop, ok if missing
+					if _, err := c.Indexes().CreateOne(ctx, mongo.IndexModel{
+						Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "namespace_path", Value: 1}, {Key: "name", Value: 1}},
+						Options: options.Index().SetUnique(true),
+					}); err != nil {
+						return fmt.Errorf("warden: create %s namespace-unique index: %w", coll, err)
+					}
+				}
+
+				assignments := db.Collection(colAssignments)
+				_ = assignments.Indexes().DropOne(ctx, //nolint:errcheck // idempotent drop, ok if missing
+					"tenant_id_1_role_id_1_subject_kind_1_subject_id_1_resource_type_1_resource_id_1")
+				if _, err := assignments.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "namespace_path", Value: 1},
+						{Key: "role_id", Value: 1},
+						{Key: "subject_kind", Value: 1},
+						{Key: "subject_id", Value: 1},
+						{Key: "resource_type", Value: 1},
+						{Key: "resource_id", Value: 1},
+					},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return fmt.Errorf("warden: create assignments namespace-unique index: %w", err)
+				}
+
+				relations := db.Collection(colRelations)
+				_ = relations.Indexes().DropOne(ctx, //nolint:errcheck // idempotent drop, ok if missing
+					"tenant_id_1_object_type_1_object_id_1_relation_1_subject_type_1_subject_id_1_subject_relation_1")
+				if _, err := relations.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "namespace_path", Value: 1},
+						{Key: "object_type", Value: 1},
+						{Key: "object_id", Value: 1},
+						{Key: "relation", Value: 1},
+						{Key: "subject_type", Value: 1},
+						{Key: "subject_id", Value: 1},
+						{Key: "subject_relation", Value: 1},
+					},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return fmt.Errorf("warden: create relations namespace-unique index: %w", err)
+				}
+
+				return nil
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				db := mexec.DB().Database()
+
+				roles := db.Collection(colRoles)
+				_ = roles.Indexes().DropOne(ctx, "tenant_id_1_namespace_path_1_slug_1") //nolint:errcheck // idempotent drop, ok if missing
+				if _, err := roles.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "slug", Value: 1}},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return err
+				}
+
+				for _, coll := range []string{colPermissions, colPolicies, colResourceTypes} {
+					c := db.Collection(coll)
+					_ = c.Indexes().DropOne(ctx, "tenant_id_1_namespace_path_1_name_1") //nolint:errcheck // idempotent drop, ok if missing
+					if _, err := c.Indexes().CreateOne(ctx, mongo.IndexModel{
+						Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "name", Value: 1}},
+						Options: options.Index().SetUnique(true),
+					}); err != nil {
+						return err
+					}
+				}
+
+				assignments := db.Collection(colAssignments)
+				_ = assignments.Indexes().DropOne(ctx, //nolint:errcheck // idempotent drop, ok if missing
+					"tenant_id_1_namespace_path_1_role_id_1_subject_kind_1_subject_id_1_resource_type_1_resource_id_1")
+				if _, err := assignments.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "role_id", Value: 1},
+						{Key: "subject_kind", Value: 1},
+						{Key: "subject_id", Value: 1},
+						{Key: "resource_type", Value: 1},
+						{Key: "resource_id", Value: 1},
+					},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return err
+				}
+
+				relations := db.Collection(colRelations)
+				_ = relations.Indexes().DropOne(ctx, //nolint:errcheck // idempotent drop, ok if missing
+					"tenant_id_1_namespace_path_1_object_type_1_object_id_1_relation_1_subject_type_1_subject_id_1_subject_relation_1")
+				if _, err := relations.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "object_type", Value: 1},
+						{Key: "object_id", Value: 1},
+						{Key: "relation", Value: 1},
+						{Key: "subject_type", Value: 1},
+						{Key: "subject_id", Value: 1},
+						{Key: "subject_relation", Value: 1},
+					},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return err
+				}
+
+				return nil
+			},
+		},
 	)
 }
