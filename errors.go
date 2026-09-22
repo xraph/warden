@@ -10,23 +10,36 @@ var (
 	// ErrAccessDenied is returned when an authorization check fails.
 	ErrAccessDenied = errors.New("warden: access denied")
 
-	// ErrRoleNotFound is returned when a role cannot be found.
-	ErrRoleNotFound = errors.New("warden: role not found")
+	// ErrNotFound is the common base error for the missing-entity errors
+	// below. Use errors.Is(err, ErrNotFound) to match any of them.
+	//
+	// Defined in wardenerr so that low-level subpackages (e.g. store/memory)
+	// can return typed not-found errors without an import cycle.
+	ErrNotFound = wardenerr.ErrNotFound
 
-	// ErrPermissionNotFound is returned when a permission cannot be found.
-	ErrPermissionNotFound = errors.New("warden: permission not found")
+	// ErrRoleNotFound is returned when a role cannot be found in the tenant.
+	// Every store returns this for a by-ID lookup whose tenant does not own
+	// the row, so a caller cannot distinguish "no such role" from "that role
+	// belongs to someone else".
+	ErrRoleNotFound = wardenerr.ErrRoleNotFound
 
-	// ErrAssignmentNotFound is returned when an assignment cannot be found.
-	ErrAssignmentNotFound = errors.New("warden: assignment not found")
+	// ErrPermissionNotFound is returned when a permission cannot be found in the tenant.
+	ErrPermissionNotFound = wardenerr.ErrPermissionNotFound
 
-	// ErrPolicyNotFound is returned when a policy cannot be found.
-	ErrPolicyNotFound = errors.New("warden: policy not found")
+	// ErrAssignmentNotFound is returned when an assignment cannot be found in the tenant.
+	ErrAssignmentNotFound = wardenerr.ErrAssignmentNotFound
 
-	// ErrRelationNotFound is returned when a relation tuple cannot be found.
-	ErrRelationNotFound = errors.New("warden: relation not found")
+	// ErrPolicyNotFound is returned when a policy cannot be found in the tenant.
+	ErrPolicyNotFound = wardenerr.ErrPolicyNotFound
 
-	// ErrResourceTypeNotFound is returned when a resource type cannot be found.
-	ErrResourceTypeNotFound = errors.New("warden: resource type not found")
+	// ErrRelationNotFound is returned when a relation tuple cannot be found in the tenant.
+	ErrRelationNotFound = wardenerr.ErrRelationNotFound
+
+	// ErrResourceTypeNotFound is returned when a resource type cannot be found in the tenant.
+	ErrResourceTypeNotFound = wardenerr.ErrResourceTypeNotFound
+
+	// ErrCheckLogNotFound is returned when a check log entry cannot be found in the tenant.
+	ErrCheckLogNotFound = wardenerr.ErrCheckLogNotFound
 
 	// ErrSystemRoleImmutable is returned when trying to modify a system role.
 	ErrSystemRoleImmutable = errors.New("warden: system role cannot be modified")

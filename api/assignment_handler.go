@@ -117,10 +117,12 @@ func (a *API) unassignRole(ctx forge.Context, _ *GetAssignmentRequest) (*struct{
 		return nil, forge.BadRequest(fmt.Sprintf("invalid assignment ID: %v", err))
 	}
 
-	// Get before delete for hook.
-	ass, getErr := a.eng.Store().GetAssignment(ctx.Context(), assID)
+	_, tenantID := scopeFromForgeContext(ctx)
 
-	if err := a.eng.Store().DeleteAssignment(ctx.Context(), assID); err != nil {
+	// Get before delete for hook.
+	ass, getErr := a.eng.Store().GetAssignment(ctx.Context(), tenantID, assID)
+
+	if err := a.eng.Store().DeleteAssignment(ctx.Context(), tenantID, assID); err != nil {
 		return nil, mapError(err)
 	}
 

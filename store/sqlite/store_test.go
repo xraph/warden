@@ -63,7 +63,7 @@ func TestSQLiteStore_RoleRoundTrip(t *testing.T) {
 	}
 
 	// GetRole — this was the failing path before the fix.
-	got, err := s.GetRole(ctx, roleID)
+	got, err := s.GetRole(ctx, "t1", roleID)
 	if err != nil {
 		t.Fatalf("GetRole: %v", err)
 	}
@@ -136,13 +136,13 @@ func TestSQLiteStore_RolePermissionsNaturalKey(t *testing.T) {
 
 	// Attach two permissions by ref.
 	for _, name := range []string{"document:read", "document:write"} {
-		if err := s.AttachPermission(ctx, roleID, permission.Ref{Name: name}); err != nil {
+		if err := s.AttachPermission(ctx, "t1", roleID, permission.Ref{Name: name}); err != nil {
 			t.Fatalf("AttachPermission %s: %v", name, err)
 		}
 	}
 
 	// JOIN-based ListRolePermissions returns full records.
-	got, err := s.ListRolePermissions(ctx, roleID)
+	got, err := s.ListRolePermissions(ctx, "t1", roleID)
 	if err != nil {
 		t.Fatalf("ListRolePermissions: %v", err)
 	}
@@ -161,19 +161,19 @@ func TestSQLiteStore_RolePermissionsNaturalKey(t *testing.T) {
 	}
 
 	// Detach one, confirm the other remains.
-	if err := s.DetachPermission(ctx, roleID, permission.Ref{Name: "document:read"}); err != nil {
+	if err := s.DetachPermission(ctx, "t1", roleID, permission.Ref{Name: "document:read"}); err != nil {
 		t.Fatalf("DetachPermission: %v", err)
 	}
-	got, _ = s.ListRolePermissions(ctx, roleID)
+	got, _ = s.ListRolePermissions(ctx, "t1", roleID)
 	if len(got) != 1 || got[0].Name != "document:write" {
 		t.Fatalf("after detach: got %d perms, want 1 (write)", len(got))
 	}
 
 	// SetRolePermissions replaces.
-	if err := s.SetRolePermissions(ctx, roleID, []permission.Ref{{Name: "document:read"}}); err != nil {
+	if err := s.SetRolePermissions(ctx, "t1", roleID, []permission.Ref{{Name: "document:read"}}); err != nil {
 		t.Fatalf("SetRolePermissions: %v", err)
 	}
-	got, _ = s.ListRolePermissions(ctx, roleID)
+	got, _ = s.ListRolePermissions(ctx, "t1", roleID)
 	if len(got) != 1 || got[0].Name != "document:read" {
 		t.Fatalf("after set: got %d perms, want 1 (read)", len(got))
 	}
@@ -216,7 +216,7 @@ func TestSQLiteStore_RoleParentSlugRoundTrip(t *testing.T) {
 		t.Fatalf("create child: %v", err)
 	}
 
-	got, err := s.GetRole(ctx, childID)
+	got, err := s.GetRole(ctx, "t1", childID)
 	if err != nil {
 		t.Fatalf("GetRole: %v", err)
 	}

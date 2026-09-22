@@ -12,8 +12,9 @@ type Store interface {
 	// CreateCheckLog persists a new check log entry.
 	CreateCheckLog(ctx context.Context, e *Entry) error
 
-	// GetCheckLog retrieves a check log entry by ID.
-	GetCheckLog(ctx context.Context, logID id.CheckLogID) (*Entry, error)
+	// GetCheckLog retrieves a check log entry by ID within a tenant. Returns
+	// ErrCheckLogNotFound when the entry is not in the tenant.
+	GetCheckLog(ctx context.Context, tenantID string, logID id.CheckLogID) (*Entry, error)
 
 	// ListCheckLogs returns check log entries matching the filter.
 	ListCheckLogs(ctx context.Context, filter *QueryFilter) ([]*Entry, error)
@@ -23,6 +24,10 @@ type Store interface {
 
 	// PurgeCheckLogs removes check log entries older than the given time.
 	PurgeCheckLogs(ctx context.Context, before time.Time) (int64, error)
+
+	// DeleteCheckLogsBySubject removes a tenant's check logs for one subject
+	// and reports how many rows it removed. Used to service erasure requests.
+	DeleteCheckLogsBySubject(ctx context.Context, tenantID, subjectKind, subjectID string) (int64, error)
 
 	// DeleteCheckLogsByTenant removes all check logs for a tenant.
 	DeleteCheckLogsByTenant(ctx context.Context, tenantID string) error

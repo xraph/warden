@@ -534,5 +534,40 @@ ALTER TABLE warden_assignments      ADD  CONSTRAINT warden_assignments_tenant_id
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "check_logs_v2",
+			Version: "20260922000003",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Columns an auditor needs to reconstruct a decision without
+				// replaying the check, plus the index the audit UI reads by.
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_check_logs
+    ADD COLUMN IF NOT EXISTS matched_by  JSONB NOT NULL DEFAULT '[]',
+    ADD COLUMN IF NOT EXISTS obligations JSONB NOT NULL DEFAULT '[]',
+    ADD COLUMN IF NOT EXISTS request_id  TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS trace_id    TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS cached      BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS error       TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_warden_clogs_tenant_created
+    ON warden_check_logs (tenant_id, created_at DESC);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_warden_clogs_tenant_created;
+
+ALTER TABLE warden_check_logs
+    DROP COLUMN IF EXISTS matched_by,
+    DROP COLUMN IF EXISTS obligations,
+    DROP COLUMN IF EXISTS request_id,
+    DROP COLUMN IF EXISTS trace_id,
+    DROP COLUMN IF EXISTS cached,
+    DROP COLUMN IF EXISTS error;
+`)
+				return err
+			},
+		},
 	)
 }

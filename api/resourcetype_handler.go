@@ -102,7 +102,9 @@ func (a *API) getResourceType(ctx forge.Context, _ *GetResourceTypeRequest) (*re
 		return nil, forge.BadRequest(fmt.Sprintf("invalid resource type ID: %v", err))
 	}
 
-	rt, err := a.eng.Store().GetResourceType(ctx.Context(), rtID)
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	rt, err := a.eng.Store().GetResourceType(ctx.Context(), tenantID, rtID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -116,7 +118,9 @@ func (a *API) deleteResourceType(ctx forge.Context, _ *GetResourceTypeRequest) (
 		return nil, forge.BadRequest(fmt.Sprintf("invalid resource type ID: %v", err))
 	}
 
-	if err := a.eng.Store().DeleteResourceType(ctx.Context(), rtID); err != nil {
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	if err := a.eng.Store().DeleteResourceType(ctx.Context(), tenantID, rtID); err != nil {
 		return nil, mapError(err)
 	}
 

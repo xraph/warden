@@ -34,8 +34,8 @@ func main() {
 	_ = s.CreatePermission(ctx, &permission.Permission{TenantID: "t1", Name: "doc:write", Resource: "doc", Action: "write"})
 
 	// Viewer can read; editor can write (and inherits read).
-	_ = s.AttachPermission(ctx, viewer.ID, permission.Ref{Name: "doc:read"})
-	_ = s.AttachPermission(ctx, editor.ID, permission.Ref{Name: "doc:write"})
+	_ = s.AttachPermission(ctx, "t1", viewer.ID, permission.Ref{Name: "doc:read"})
+	_ = s.AttachPermission(ctx, "t1", editor.ID, permission.Ref{Name: "doc:write"})
 
 	// Assign editor role to Alice.
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{

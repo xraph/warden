@@ -8,15 +8,19 @@ import (
 )
 
 // Store defines persistence operations for role assignments.
+//
+// Every by-ID operation takes the tenant as a mandatory parameter and
+// filters on it alongside the primary key. A call whose tenant does not own
+// the row returns ErrAssignmentNotFound and changes nothing.
 type Store interface {
 	// CreateAssignment persists a new assignment.
 	CreateAssignment(ctx context.Context, a *Assignment) error
 
-	// GetAssignment retrieves an assignment by ID.
-	GetAssignment(ctx context.Context, assID id.AssignmentID) (*Assignment, error)
+	// GetAssignment retrieves an assignment by ID within a tenant.
+	GetAssignment(ctx context.Context, tenantID string, assID id.AssignmentID) (*Assignment, error)
 
-	// DeleteAssignment removes an assignment by ID.
-	DeleteAssignment(ctx context.Context, assID id.AssignmentID) error
+	// DeleteAssignment removes an assignment by ID within a tenant.
+	DeleteAssignment(ctx context.Context, tenantID string, assID id.AssignmentID) error
 
 	// ListAssignments returns assignments matching the filter.
 	ListAssignments(ctx context.Context, filter *ListFilter) ([]*Assignment, error)
@@ -33,8 +37,14 @@ type Store interface {
 	// scoped to a specific resource, across the given namespace paths.
 	ListRolesForSubjectOnResource(ctx context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID, resourceType, resourceID string) ([]id.RoleID, error)
 
-	// ListSubjectsForRole returns all assignments for a given role.
-	ListSubjectsForRole(ctx context.Context, roleID id.RoleID) ([]*Assignment, error)
+	// ListSubjectsForRole returns all assignments for a given role within a
+	// tenant.
+	ListSubjectsForRole(ctx context.Context, tenantID string, roleID id.RoleID) ([]*Assignment, error)
+
+	// ListExpiringAssignments returns the tenant's assignments that expire
+	// before the given time, oldest expiry first. Used by access reviews.
+	// A limit of 0 means the backend default of 1000.
+	ListExpiringAssignments(ctx context.Context, tenantID string, before time.Time, limit int) ([]*Assignment, error)
 
 	// DeleteExpiredAssignments removes assignments that have expired before the given time.
 	DeleteExpiredAssignments(ctx context.Context, now time.Time) (int64, error)
@@ -42,8 +52,8 @@ type Store interface {
 	// DeleteAssignmentsBySubject removes all assignments for a subject.
 	DeleteAssignmentsBySubject(ctx context.Context, tenantID, subjectKind, subjectID string) error
 
-	// DeleteAssignmentsByRole removes all assignments for a role.
-	DeleteAssignmentsByRole(ctx context.Context, roleID id.RoleID) error
+	// DeleteAssignmentsByRole removes a tenant's assignments for a role.
+	DeleteAssignmentsByRole(ctx context.Context, tenantID string, roleID id.RoleID) error
 
 	// DeleteAssignmentsByTenant removes all assignments for a tenant.
 	DeleteAssignmentsByTenant(ctx context.Context, tenantID string) error

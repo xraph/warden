@@ -193,7 +193,7 @@ func runListRelationSubjectsNS(t *testing.T, mk MakeStore) {
 		SubjectType: "user", SubjectID: "dave",
 	})
 
-	tuples, err := s.ListRelationSubjects(ctx, "t1", nsAncestors, "document", "doc1", "read")
+	tuples, err := s.ListRelationSubjects(ctx, "t1", nsAncestors, "document", "doc1", "read", 0)
 	if err != nil {
 		t.Fatalf("ListRelationSubjects: %v", err)
 	}

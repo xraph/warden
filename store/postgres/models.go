@@ -158,6 +158,45 @@ type rolePermissionModel struct {
 	PermName          string `grove:"perm_name,pk"`
 }
 
+// rolePermissionRow is the projection ListRolePermissionsForRoles scans: a
+// full permission record plus the role that grants it. The columns are spelled
+// out rather than embedded, because grove skips embedded fields whose type is
+// unexported. The table tag is only there to satisfy grove's model resolver;
+// the query is raw SQL and never uses the name.
+type rolePermissionRow struct {
+	grove.BaseModel `grove:"table:warden_role_permission_grants"`
+	RoleID          string           `grove:"role_id"`
+	ID              string           `grove:"id"`
+	TenantID        string           `grove:"tenant_id"`
+	NamespacePath   string           `grove:"namespace_path"`
+	AppID           string           `grove:"app_id"`
+	Name            string           `grove:"name"`
+	Description     string           `grove:"description"`
+	Resource        string           `grove:"resource"`
+	Action          string           `grove:"action"`
+	IsSystem        bool             `grove:"is_system"`
+	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time        `grove:"created_at"`
+	UpdatedAt       time.Time        `grove:"updated_at"`
+}
+
+func (r *rolePermissionRow) permission() *permissionModel {
+	return &permissionModel{
+		ID:            r.ID,
+		TenantID:      r.TenantID,
+		NamespacePath: r.NamespacePath,
+		AppID:         r.AppID,
+		Name:          r.Name,
+		Description:   r.Description,
+		Resource:      r.Resource,
+		Action:        r.Action,
+		IsSystem:      r.IsSystem,
+		Metadata:      r.Metadata,
+		CreatedAt:     r.CreatedAt,
+		UpdatedAt:     r.UpdatedAt,
+	}
+}
+
 // ──────────────────────────────────────────────────
 // Assignment model
 // ──────────────────────────────────────────────────
@@ -425,21 +464,27 @@ func resourceTypeFromModel(m *resourceTypeModel) *resourcetype.ResourceType {
 
 type checkLogModel struct {
 	grove.BaseModel `grove:"table:warden_check_logs"`
-	ID              string           `grove:"id,pk"`
-	TenantID        string           `grove:"tenant_id,notnull"`
-	NamespacePath   string           `grove:"namespace_path,notnull"`
-	AppID           string           `grove:"app_id,notnull"`
-	SubjectKind     string           `grove:"subject_kind,notnull"`
-	SubjectID       string           `grove:"subject_id,notnull"`
-	Action          string           `grove:"action,notnull"`
-	ResourceType    string           `grove:"resource_type,notnull"`
-	ResourceID      string           `grove:"resource_id,notnull"`
-	Decision        string           `grove:"decision,notnull"`
-	Reason          string           `grove:"reason"`
-	EvalTimeNs      int64            `grove:"eval_time_ns,notnull"`
-	RequestIP       string           `grove:"request_ip"`
-	Metadata        pgdriver.JSONMap `grove:"metadata,type:jsonb"`
-	CreatedAt       time.Time        `grove:"created_at,notnull"`
+	ID              string                        `grove:"id,pk"`
+	TenantID        string                        `grove:"tenant_id,notnull"`
+	NamespacePath   string                        `grove:"namespace_path,notnull"`
+	AppID           string                        `grove:"app_id,notnull"`
+	SubjectKind     string                        `grove:"subject_kind,notnull"`
+	SubjectID       string                        `grove:"subject_id,notnull"`
+	Action          string                        `grove:"action,notnull"`
+	ResourceType    string                        `grove:"resource_type,notnull"`
+	ResourceID      string                        `grove:"resource_id,notnull"`
+	Decision        string                        `grove:"decision,notnull"`
+	Reason          string                        `grove:"reason"`
+	MatchedBy       jsonbSlice[checklog.MatchRef] `grove:"matched_by,type:jsonb"`
+	Obligations     jsonbSlice[string]            `grove:"obligations,type:jsonb"`
+	EvalTimeNs      int64                         `grove:"eval_time_ns,notnull"`
+	RequestIP       string                        `grove:"request_ip"`
+	RequestID       string                        `grove:"request_id"`
+	TraceID         string                        `grove:"trace_id"`
+	Cached          bool                          `grove:"cached,notnull"`
+	Error           string                        `grove:"error"`
+	Metadata        pgdriver.JSONMap              `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time                     `grove:"created_at,notnull"`
 }
 
 func checkLogToModel(e *checklog.Entry) *checkLogModel {
@@ -459,11 +504,33 @@ func checkLogToModel(e *checklog.Entry) *checkLogModel {
 		ResourceID:    e.ResourceID,
 		Decision:      e.Decision,
 		Reason:        e.Reason,
-		EvalTimeNs:    e.EvalTimeNs,
-		RequestIP:     e.RequestIP,
-		Metadata:      md,
-		CreatedAt:     e.CreatedAt,
+		// The jsonb columns are NOT NULL, so a nil slice has to marshal as
+		// "[]" rather than NULL.
+		MatchedBy:   jsonbSlice[checklog.MatchRef](matchRefsOrEmpty(e.MatchedBy)),
+		Obligations: jsonbSlice[string](stringsOrEmpty(e.Obligations)),
+		EvalTimeNs:  e.EvalTimeNs,
+		RequestIP:   e.RequestIP,
+		RequestID:   e.RequestID,
+		TraceID:     e.TraceID,
+		Cached:      e.Cached,
+		Error:       e.Error,
+		Metadata:    md,
+		CreatedAt:   e.CreatedAt,
 	}
+}
+
+func matchRefsOrEmpty(v []checklog.MatchRef) []checklog.MatchRef {
+	if v == nil {
+		return []checklog.MatchRef{}
+	}
+	return v
+}
+
+func stringsOrEmpty(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
 }
 
 func checkLogFromModel(m *checkLogModel) *checklog.Entry {
@@ -480,8 +547,14 @@ func checkLogFromModel(m *checkLogModel) *checklog.Entry {
 		ResourceID:    m.ResourceID,
 		Decision:      m.Decision,
 		Reason:        m.Reason,
+		MatchedBy:     []checklog.MatchRef(m.MatchedBy),
+		Obligations:   []string(m.Obligations),
 		EvalTimeNs:    m.EvalTimeNs,
 		RequestIP:     m.RequestIP,
+		RequestID:     m.RequestID,
+		TraceID:       m.TraceID,
+		Cached:        m.Cached,
+		Error:         m.Error,
 		Metadata:      map[string]any(m.Metadata),
 		CreatedAt:     m.CreatedAt,
 	}

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"strings"
 
 	"github.com/xraph/grove/migrate"
 )
@@ -688,6 +689,48 @@ CREATE INDEX IF NOT EXISTS idx_warden_assign_ns       ON warden_assignments (ten
 				// not implemented — restore from a snapshot if you need to
 				// roll back. The forward migration is idempotent if no rows
 				// share a (tenant, ns, key) triple.
+				return nil
+			},
+		},
+		&migrate.Migration{
+			Name:    "check_logs_v2",
+			Version: "20260922000003",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Columns an auditor needs to reconstruct a decision without
+				// replaying the check, plus the index the audit UI reads by.
+				// SQLite has no ADD COLUMN IF NOT EXISTS, so each statement
+				// runs on its own and an "duplicate column name" is treated
+				// as already applied.
+				stmts := []string{
+					`ALTER TABLE warden_check_logs ADD COLUMN matched_by  TEXT NOT NULL DEFAULT '[]'`,
+					`ALTER TABLE warden_check_logs ADD COLUMN obligations TEXT NOT NULL DEFAULT '[]'`,
+					`ALTER TABLE warden_check_logs ADD COLUMN request_id  TEXT NOT NULL DEFAULT ''`,
+					`ALTER TABLE warden_check_logs ADD COLUMN trace_id    TEXT NOT NULL DEFAULT ''`,
+					`ALTER TABLE warden_check_logs ADD COLUMN cached      INTEGER NOT NULL DEFAULT 0`,
+					`ALTER TABLE warden_check_logs ADD COLUMN error       TEXT NOT NULL DEFAULT ''`,
+				}
+				for _, stmt := range stmts {
+					if _, err := exec.Exec(ctx, stmt); err != nil {
+						if strings.Contains(err.Error(), "duplicate column name") {
+							continue
+						}
+						return err
+					}
+				}
+				_, err := exec.Exec(ctx, `
+CREATE INDEX IF NOT EXISTS idx_warden_clogs_tenant_created
+    ON warden_check_logs (tenant_id, created_at DESC);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `DROP INDEX IF EXISTS idx_warden_clogs_tenant_created`)
+				if err != nil {
+					return err
+				}
+				// SQLite only learned DROP COLUMN in 3.35 and refuses it for
+				// indexed columns, so the added columns stay. They are all
+				// defaulted, which keeps the older schema readable.
 				return nil
 			},
 		},

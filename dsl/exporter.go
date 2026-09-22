@@ -133,7 +133,7 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		}
 		decl := roleToDecl(r)
 		// Phase A.5: ListRolePermissions returns full Permission records.
-		grantPerms, gpErr := store.ListRolePermissions(ctx, r.ID)
+		grantPerms, gpErr := store.ListRolePermissions(ctx, opts.TenantID, r.ID)
 		if gpErr != nil {
 			return nil, fmt.Errorf("list grants for role %s: %w", r.Slug, gpErr)
 		}

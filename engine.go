@@ -269,7 +269,7 @@ func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *Check
 	}
 
 	// 2. Walk parent chain for inherited roles.
-	allRoles = e.resolveInheritedRoles(ctx, allRoles)
+	allRoles = e.resolveInheritedRoles(ctx, scope.tenantID, allRoles)
 
 	// 3. Check if any role grants "resource:action" permission (glob matching).
 	permName := req.Resource.Type + ":" + req.Action.Name
@@ -281,7 +281,7 @@ func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *Check
 	)
 
 	for _, roleID := range allRoles {
-		perms, err := e.store.ListRolePermissions(ctx, roleID)
+		perms, err := e.store.ListRolePermissions(ctx, scope.tenantID, roleID)
 		if err != nil {
 			e.logger.Warn("warden: rbac ListRolePermissions error",
 				log.String("role_id", roleID.String()),
@@ -327,17 +327,17 @@ func (e *Engine) evaluateRBAC(ctx context.Context, scope tenantScope, req *Check
 	return &CheckResult{Decision: DecisionDenyNoPerms, Reason: fmt.Sprintf("no role grants permission %q for subject %s:%s", permName, req.Subject.Kind, req.Subject.ID)}, nil
 }
 
-func (e *Engine) resolveInheritedRoles(ctx context.Context, roleIDs []id.RoleID) []id.RoleID {
+func (e *Engine) resolveInheritedRoles(ctx context.Context, tenantID string, roleIDs []id.RoleID) []id.RoleID {
 	seen := make(map[string]struct{}, len(roleIDs))
 	result := make([]id.RoleID, 0, len(roleIDs)*2)
 
 	for _, rid := range roleIDs {
-		e.walkRoleParents(ctx, rid, seen, &result, 0)
+		e.walkRoleParents(ctx, tenantID, rid, seen, &result, 0)
 	}
 	return result
 }
 
-func (e *Engine) walkRoleParents(ctx context.Context, roleID id.RoleID, seen map[string]struct{}, result *[]id.RoleID, depth int) {
+func (e *Engine) walkRoleParents(ctx context.Context, tenantID string, roleID id.RoleID, seen map[string]struct{}, result *[]id.RoleID, depth int) {
 	key := roleID.String()
 	if _, ok := seen[key]; ok {
 		return
@@ -348,7 +348,7 @@ func (e *Engine) walkRoleParents(ctx context.Context, roleID id.RoleID, seen map
 	seen[key] = struct{}{}
 	*result = append(*result, roleID)
 
-	r, err := e.store.GetRole(ctx, roleID)
+	r, err := e.store.GetRole(ctx, tenantID, roleID)
 	if err != nil || r == nil || r.ParentSlug == "" {
 		return
 	}
@@ -356,7 +356,7 @@ func (e *Engine) walkRoleParents(ctx context.Context, roleID id.RoleID, seen map
 	if err != nil || parent == nil {
 		return
 	}
-	e.walkRoleParents(ctx, parent.ID, seen, result, depth+1)
+	e.walkRoleParents(ctx, tenantID, parent.ID, seen, result, depth+1)
 }
 
 func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *CheckRequest) (*CheckResult, error) {

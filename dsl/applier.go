@@ -93,26 +93,26 @@ type applier struct {
 		CreateRole(ctx context.Context, r *role.Role) error
 		GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug string) (*role.Role, error)
 		UpdateRole(ctx context.Context, r *role.Role) error
-		DeleteRole(ctx context.Context, roleID id.RoleID) error
+		DeleteRole(ctx context.Context, tenantID string, roleID id.RoleID) error
 		ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role.Role, error)
 		// Permissions
 		CreatePermission(ctx context.Context, p *permission.Permission) error
 		GetPermissionByName(ctx context.Context, tenantID, namespacePath, name string) (*permission.Permission, error)
 		UpdatePermission(ctx context.Context, p *permission.Permission) error
-		DeletePermission(ctx context.Context, permID id.PermissionID) error
+		DeletePermission(ctx context.Context, tenantID string, permID id.PermissionID) error
 		ListPermissions(ctx context.Context, filter *permission.ListFilter) ([]*permission.Permission, error)
-		SetRolePermissions(ctx context.Context, roleID id.RoleID, refs []permission.Ref) error
+		SetRolePermissions(ctx context.Context, tenantID string, roleID id.RoleID, refs []permission.Ref) error
 		// Policies
 		CreatePolicy(ctx context.Context, p *policy.Policy) error
 		GetPolicyByName(ctx context.Context, tenantID, namespacePath, name string) (*policy.Policy, error)
 		UpdatePolicy(ctx context.Context, p *policy.Policy) error
-		DeletePolicy(ctx context.Context, polID id.PolicyID) error
+		DeletePolicy(ctx context.Context, tenantID string, polID id.PolicyID) error
 		ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]*policy.Policy, error)
 		// Resource types
 		CreateResourceType(ctx context.Context, rt *resourcetype.ResourceType) error
 		GetResourceTypeByName(ctx context.Context, tenantID, namespacePath, name string) (*resourcetype.ResourceType, error)
 		UpdateResourceType(ctx context.Context, rt *resourcetype.ResourceType) error
-		DeleteResourceType(ctx context.Context, rtID id.ResourceTypeID) error
+		DeleteResourceType(ctx context.Context, tenantID string, rtID id.ResourceTypeID) error
 		ListResourceTypes(ctx context.Context, filter *resourcetype.ListFilter) ([]*resourcetype.ResourceType, error)
 		// Relations
 		CreateRelation(ctx context.Context, t *relation.Tuple) error
@@ -259,7 +259,7 @@ func (a *applier) pruneResourceTypes(declared map[string]struct{}) error {
 		}
 		a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- resource_type/%s/%s", rt.NamespacePath, rt.Name))
 		if !a.dryRun {
-			if err := a.store.DeleteResourceType(a.ctx, rt.ID); err != nil {
+			if err := a.store.DeleteResourceType(a.ctx, a.tenantID, rt.ID); err != nil {
 				return fmt.Errorf("delete resource type %s: %w", rt.Name, err)
 			}
 		}
@@ -326,7 +326,7 @@ func (a *applier) applyPermissions(prog *Program) error {
 			}
 			a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- permission/%s/%s", p.NamespacePath, p.Name))
 			if !a.dryRun {
-				if err := a.store.DeletePermission(a.ctx, p.ID); err != nil {
+				if err := a.store.DeletePermission(a.ctx, a.tenantID, p.ID); err != nil {
 					return fmt.Errorf("delete permission %s: %w", p.Name, err)
 				}
 			}
@@ -405,7 +405,7 @@ func (a *applier) applyRoles(prog *Program) error {
 			}
 			a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- role/%s/%s", r.NamespacePath, r.Slug))
 			if !a.dryRun {
-				if err := a.store.DeleteRole(a.ctx, r.ID); err != nil {
+				if err := a.store.DeleteRole(a.ctx, a.tenantID, r.ID); err != nil {
 					return fmt.Errorf("delete role %s: %w", r.Slug, err)
 				}
 			}
@@ -493,7 +493,7 @@ func (a *applier) applyRolePermissions(prog *Program) error {
 				Name:          perm.Name,
 			})
 		}
-		if err := a.store.SetRolePermissions(a.ctx, stored.ID, refs); err != nil {
+		if err := a.store.SetRolePermissions(a.ctx, a.tenantID, stored.ID, refs); err != nil {
 			return fmt.Errorf("set permissions for role %s: %w", r.Slug, err)
 		}
 	}
@@ -567,7 +567,7 @@ func (a *applier) applyPolicies(prog *Program) error {
 			}
 			a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- policy/%s/%s", p.NamespacePath, p.Name))
 			if !a.dryRun {
-				if err := a.store.DeletePolicy(a.ctx, p.ID); err != nil {
+				if err := a.store.DeletePolicy(a.ctx, a.tenantID, p.ID); err != nil {
 					return fmt.Errorf("delete policy %s: %w", p.Name, err)
 				}
 			}

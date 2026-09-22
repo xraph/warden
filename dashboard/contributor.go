@@ -190,7 +190,8 @@ func (c *Contributor) renderRoles(ctx context.Context, s store.Store, params con
 		total = 0
 	}
 
-	rows := enrichRoleRows(ctx, s, roles)
+	// TODO(soc2-T6): resolve tenant from scope
+	rows := enrichRoleRows(ctx, s, "", roles)
 
 	pg := components.NewPaginationMeta(total, limit, offset)
 	return pages.RolesPage(rows, search, pg), nil
@@ -210,7 +211,8 @@ func (c *Contributor) renderRoleDetail(ctx context.Context, s store.Store, param
 		return nil, contributor.ErrPageNotFound
 	}
 
-	r, perms, err := fetchRoleWithPermissions(ctx, s, roleID)
+	// TODO(soc2-T6): resolve tenant from scope
+	r, perms, err := fetchRoleWithPermissions(ctx, s, "", roleID)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: resolve role: %w", err)
 	}
@@ -313,7 +315,8 @@ func (c *Contributor) renderPolicyDetail(ctx context.Context, s store.Store, par
 		return nil, contributor.ErrPageNotFound
 	}
 
-	p, err := s.GetPolicy(ctx, polID)
+	// TODO(soc2-T6): resolve tenant from scope
+	p, err := s.GetPolicy(ctx, "", polID)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: resolve policy: %w", err)
 	}
@@ -333,7 +336,8 @@ func (c *Contributor) renderPolicyForm(ctx context.Context, s store.Store, param
 		if err != nil {
 			return nil, contributor.ErrPageNotFound
 		}
-		p, err := s.GetPolicy(ctx, polID)
+		// TODO(soc2-T6): resolve tenant from scope
+		p, err := s.GetPolicy(ctx, "", polID)
 		if err != nil {
 			return nil, fmt.Errorf("dashboard: resolve policy for edit: %w", err)
 		}
@@ -370,7 +374,8 @@ func (c *Contributor) renderResourceTypeDetail(ctx context.Context, s store.Stor
 		return nil, contributor.ErrPageNotFound
 	}
 
-	rt, err := s.GetResourceType(ctx, rtID)
+	// TODO(soc2-T6): resolve tenant from scope
+	rt, err := s.GetResourceType(ctx, "", rtID)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: resolve resource type: %w", err)
 	}

@@ -5,6 +5,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -102,14 +103,31 @@ func (s *Store) CreateRole(_ context.Context, r *role.Role) error {
 	return nil
 }
 
-func (s *Store) GetRole(_ context.Context, roleID id.RoleID) (*role.Role, error) {
+func (s *Store) GetRole(_ context.Context, tenantID string, roleID id.RoleID) (*role.Role, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	r, ok := s.roles[roleID.String()]
-	if !ok {
-		return nil, fmt.Errorf("role %s: %w", roleID, errNotFound)
+	if !ok || r.TenantID != tenantID {
+		return nil, fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
 	}
 	return copyRole(r), nil
+}
+
+func (s *Store) GetRoles(_ context.Context, tenantID string, roleIDs []id.RoleID) ([]*role.Role, error) {
+	if len(roleIDs) == 0 {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*role.Role, 0, len(roleIDs))
+	for _, rid := range roleIDs {
+		r, ok := s.roles[rid.String()]
+		if !ok || r.TenantID != tenantID {
+			continue
+		}
+		result = append(result, copyRole(r))
+	}
+	return result, nil
 }
 
 func (s *Store) GetRoleBySlug(_ context.Context, tenantID, namespacePath, slug string) (*role.Role, error) {
@@ -120,24 +138,41 @@ func (s *Store) GetRoleBySlug(_ context.Context, tenantID, namespacePath, slug s
 			return copyRole(r), nil
 		}
 	}
-	return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, errNotFound)
+	return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, wardenerr.ErrRoleNotFound)
 }
 
 func (s *Store) UpdateRole(_ context.Context, r *role.Role) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.roles[r.ID.String()]; !ok {
-		return fmt.Errorf("role %s: %w", r.ID, errNotFound)
+	existing, ok := s.roles[r.ID.String()]
+	if !ok || existing.TenantID != r.TenantID {
+		return fmt.Errorf("role %s: %w", r.ID, wardenerr.ErrRoleNotFound)
 	}
-	s.roles[r.ID.String()] = copyRole(r)
+	// Copy every field except the ones an update may not move: the tenant,
+	// the identity and the creation time.
+	updated := copyRole(r)
+	updated.TenantID = existing.TenantID
+	updated.ID = existing.ID
+	updated.CreatedAt = existing.CreatedAt
+	s.roles[r.ID.String()] = updated
 	return nil
 }
 
-func (s *Store) DeleteRole(_ context.Context, roleID id.RoleID) error {
+func (s *Store) DeleteRole(_ context.Context, tenantID string, roleID id.RoleID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	r, ok := s.roles[roleID.String()]
+	if !ok || r.TenantID != tenantID {
+		return fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
+	}
 	delete(s.roles, roleID.String())
 	delete(s.rolePermissions, roleID.String())
+	// The SQL backends cascade assignments off the role's foreign key.
+	for k, a := range s.assignments {
+		if a.RoleID == roleID {
+			delete(s.assignments, k)
+		}
+	}
 	return nil
 }
 
@@ -198,34 +233,72 @@ func decodePermRefKey(k string) permission.Ref {
 	return permission.Ref{Name: k}
 }
 
-func (s *Store) ListRolePermissions(_ context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	refs, ok := s.rolePermissions[roleID.String()]
-	if !ok {
-		return nil, nil
-	}
-	// Resolve role tenant for the JOIN.
-	r, ok := s.roles[roleID.String()]
-	if !ok {
-		return nil, nil
+// resolveGrants returns the full Permission records a role grants. The
+// caller holds at least a read lock and has already checked the role's
+// tenant.
+func (s *Store) resolveGrants(tenantID string, roleID id.RoleID) []*permission.Permission {
+	refs := s.rolePermissions[roleID.String()]
+	if len(refs) == 0 {
+		return nil
 	}
 	result := make([]*permission.Permission, 0, len(refs))
 	for k := range refs {
 		ref := decodePermRefKey(k)
 		for _, p := range s.permissions {
-			if p.TenantID == r.TenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
+			if p.TenantID == tenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
 				result = append(result, copyPermission(p))
 				break
 			}
 		}
 	}
+	return result
+}
+
+func (s *Store) ListRolePermissions(_ context.Context, tenantID string, roleID id.RoleID) ([]*permission.Permission, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.roles[roleID.String()]
+	if !ok || r.TenantID != tenantID {
+		return nil, nil
+	}
+	return s.resolveGrants(tenantID, roleID), nil
+}
+
+func (s *Store) ListRolePermissionsForRoles(_ context.Context, tenantID string, roleIDs []id.RoleID) (map[id.RoleID][]*permission.Permission, error) {
+	result := make(map[id.RoleID][]*permission.Permission, len(roleIDs))
+	if len(roleIDs) == 0 {
+		return result, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, rid := range roleIDs {
+		r, ok := s.roles[rid.String()]
+		if !ok || r.TenantID != tenantID {
+			continue
+		}
+		if grants := s.resolveGrants(tenantID, rid); len(grants) > 0 {
+			result[rid] = grants
+		}
+	}
 	return result, nil
 }
 
-func (s *Store) AttachPermission(_ context.Context, roleID id.RoleID, ref permission.Ref) error {
+// requireRole reports whether the role exists in the tenant. The caller
+// holds the write lock.
+func (s *Store) requireRole(tenantID string, roleID id.RoleID) error {
+	r, ok := s.roles[roleID.String()]
+	if !ok || r.TenantID != tenantID {
+		return fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
+	}
+	return nil
+}
+
+func (s *Store) AttachPermission(_ context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireRole(tenantID, roleID); err != nil {
+		return err
+	}
 	rk := roleID.String()
 	if s.rolePermissions[rk] == nil {
 		s.rolePermissions[rk] = make(map[string]struct{})
@@ -234,18 +307,24 @@ func (s *Store) AttachPermission(_ context.Context, roleID id.RoleID, ref permis
 	return nil
 }
 
-func (s *Store) DetachPermission(_ context.Context, roleID id.RoleID, ref permission.Ref) error {
+func (s *Store) DetachPermission(_ context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireRole(tenantID, roleID); err != nil {
+		return err
+	}
 	if refs, ok := s.rolePermissions[roleID.String()]; ok {
 		delete(refs, permRefKey(ref))
 	}
 	return nil
 }
 
-func (s *Store) SetRolePermissions(_ context.Context, roleID id.RoleID, refs []permission.Ref) error {
+func (s *Store) SetRolePermissions(_ context.Context, tenantID string, roleID id.RoleID, refs []permission.Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireRole(tenantID, roleID); err != nil {
+		return err
+	}
 	set := make(map[string]struct{}, len(refs))
 	for _, ref := range refs {
 		set[permRefKey(ref)] = struct{}{}
@@ -307,12 +386,12 @@ func (s *Store) CreatePermission(_ context.Context, p *permission.Permission) er
 	return nil
 }
 
-func (s *Store) GetPermission(_ context.Context, permID id.PermissionID) (*permission.Permission, error) {
+func (s *Store) GetPermission(_ context.Context, tenantID string, permID id.PermissionID) (*permission.Permission, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p, ok := s.permissions[permID.String()]
-	if !ok {
-		return nil, fmt.Errorf("permission %s: %w", permID, errNotFound)
+	if !ok || p.TenantID != tenantID {
+		return nil, fmt.Errorf("permission %s: %w", permID, wardenerr.ErrPermissionNotFound)
 	}
 	return copyPermission(p), nil
 }
@@ -325,27 +404,41 @@ func (s *Store) GetPermissionByName(_ context.Context, tenantID, namespacePath, 
 			return copyPermission(p), nil
 		}
 	}
-	return nil, fmt.Errorf("permission %q in ns %q: %w", name, namespacePath, errNotFound)
+	return nil, fmt.Errorf("permission %q in ns %q: %w", name, namespacePath, wardenerr.ErrPermissionNotFound)
 }
 
 func (s *Store) UpdatePermission(_ context.Context, p *permission.Permission) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.permissions[p.ID.String()]; !ok {
-		return fmt.Errorf("permission %s: %w", p.ID, errNotFound)
+	existing, ok := s.permissions[p.ID.String()]
+	if !ok || existing.TenantID != p.TenantID {
+		return fmt.Errorf("permission %s: %w", p.ID, wardenerr.ErrPermissionNotFound)
 	}
-	s.permissions[p.ID.String()] = copyPermission(p)
+	updated := copyPermission(p)
+	updated.TenantID = existing.TenantID
+	updated.ID = existing.ID
+	updated.CreatedAt = existing.CreatedAt
+	s.permissions[p.ID.String()] = updated
 	return nil
 }
 
-func (s *Store) DeletePermission(_ context.Context, permID id.PermissionID) error {
+func (s *Store) DeletePermission(_ context.Context, tenantID string, permID id.PermissionID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	p, ok := s.permissions[permID.String()]
+	if !ok || p.TenantID != tenantID {
+		return fmt.Errorf("permission %s: %w", permID, wardenerr.ErrPermissionNotFound)
+	}
 	delete(s.permissions, permID.String())
-	// Remove from role-permission mappings.
-	pk := permID.String()
-	for _, perms := range s.rolePermissions {
-		delete(perms, pk)
+	// Scrub the junction. Grants are keyed by the permission's natural key,
+	// so only roles in the same tenant can be holding this grant.
+	refKey := permRefKey(permission.Ref{NamespacePath: p.NamespacePath, Name: p.Name})
+	for rk, refs := range s.rolePermissions {
+		r, ok := s.roles[rk]
+		if !ok || r.TenantID != tenantID {
+			continue
+		}
+		delete(refs, refKey)
 	}
 	return nil
 }
@@ -385,28 +478,8 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 	return int64(len(list)), nil
 }
 
-func (s *Store) ListPermissionsByRole(_ context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	refs, ok := s.rolePermissions[roleID.String()]
-	if !ok {
-		return nil, nil
-	}
-	r, ok := s.roles[roleID.String()]
-	if !ok {
-		return nil, nil
-	}
-	var result []*permission.Permission
-	for k := range refs {
-		ref := decodePermRefKey(k)
-		for _, p := range s.permissions {
-			if p.TenantID == r.TenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
-				result = append(result, copyPermission(p))
-				break
-			}
-		}
-	}
-	return result, nil
+func (s *Store) ListPermissionsByRole(ctx context.Context, tenantID string, roleID id.RoleID) ([]*permission.Permission, error) {
+	return s.ListRolePermissions(ctx, tenantID, roleID)
 }
 
 func (s *Store) ListPermissionsBySubject(_ context.Context, tenantID, subjectKind, subjectID string) ([]*permission.Permission, error) {
@@ -493,19 +566,23 @@ func (s *Store) CreateAssignment(_ context.Context, a *assignment.Assignment) er
 	return nil
 }
 
-func (s *Store) GetAssignment(_ context.Context, assID id.AssignmentID) (*assignment.Assignment, error) {
+func (s *Store) GetAssignment(_ context.Context, tenantID string, assID id.AssignmentID) (*assignment.Assignment, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	a, ok := s.assignments[assID.String()]
-	if !ok {
-		return nil, fmt.Errorf("assignment %s: %w", assID, errNotFound)
+	if !ok || a.TenantID != tenantID {
+		return nil, fmt.Errorf("assignment %s: %w", assID, wardenerr.ErrAssignmentNotFound)
 	}
 	return copyAssignment(a), nil
 }
 
-func (s *Store) DeleteAssignment(_ context.Context, assID id.AssignmentID) error {
+func (s *Store) DeleteAssignment(_ context.Context, tenantID string, assID id.AssignmentID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	a, ok := s.assignments[assID.String()]
+	if !ok || a.TenantID != tenantID {
+		return fmt.Errorf("assignment %s: %w", assID, wardenerr.ErrAssignmentNotFound)
+	}
 	delete(s.assignments, assID.String())
 	return nil
 }
@@ -579,15 +656,34 @@ func (s *Store) ListRolesForSubjectOnResource(_ context.Context, tenantID string
 	return result, nil
 }
 
-func (s *Store) ListSubjectsForRole(_ context.Context, roleID id.RoleID) ([]*assignment.Assignment, error) {
+func (s *Store) ListSubjectsForRole(_ context.Context, tenantID string, roleID id.RoleID) ([]*assignment.Assignment, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rid := roleID.String()
 	var result []*assignment.Assignment
 	for _, a := range s.assignments {
-		if a.RoleID.String() == rid {
+		if a.TenantID == tenantID && a.RoleID.String() == rid {
 			result = append(result, copyAssignment(a))
 		}
+	}
+	return result, nil
+}
+
+func (s *Store) ListExpiringAssignments(_ context.Context, tenantID string, before time.Time, limit int) ([]*assignment.Assignment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*assignment.Assignment
+	for _, a := range s.assignments {
+		if a.TenantID != tenantID || a.ExpiresAt == nil || !a.ExpiresAt.Before(before) {
+			continue
+		}
+		result = append(result, copyAssignment(a))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ExpiresAt.Before(*result[j].ExpiresAt)
+	})
+	if n := fanoutLimit(limit); len(result) > n {
+		result = result[:n]
 	}
 	return result, nil
 }
@@ -616,12 +712,12 @@ func (s *Store) DeleteAssignmentsBySubject(_ context.Context, tenantID, subjectK
 	return nil
 }
 
-func (s *Store) DeleteAssignmentsByRole(_ context.Context, roleID id.RoleID) error {
+func (s *Store) DeleteAssignmentsByRole(_ context.Context, tenantID string, roleID id.RoleID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rid := roleID.String()
 	for k, a := range s.assignments {
-		if a.RoleID.String() == rid {
+		if a.TenantID == tenantID && a.RoleID.String() == rid {
 			delete(s.assignments, k)
 		}
 	}
@@ -656,9 +752,13 @@ func (s *Store) CreateRelation(_ context.Context, t *relation.Tuple) error {
 	return nil
 }
 
-func (s *Store) DeleteRelation(_ context.Context, relID id.RelationID) error {
+func (s *Store) DeleteRelation(_ context.Context, tenantID string, relID id.RelationID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	t, ok := s.relations[relID.String()]
+	if !ok || t.TenantID != tenantID {
+		return fmt.Errorf("relation %s: %w", relID, wardenerr.ErrRelationNotFound)
+	}
 	delete(s.relations, relID.String())
 	return nil
 }
@@ -713,26 +813,34 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	return int64(len(list)), nil
 }
 
-func (s *Store) ListRelationSubjects(_ context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationSubjects(_ context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string, limit int) ([]*relation.Tuple, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	nsSet := namespacePathSet(namespacePaths)
+	maxRows := fanoutLimit(limit)
 	var result []*relation.Tuple
 	for _, t := range s.relations {
 		if t.TenantID == tenantID && nsSet.matches(t.NamespacePath) && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel {
 			result = append(result, copyTuple(t))
+			if len(result) == maxRows {
+				break
+			}
 		}
 	}
 	return result, nil
 }
 
-func (s *Store) ListRelationObjects(_ context.Context, tenantID, namespacePath, subjectType, subjectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationObjects(_ context.Context, tenantID, namespacePath, subjectType, subjectID, rel string, limit int) ([]*relation.Tuple, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	maxRows := fanoutLimit(limit)
 	var result []*relation.Tuple
 	for _, t := range s.relations {
 		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.SubjectType == subjectType && t.SubjectID == subjectID && t.Relation == rel {
 			result = append(result, copyTuple(t))
+			if len(result) == maxRows {
+				break
+			}
 		}
 	}
 	return result, nil
@@ -812,12 +920,12 @@ func (s *Store) CreatePolicy(_ context.Context, p *policy.Policy) error {
 	return nil
 }
 
-func (s *Store) GetPolicy(_ context.Context, polID id.PolicyID) (*policy.Policy, error) {
+func (s *Store) GetPolicy(_ context.Context, tenantID string, polID id.PolicyID) (*policy.Policy, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p, ok := s.policies[polID.String()]
-	if !ok {
-		return nil, fmt.Errorf("policy %s: %w", polID, errNotFound)
+	if !ok || p.TenantID != tenantID {
+		return nil, fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
 	}
 	return copyPolicy(p), nil
 }
@@ -830,22 +938,31 @@ func (s *Store) GetPolicyByName(_ context.Context, tenantID, namespacePath, name
 			return copyPolicy(p), nil
 		}
 	}
-	return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, errNotFound)
+	return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, wardenerr.ErrPolicyNotFound)
 }
 
 func (s *Store) UpdatePolicy(_ context.Context, p *policy.Policy) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.policies[p.ID.String()]; !ok {
-		return fmt.Errorf("policy %s: %w", p.ID, errNotFound)
+	existing, ok := s.policies[p.ID.String()]
+	if !ok || existing.TenantID != p.TenantID {
+		return fmt.Errorf("policy %s: %w", p.ID, wardenerr.ErrPolicyNotFound)
 	}
-	s.policies[p.ID.String()] = copyPolicy(p)
+	updated := copyPolicy(p)
+	updated.TenantID = existing.TenantID
+	updated.ID = existing.ID
+	updated.CreatedAt = existing.CreatedAt
+	s.policies[p.ID.String()] = updated
 	return nil
 }
 
-func (s *Store) DeletePolicy(_ context.Context, polID id.PolicyID) error {
+func (s *Store) DeletePolicy(_ context.Context, tenantID string, polID id.PolicyID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	p, ok := s.policies[polID.String()]
+	if !ok || p.TenantID != tenantID {
+		return fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
+	}
 	delete(s.policies, polID.String())
 	return nil
 }
@@ -899,12 +1016,12 @@ func (s *Store) ListActivePolicies(_ context.Context, tenantID string, namespace
 	return result, nil
 }
 
-func (s *Store) SetPolicyVersion(_ context.Context, polID id.PolicyID, version int) error {
+func (s *Store) SetPolicyVersion(_ context.Context, tenantID string, polID id.PolicyID, version int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, ok := s.policies[polID.String()]
-	if !ok {
-		return fmt.Errorf("policy %s: %w", polID, errNotFound)
+	if !ok || p.TenantID != tenantID {
+		return fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
 	}
 	p.Version = version
 	return nil
@@ -950,12 +1067,12 @@ func (s *Store) CreateResourceType(_ context.Context, rt *resourcetype.ResourceT
 	return nil
 }
 
-func (s *Store) GetResourceType(_ context.Context, rtID id.ResourceTypeID) (*resourcetype.ResourceType, error) {
+func (s *Store) GetResourceType(_ context.Context, tenantID string, rtID id.ResourceTypeID) (*resourcetype.ResourceType, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rt, ok := s.resourceTypes[rtID.String()]
-	if !ok {
-		return nil, fmt.Errorf("resource type %s: %w", rtID, errNotFound)
+	if !ok || rt.TenantID != tenantID {
+		return nil, fmt.Errorf("resource type %s: %w", rtID, wardenerr.ErrResourceTypeNotFound)
 	}
 	return copyResourceType(rt), nil
 }
@@ -968,22 +1085,31 @@ func (s *Store) GetResourceTypeByName(_ context.Context, tenantID, namespacePath
 			return copyResourceType(rt), nil
 		}
 	}
-	return nil, fmt.Errorf("resource type %q in ns %q: %w", name, namespacePath, errNotFound)
+	return nil, fmt.Errorf("resource type %q in ns %q: %w", name, namespacePath, wardenerr.ErrResourceTypeNotFound)
 }
 
 func (s *Store) UpdateResourceType(_ context.Context, rt *resourcetype.ResourceType) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.resourceTypes[rt.ID.String()]; !ok {
-		return fmt.Errorf("resource type %s: %w", rt.ID, errNotFound)
+	existing, ok := s.resourceTypes[rt.ID.String()]
+	if !ok || existing.TenantID != rt.TenantID {
+		return fmt.Errorf("resource type %s: %w", rt.ID, wardenerr.ErrResourceTypeNotFound)
 	}
-	s.resourceTypes[rt.ID.String()] = copyResourceType(rt)
+	updated := copyResourceType(rt)
+	updated.TenantID = existing.TenantID
+	updated.ID = existing.ID
+	updated.CreatedAt = existing.CreatedAt
+	s.resourceTypes[rt.ID.String()] = updated
 	return nil
 }
 
-func (s *Store) DeleteResourceType(_ context.Context, rtID id.ResourceTypeID) error {
+func (s *Store) DeleteResourceType(_ context.Context, tenantID string, rtID id.ResourceTypeID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	rt, ok := s.resourceTypes[rtID.String()]
+	if !ok || rt.TenantID != tenantID {
+		return fmt.Errorf("resource type %s: %w", rtID, wardenerr.ErrResourceTypeNotFound)
+	}
 	delete(s.resourceTypes, rtID.String())
 	return nil
 }
@@ -1042,12 +1168,12 @@ func (s *Store) CreateCheckLog(_ context.Context, e *checklog.Entry) error {
 	return nil
 }
 
-func (s *Store) GetCheckLog(_ context.Context, logID id.CheckLogID) (*checklog.Entry, error) {
+func (s *Store) GetCheckLog(_ context.Context, tenantID string, logID id.CheckLogID) (*checklog.Entry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e, ok := s.checkLogs[logID.String()]
-	if !ok {
-		return nil, fmt.Errorf("check log %s: %w", logID, errNotFound)
+	if !ok || e.TenantID != tenantID {
+		return nil, fmt.Errorf("check log %s: %w", logID, wardenerr.ErrCheckLogNotFound)
 	}
 	return copyCheckLog(e), nil
 }
@@ -1109,6 +1235,19 @@ func (s *Store) PurgeCheckLogs(_ context.Context, before time.Time) (int64, erro
 	return count, nil
 }
 
+func (s *Store) DeleteCheckLogsBySubject(_ context.Context, tenantID, subjectKind, subjectID string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int64
+	for k, e := range s.checkLogs {
+		if e.TenantID == tenantID && e.SubjectKind == subjectKind && e.SubjectID == subjectID {
+			delete(s.checkLogs, k)
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (s *Store) DeleteCheckLogsByTenant(_ context.Context, tenantID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1124,7 +1263,19 @@ func (s *Store) DeleteCheckLogsByTenant(_ context.Context, tenantID string) erro
 // Helpers
 // ──────────────────────────────────────────────────
 
-var errNotFound = fmt.Errorf("not found")
+// defaultFanout caps a relation hop or an access-review page when the caller
+// passes 0. It matches the SQL backends so a caller sees the same truncation
+// regardless of which store is behind it.
+const defaultFanout = 1000
+
+// fanoutLimit resolves a caller-supplied limit: 0 (or negative) means the
+// default.
+func fanoutLimit(limit int) int {
+	if limit <= 0 {
+		return defaultFanout
+	}
+	return limit
+}
 
 // nsHasPrefix reports whether path is namespace prefix or one of its descendants.
 // "" matches anything; "eng" matches "eng" and "eng/...".
@@ -1232,6 +1383,14 @@ func copyResourceType(rt *resourcetype.ResourceType) *resourcetype.ResourceType 
 
 func copyCheckLog(e *checklog.Entry) *checklog.Entry {
 	c := *e
+	if e.MatchedBy != nil {
+		c.MatchedBy = make([]checklog.MatchRef, len(e.MatchedBy))
+		copy(c.MatchedBy, e.MatchedBy)
+	}
+	if e.Obligations != nil {
+		c.Obligations = make([]string, len(e.Obligations))
+		copy(c.Obligations, e.Obligations)
+	}
 	return &c
 }
 

@@ -37,7 +37,7 @@ func TestRoleCRUD(t *testing.T) {
 	}
 
 	// Get
-	got, err := s.GetRole(ctx, r.ID)
+	got, err := s.GetRole(ctx, "t1", r.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestRoleCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.GetRole(ctx, r.ID)
+	got, _ = s.GetRole(ctx, "t1", r.ID)
 	if got.Name != "super-admin" {
 		t.Fatal("update failed")
 	}
@@ -78,11 +78,11 @@ func TestRoleCRUD(t *testing.T) {
 	}
 
 	// Delete
-	err = s.DeleteRole(ctx, r.ID)
+	err = s.DeleteRole(ctx, "t1", r.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.GetRole(ctx, r.ID)
+	_, err = s.GetRole(ctx, "t1", r.ID)
 	if err == nil {
 		t.Fatal("expected not found after delete")
 	}
@@ -105,7 +105,7 @@ func TestPermissionCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.GetPermission(ctx, p.ID)
+	got, err := s.GetPermission(ctx, "t1", p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,11 +121,11 @@ func TestPermissionCRUD(t *testing.T) {
 		t.Fatal("name lookup mismatch")
 	}
 
-	err = s.DeletePermission(ctx, p.ID)
+	err = s.DeletePermission(ctx, "t1", p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.GetPermission(ctx, p.ID)
+	_, err = s.GetPermission(ctx, "t1", p.ID)
 	if err == nil {
 		t.Fatal("expected not found")
 	}
@@ -148,30 +148,30 @@ func TestRolePermissionAttach(t *testing.T) {
 	refWrite := permission.Ref{Name: "doc:write"}
 
 	// Attach
-	_ = s.AttachPermission(ctx, roleID, refRead)
-	_ = s.AttachPermission(ctx, roleID, refWrite)
+	_ = s.AttachPermission(ctx, "t1", roleID, refRead)
+	_ = s.AttachPermission(ctx, "t1", roleID, refWrite)
 
-	perms, _ := s.ListRolePermissions(ctx, roleID)
+	perms, _ := s.ListRolePermissions(ctx, "t1", roleID)
 	if len(perms) != 2 {
 		t.Fatalf("expected 2 permissions, got %d", len(perms))
 	}
 
 	// ListPermissionsByRole
-	permObjs, _ := s.ListPermissionsByRole(ctx, roleID)
+	permObjs, _ := s.ListPermissionsByRole(ctx, "t1", roleID)
 	if len(permObjs) != 2 {
 		t.Fatalf("expected 2 permission objects, got %d", len(permObjs))
 	}
 
 	// Detach
-	_ = s.DetachPermission(ctx, roleID, refRead)
-	perms, _ = s.ListRolePermissions(ctx, roleID)
+	_ = s.DetachPermission(ctx, "t1", roleID, refRead)
+	perms, _ = s.ListRolePermissions(ctx, "t1", roleID)
 	if len(perms) != 1 {
 		t.Fatalf("expected 1 permission after detach, got %d", len(perms))
 	}
 
 	// SetRolePermissions (replace all)
-	_ = s.SetRolePermissions(ctx, roleID, []permission.Ref{refRead})
-	perms, _ = s.ListRolePermissions(ctx, roleID)
+	_ = s.SetRolePermissions(ctx, "t1", roleID, []permission.Ref{refRead})
+	perms, _ = s.ListRolePermissions(ctx, "t1", roleID)
 	if len(perms) != 1 {
 		t.Fatalf("expected 1 permission after set, got %d", len(perms))
 	}
@@ -198,7 +198,7 @@ func TestAssignmentCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.GetAssignment(ctx, a.ID)
+	got, err := s.GetAssignment(ctx, "t1", a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,12 +211,12 @@ func TestAssignmentCRUD(t *testing.T) {
 		t.Fatalf("expected 1 role, got %d", len(roles))
 	}
 
-	subjects, _ := s.ListSubjectsForRole(ctx, roleID)
+	subjects, _ := s.ListSubjectsForRole(ctx, "t1", roleID)
 	if len(subjects) != 1 {
 		t.Fatalf("expected 1 subject, got %d", len(subjects))
 	}
 
-	if err := s.DeleteAssignment(ctx, a.ID); err != nil {
+	if err := s.DeleteAssignment(ctx, "t1", a.ID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -251,7 +251,7 @@ func TestRelationCRUD(t *testing.T) {
 	}
 
 	// ListRelationSubjects
-	subs, _ := s.ListRelationSubjects(ctx, "t1", []string{""}, "document", "doc1", "viewer")
+	subs, _ := s.ListRelationSubjects(ctx, "t1", []string{""}, "document", "doc1", "viewer", 0)
 	if len(subs) != 1 {
 		t.Fatalf("expected 1 subject, got %d", len(subs))
 	}
@@ -284,7 +284,7 @@ func TestPolicyCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.GetPolicy(ctx, p.ID)
+	got, err := s.GetPolicy(ctx, "t1", p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,15 +299,15 @@ func TestPolicyCRUD(t *testing.T) {
 	}
 
 	// SetPolicyVersion
-	_ = s.SetPolicyVersion(ctx, p.ID, 2)
-	got, _ = s.GetPolicy(ctx, p.ID)
+	_ = s.SetPolicyVersion(ctx, "t1", p.ID, 2)
+	got, _ = s.GetPolicy(ctx, "t1", p.ID)
 	if got.Version != 2 {
 		t.Fatal("version not updated")
 	}
 
 	// Delete
-	_ = s.DeletePolicy(ctx, p.ID)
-	_, err = s.GetPolicy(ctx, p.ID)
+	_ = s.DeletePolicy(ctx, "t1", p.ID)
+	_, err = s.GetPolicy(ctx, "t1", p.ID)
 	if err == nil {
 		t.Fatal("expected not found")
 	}
@@ -333,7 +333,7 @@ func TestResourceTypeCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.GetResourceType(ctx, rt.ID)
+	got, err := s.GetResourceType(ctx, "t1", rt.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,8 +349,8 @@ func TestResourceTypeCRUD(t *testing.T) {
 		t.Fatal("relations not preserved")
 	}
 
-	_ = s.DeleteResourceType(ctx, rt.ID)
-	_, err = s.GetResourceType(ctx, rt.ID)
+	_ = s.DeleteResourceType(ctx, "t1", rt.ID)
+	_, err = s.GetResourceType(ctx, "t1", rt.ID)
 	if err == nil {
 		t.Fatal("expected not found")
 	}
@@ -376,7 +376,7 @@ func TestCheckLogCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.GetCheckLog(ctx, e.ID)
+	got, err := s.GetCheckLog(ctx, "t1", e.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

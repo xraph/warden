@@ -36,7 +36,7 @@ func seedRBACAtNamespace(t *testing.T, s seeder, namespacePath, slug string) {
 	}); err != nil {
 		t.Fatalf("CreatePermission: %v", err)
 	}
-	if err := s.AttachPermission(ctx, roleID, permission.Ref{NamespacePath: namespacePath, Name: permName}); err != nil {
+	if err := s.AttachPermission(ctx, tenantID, roleID, permission.Ref{NamespacePath: namespacePath, Name: permName}); err != nil {
 		t.Fatalf("AttachPermission: %v", err)
 	}
 	if err := s.CreateAssignment(ctx, &assignment.Assignment{
@@ -63,7 +63,7 @@ func splitPermName(name string) [2]string {
 type seeder interface {
 	CreateRole(ctx context.Context, r *role.Role) error
 	CreatePermission(ctx context.Context, p *permission.Permission) error
-	AttachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error
+	AttachPermission(ctx context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error
 	CreateAssignment(ctx context.Context, a *assignment.Assignment) error
 }
 

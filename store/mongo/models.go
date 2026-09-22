@@ -3,6 +3,8 @@ package mongo
 import (
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/xraph/grove"
 
 	"github.com/xraph/warden/assignment"
@@ -404,21 +406,27 @@ func resourceTypeFromModel(m *resourceTypeModel) *resourcetype.ResourceType {
 
 type checkLogModel struct {
 	grove.BaseModel `grove:"table:warden_check_logs"`
-	ID              string         `grove:"id,pk"           bson:"_id"`
-	TenantID        string         `grove:"tenant_id"       bson:"tenant_id"`
-	NamespacePath   string         `grove:"namespace_path"  bson:"namespace_path"`
-	AppID           string         `grove:"app_id"          bson:"app_id"`
-	SubjectKind     string         `grove:"subject_kind"    bson:"subject_kind"`
-	SubjectID       string         `grove:"subject_id"      bson:"subject_id"`
-	Action          string         `grove:"action"          bson:"action"`
-	ResourceType    string         `grove:"resource_type"   bson:"resource_type"`
-	ResourceID      string         `grove:"resource_id"     bson:"resource_id"`
-	Decision        string         `grove:"decision"        bson:"decision"`
-	Reason          string         `grove:"reason"          bson:"reason"`
-	EvalTimeNs      int64          `grove:"eval_time_ns"    bson:"eval_time_ns"`
-	RequestIP       string         `grove:"request_ip"      bson:"request_ip"`
-	Metadata        map[string]any `grove:"metadata"        bson:"metadata,omitempty"`
-	CreatedAt       time.Time      `grove:"created_at"      bson:"created_at"`
+	ID              string              `grove:"id,pk"           bson:"_id"`
+	TenantID        string              `grove:"tenant_id"       bson:"tenant_id"`
+	NamespacePath   string              `grove:"namespace_path"  bson:"namespace_path"`
+	AppID           string              `grove:"app_id"          bson:"app_id"`
+	SubjectKind     string              `grove:"subject_kind"    bson:"subject_kind"`
+	SubjectID       string              `grove:"subject_id"      bson:"subject_id"`
+	Action          string              `grove:"action"          bson:"action"`
+	ResourceType    string              `grove:"resource_type"   bson:"resource_type"`
+	ResourceID      string              `grove:"resource_id"     bson:"resource_id"`
+	Decision        string              `grove:"decision"        bson:"decision"`
+	Reason          string              `grove:"reason"          bson:"reason"`
+	MatchedBy       []checklog.MatchRef `grove:"matched_by"      bson:"matched_by"`
+	Obligations     []string            `grove:"obligations"     bson:"obligations"`
+	EvalTimeNs      int64               `grove:"eval_time_ns"    bson:"eval_time_ns"`
+	RequestIP       string              `grove:"request_ip"      bson:"request_ip"`
+	RequestID       string              `grove:"request_id"      bson:"request_id"`
+	TraceID         string              `grove:"trace_id"        bson:"trace_id"`
+	Cached          bool                `grove:"cached"          bson:"cached"`
+	Error           string              `grove:"error"           bson:"error"`
+	Metadata        map[string]any      `grove:"metadata"        bson:"metadata,omitempty"`
+	CreatedAt       time.Time           `grove:"created_at"      bson:"created_at"`
 }
 
 func checkLogToModel(e *checklog.Entry) *checkLogModel {
@@ -434,8 +442,14 @@ func checkLogToModel(e *checklog.Entry) *checkLogModel {
 		ResourceID:    e.ResourceID,
 		Decision:      e.Decision,
 		Reason:        e.Reason,
+		MatchedBy:     e.MatchedBy,
+		Obligations:   e.Obligations,
 		EvalTimeNs:    e.EvalTimeNs,
 		RequestIP:     e.RequestIP,
+		RequestID:     e.RequestID,
+		TraceID:       e.TraceID,
+		Cached:        e.Cached,
+		Error:         e.Error,
 		Metadata:      e.Metadata,
 		CreatedAt:     e.CreatedAt,
 	}
@@ -455,9 +469,91 @@ func checkLogFromModel(m *checkLogModel) *checklog.Entry {
 		ResourceID:    m.ResourceID,
 		Decision:      m.Decision,
 		Reason:        m.Reason,
+		MatchedBy:     m.MatchedBy,
+		Obligations:   m.Obligations,
 		EvalTimeNs:    m.EvalTimeNs,
 		RequestIP:     m.RequestIP,
+		RequestID:     m.RequestID,
+		TraceID:       m.TraceID,
+		Cached:        m.Cached,
+		Error:         m.Error,
 		Metadata:      m.Metadata,
 		CreatedAt:     m.CreatedAt,
+	}
+}
+
+// ──────────────────────────────────────────────────
+// Update documents
+// ──────────────────────────────────────────────────
+//
+// Each builds the $set document for an update. Mongo has no column list to
+// restrict, so the fields an update may write are spelled out here. _id and
+// tenant_id are absent by design: the filter already matches on both, so
+// writing them could only ever be a no-op or a tenant move, and a tenant move
+// is not something this API offers. created_at is absent for the same reason
+// the memory store preserves it.
+
+func roleUpdateDoc(m *roleModel) bson.M {
+	return bson.M{
+		"namespace_path": m.NamespacePath,
+		"app_id":         m.AppID,
+		"name":           m.Name,
+		"description":    m.Description,
+		"slug":           m.Slug,
+		"is_system":      m.IsSystem,
+		"is_default":     m.IsDefault,
+		"parent_slug":    m.ParentSlug,
+		"max_members":    m.MaxMembers,
+		"metadata":       m.Metadata,
+		"updated_at":     m.UpdatedAt,
+	}
+}
+
+func permissionUpdateDoc(m *permissionModel) bson.M {
+	return bson.M{
+		"namespace_path": m.NamespacePath,
+		"app_id":         m.AppID,
+		"name":           m.Name,
+		"description":    m.Description,
+		"resource":       m.Resource,
+		"action":         m.Action,
+		"is_system":      m.IsSystem,
+		"metadata":       m.Metadata,
+		"updated_at":     m.UpdatedAt,
+	}
+}
+
+func policyUpdateDoc(m *policyModel) bson.M {
+	return bson.M{
+		"namespace_path": m.NamespacePath,
+		"app_id":         m.AppID,
+		"name":           m.Name,
+		"description":    m.Description,
+		"effect":         m.Effect,
+		"priority":       m.Priority,
+		"is_active":      m.IsActive,
+		"not_before":     m.NotBefore,
+		"not_after":      m.NotAfter,
+		"obligations":    m.Obligations,
+		"version":        m.Version,
+		"subjects":       m.Subjects,
+		"actions":        m.Actions,
+		"resources":      m.Resources,
+		"conditions":     m.Conditions,
+		"metadata":       m.Metadata,
+		"updated_at":     m.UpdatedAt,
+	}
+}
+
+func resourceTypeUpdateDoc(m *resourceTypeModel) bson.M {
+	return bson.M{
+		"namespace_path": m.NamespacePath,
+		"app_id":         m.AppID,
+		"name":           m.Name,
+		"description":    m.Description,
+		"relations":      m.Relations,
+		"permissions":    m.Permissions,
+		"metadata":       m.Metadata,
+		"updated_at":     m.UpdatedAt,
 	}
 }

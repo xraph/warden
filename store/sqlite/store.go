@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xraph/grove"
+	"github.com/xraph/grove/driver"
 	"github.com/xraph/grove/drivers/sqlitedriver"
 	"github.com/xraph/grove/migrate"
 
@@ -27,8 +28,59 @@ import (
 // Compile-time interface check.
 var _ store.Store = (*Store)(nil)
 
-// errNotFound is the sentinel for missing entities.
-var errNotFound = fmt.Errorf("not found")
+// defaultFanout caps a relation hop or an access-review page when the caller
+// passes 0.
+const defaultFanout = 1000
+
+// fanoutLimit resolves a caller-supplied limit: 0 (or negative) means the
+// default.
+func fanoutLimit(limit int) int {
+	if limit <= 0 {
+		return defaultFanout
+	}
+	return limit
+}
+
+// rowsChanged reports how many rows a write touched. A driver that cannot
+// answer is treated as "nothing changed" so the caller returns not-found
+// rather than silently reporting success.
+func rowsChanged(res driver.Result) int64 {
+	if res == nil {
+		return 0
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// Columns an UPDATE is allowed to write, per table. tenant_id is absent by
+// design: an update matches on (id, tenant_id), so writing tenant_id could
+// only ever be a no-op or a tenant move, and a tenant move is not something
+// this API offers. created_at is absent for the same reason the memory store
+// preserves it.
+var (
+	roleUpdateColumns = []string{
+		"namespace_path", "app_id", "name", "description", "slug",
+		"is_system", "is_default", "parent_slug", "max_members", "metadata",
+		"updated_at",
+	}
+	permissionUpdateColumns = []string{
+		"namespace_path", "app_id", "name", "description", "resource",
+		"action", "is_system", "metadata", "updated_at",
+	}
+	policyUpdateColumns = []string{
+		"namespace_path", "app_id", "name", "description", "effect",
+		"priority", "is_active", "not_before", "not_after", "obligations",
+		"version", "subjects", "actions", "resources", "conditions",
+		"metadata", "updated_at",
+	}
+	resourceTypeUpdateColumns = []string{
+		"namespace_path", "app_id", "name", "description", "relations",
+		"permissions", "metadata", "updated_at",
+	}
+)
 
 // Store is a SQLite implementation of the composite Warden store.
 type Store struct {
@@ -127,12 +179,15 @@ func (s *Store) CreateRole(ctx context.Context, r *role.Role) error {
 	return nil
 }
 
-func (s *Store) GetRole(ctx context.Context, roleID id.RoleID) (*role.Role, error) {
+func (s *Store) GetRole(ctx context.Context, tenantID string, roleID id.RoleID) (*role.Role, error) {
 	m := new(roleModel)
-	err := s.sdb.NewSelect(m).Where("id = ?", roleID.String()).Scan(ctx)
+	err := s.sdb.NewSelect(m).
+		Where("id = ?", roleID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("role %s: %w", roleID, errNotFound)
+			return nil, fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
 		}
 		return nil, fmt.Errorf("warden: get role: %w", err)
 	}
@@ -141,6 +196,30 @@ func (s *Store) GetRole(ctx context.Context, roleID id.RoleID) (*role.Role, erro
 		return nil, fmt.Errorf("warden: get role: %w", err)
 	}
 	return r, nil
+}
+
+func (s *Store) GetRoles(ctx context.Context, tenantID string, roleIDs []id.RoleID) ([]*role.Role, error) {
+	if len(roleIDs) == 0 {
+		return nil, nil
+	}
+	ph, args := inPlaceholders(roleIDStrings(roleIDs))
+	var models []roleModel
+	err := s.sdb.NewSelect(&models).
+		Where("tenant_id = ?", tenantID).
+		Where("id IN ("+ph+")", args...).
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("warden: get roles: %w", err)
+	}
+	result := make([]*role.Role, len(models))
+	for i := range models {
+		r, err := roleFromModel(&models[i])
+		if err != nil {
+			return nil, fmt.Errorf("warden: get roles: %w", err)
+		}
+		result[i] = r
+	}
+	return result, nil
 }
 
 func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug string) (*role.Role, error) {
@@ -152,7 +231,7 @@ func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, errNotFound)
+			return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, wardenerr.ErrRoleNotFound)
 		}
 		return nil, fmt.Errorf("warden: get role by slug: %w", err)
 	}
@@ -169,17 +248,32 @@ func (s *Store) UpdateRole(ctx context.Context, r *role.Role) error {
 	if err != nil {
 		return fmt.Errorf("warden: update role: %w", err)
 	}
-	if _, err := s.sdb.NewUpdate(m).WherePK().Exec(ctx); err != nil {
+	res, err := s.sdb.NewUpdate(m).
+		Column(roleUpdateColumns...).
+		WherePK().
+		Where("tenant_id = ?", r.TenantID).
+		Exec(ctx)
+	if err != nil {
 		return fmt.Errorf("warden: update role: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("role %s: %w", r.ID, wardenerr.ErrRoleNotFound)
 	}
 	return nil
 }
 
-func (s *Store) DeleteRole(ctx context.Context, roleID id.RoleID) error {
-	_, err := s.sdb.NewDelete((*roleModel)(nil)).
-		Where("id = ?", roleID.String()).Exec(ctx)
+// DeleteRole removes a role. Assignments and grants go with it via the
+// foreign-key cascades in the schema.
+func (s *Store) DeleteRole(ctx context.Context, tenantID string, roleID id.RoleID) error {
+	res, err := s.sdb.NewDelete((*roleModel)(nil)).
+		Where("id = ?", roleID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete role: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
 	}
 	return nil
 }
@@ -264,11 +358,29 @@ JOIN warden_permissions p
  AND p.namespace_path = rp.perm_namespace_path
  AND p.name = rp.perm_name
 WHERE rp.role_id = ?
+  AND r.tenant_id = ?
 `
 
-func (s *Store) ListRolePermissions(ctx context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
+// listRolePermissionsForRolesSQL is the batch form: the same walk for many
+// roles at once, with the granting role carried through so the caller can
+// group the rows in Go. The IN list is expanded by the caller.
+const listRolePermissionsForRolesSQL = `
+SELECT rp.role_id,
+       p.id, p.tenant_id, p.namespace_path, p.app_id, p.name, p.description,
+       p.resource, p.action, p.is_system, p.metadata, p.created_at, p.updated_at
+FROM warden_role_permissions rp
+JOIN warden_roles r ON r.id = rp.role_id
+JOIN warden_permissions p
+  ON p.tenant_id = r.tenant_id
+ AND p.namespace_path = rp.perm_namespace_path
+ AND p.name = rp.perm_name
+WHERE r.tenant_id = ?
+  AND rp.role_id IN (%s)
+`
+
+func (s *Store) ListRolePermissions(ctx context.Context, tenantID string, roleID id.RoleID) ([]*permission.Permission, error) {
 	var models []permissionModel
-	if err := s.sdb.NewRaw(listRolePermissionsJoinSQL, roleID.String()).Scan(ctx, &models); err != nil {
+	if err := s.sdb.NewRaw(listRolePermissionsJoinSQL, roleID.String(), tenantID).Scan(ctx, &models); err != nil {
 		return nil, fmt.Errorf("warden: list role permissions: %w", err)
 	}
 	result := make([]*permission.Permission, 0, len(models))
@@ -282,7 +394,52 @@ func (s *Store) ListRolePermissions(ctx context.Context, roleID id.RoleID) ([]*p
 	return result, nil
 }
 
-func (s *Store) AttachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error {
+func (s *Store) ListRolePermissionsForRoles(ctx context.Context, tenantID string, roleIDs []id.RoleID) (map[id.RoleID][]*permission.Permission, error) {
+	result := make(map[id.RoleID][]*permission.Permission, len(roleIDs))
+	if len(roleIDs) == 0 {
+		return result, nil
+	}
+	ph, idArgs := inPlaceholders(roleIDStrings(roleIDs))
+	args := append([]any{tenantID}, idArgs...)
+	var rows []rolePermissionRow
+	query := fmt.Sprintf(listRolePermissionsForRolesSQL, ph)
+	if err := s.sdb.NewRaw(query, args...).Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("warden: list role permissions for roles: %w", err)
+	}
+	for i := range rows {
+		rid, parseErr := id.ParseRoleID(rows[i].RoleID)
+		if parseErr != nil {
+			continue
+		}
+		p, err := permissionFromModel(rows[i].permission())
+		if err != nil {
+			return nil, fmt.Errorf("warden: list role permissions for roles: %w", err)
+		}
+		result[rid] = append(result[rid], p)
+	}
+	return result, nil
+}
+
+// requireRole reports whether the role exists in the tenant, so the junction
+// writes below cannot be aimed at someone else's role.
+func (s *Store) requireRole(ctx context.Context, tenantID string, roleID id.RoleID) error {
+	count, err := s.sdb.NewSelect((*roleModel)(nil)).
+		Where("id = ?", roleID.String()).
+		Where("tenant_id = ?", tenantID).
+		Count(ctx)
+	if err != nil {
+		return fmt.Errorf("warden: resolve role: %w", err)
+	}
+	if count == 0 {
+		return fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
+	}
+	return nil
+}
+
+func (s *Store) AttachPermission(ctx context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
+	if err := s.requireRole(ctx, tenantID, roleID); err != nil {
+		return err
+	}
 	m := &rolePermissionModel{
 		RoleID:            roleID.String(),
 		PermNamespacePath: ref.NamespacePath,
@@ -297,7 +454,10 @@ func (s *Store) AttachPermission(ctx context.Context, roleID id.RoleID, ref perm
 	return nil
 }
 
-func (s *Store) DetachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error {
+func (s *Store) DetachPermission(ctx context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
+	if err := s.requireRole(ctx, tenantID, roleID); err != nil {
+		return err
+	}
 	_, err := s.sdb.NewDelete((*rolePermissionModel)(nil)).
 		Where("role_id = ?", roleID.String()).
 		Where("perm_namespace_path = ?", ref.NamespacePath).
@@ -309,7 +469,10 @@ func (s *Store) DetachPermission(ctx context.Context, roleID id.RoleID, ref perm
 	return nil
 }
 
-func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, refs []permission.Ref) error {
+func (s *Store) SetRolePermissions(ctx context.Context, tenantID string, roleID id.RoleID, refs []permission.Ref) error {
+	if err := s.requireRole(ctx, tenantID, roleID); err != nil {
+		return err
+	}
 	tx, err := s.sdb.BeginTxQuery(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("warden: begin tx: %w", err)
@@ -403,12 +566,15 @@ func (s *Store) CreatePermission(ctx context.Context, p *permission.Permission) 
 	return nil
 }
 
-func (s *Store) GetPermission(ctx context.Context, permID id.PermissionID) (*permission.Permission, error) {
+func (s *Store) GetPermission(ctx context.Context, tenantID string, permID id.PermissionID) (*permission.Permission, error) {
 	m := new(permissionModel)
-	err := s.sdb.NewSelect(m).Where("id = ?", permID.String()).Scan(ctx)
+	err := s.sdb.NewSelect(m).
+		Where("id = ?", permID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("permission %s: %w", permID, errNotFound)
+			return nil, fmt.Errorf("permission %s: %w", permID, wardenerr.ErrPermissionNotFound)
 		}
 		return nil, fmt.Errorf("warden: get permission: %w", err)
 	}
@@ -428,7 +594,7 @@ func (s *Store) GetPermissionByName(ctx context.Context, tenantID, namespacePath
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("permission %q in ns %q: %w", name, namespacePath, errNotFound)
+			return nil, fmt.Errorf("permission %q in ns %q: %w", name, namespacePath, wardenerr.ErrPermissionNotFound)
 		}
 		return nil, fmt.Errorf("warden: get permission by name: %w", err)
 	}
@@ -445,17 +611,48 @@ func (s *Store) UpdatePermission(ctx context.Context, p *permission.Permission) 
 	if err != nil {
 		return fmt.Errorf("warden: update permission: %w", err)
 	}
-	if _, err := s.sdb.NewUpdate(m).WherePK().Exec(ctx); err != nil {
+	res, err := s.sdb.NewUpdate(m).
+		Column(permissionUpdateColumns...).
+		WherePK().
+		Where("tenant_id = ?", p.TenantID).
+		Exec(ctx)
+	if err != nil {
 		return fmt.Errorf("warden: update permission: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("permission %s: %w", p.ID, wardenerr.ErrPermissionNotFound)
 	}
 	return nil
 }
 
-func (s *Store) DeletePermission(ctx context.Context, permID id.PermissionID) error {
-	_, err := s.sdb.NewDelete((*permissionModel)(nil)).
-		Where("id = ?", permID.String()).Exec(ctx)
+// deletePermissionGrantsSQL scrubs the junction rows that grant a permission.
+// The junction stores the permission's natural key, not its ID, so the rows
+// have to be matched on (namespace_path, name) and narrowed to the roles of
+// the deleting tenant.
+const deletePermissionGrantsSQL = `
+DELETE FROM warden_role_permissions
+WHERE perm_namespace_path = ?
+  AND perm_name = ?
+  AND role_id IN (SELECT id FROM warden_roles WHERE tenant_id = ?)
+`
+
+func (s *Store) DeletePermission(ctx context.Context, tenantID string, permID id.PermissionID) error {
+	p, err := s.GetPermission(ctx, tenantID, permID)
+	if err != nil {
+		return err
+	}
+	res, err := s.sdb.NewDelete((*permissionModel)(nil)).
+		Where("id = ?", permID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete permission: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("permission %s: %w", permID, wardenerr.ErrPermissionNotFound)
+	}
+	if _, err := s.sdb.NewRaw(deletePermissionGrantsSQL, p.NamespacePath, p.Name, tenantID).Exec(ctx); err != nil {
+		return fmt.Errorf("warden: delete permission grants: %w", err)
 	}
 	return nil
 }
@@ -526,8 +723,8 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 	return count, nil
 }
 
-func (s *Store) ListPermissionsByRole(ctx context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
-	return s.ListRolePermissions(ctx, roleID)
+func (s *Store) ListPermissionsByRole(ctx context.Context, tenantID string, roleID id.RoleID) ([]*permission.Permission, error) {
+	return s.ListRolePermissions(ctx, tenantID, roleID)
 }
 
 // listPermissionsBySubjectSQL walks assignment → role_permissions → permissions
@@ -598,12 +795,15 @@ func (s *Store) CreateAssignment(ctx context.Context, a *assignment.Assignment) 
 	return nil
 }
 
-func (s *Store) GetAssignment(ctx context.Context, assID id.AssignmentID) (*assignment.Assignment, error) {
+func (s *Store) GetAssignment(ctx context.Context, tenantID string, assID id.AssignmentID) (*assignment.Assignment, error) {
 	m := new(assignmentModel)
-	err := s.sdb.NewSelect(m).Where("id = ?", assID.String()).Scan(ctx)
+	err := s.sdb.NewSelect(m).
+		Where("id = ?", assID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("assignment %s: %w", assID, errNotFound)
+			return nil, fmt.Errorf("assignment %s: %w", assID, wardenerr.ErrAssignmentNotFound)
 		}
 		return nil, fmt.Errorf("warden: get assignment: %w", err)
 	}
@@ -614,11 +814,16 @@ func (s *Store) GetAssignment(ctx context.Context, assID id.AssignmentID) (*assi
 	return a, nil
 }
 
-func (s *Store) DeleteAssignment(ctx context.Context, assID id.AssignmentID) error {
-	_, err := s.sdb.NewDelete((*assignmentModel)(nil)).
-		Where("id = ?", assID.String()).Exec(ctx)
+func (s *Store) DeleteAssignment(ctx context.Context, tenantID string, assID id.AssignmentID) error {
+	res, err := s.sdb.NewDelete((*assignmentModel)(nil)).
+		Where("id = ?", assID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete assignment: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("assignment %s: %w", assID, wardenerr.ErrAssignmentNotFound)
 	}
 	return nil
 }
@@ -744,10 +949,11 @@ func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID stri
 	return result, nil
 }
 
-func (s *Store) ListSubjectsForRole(ctx context.Context, roleID id.RoleID) ([]*assignment.Assignment, error) {
+func (s *Store) ListSubjectsForRole(ctx context.Context, tenantID string, roleID id.RoleID) ([]*assignment.Assignment, error) {
 	var models []assignmentModel
 	err := s.sdb.NewSelect(&models).
 		Where("role_id = ?", roleID.String()).
+		Where("tenant_id = ?", tenantID).
 		OrderExpr("created_at ASC").
 		Scan(ctx)
 	if err != nil {
@@ -758,6 +964,29 @@ func (s *Store) ListSubjectsForRole(ctx context.Context, roleID id.RoleID) ([]*a
 		a, err := assignmentFromModel(&models[i])
 		if err != nil {
 			return nil, fmt.Errorf("warden: list subjects for role: %w", err)
+		}
+		result[i] = a
+	}
+	return result, nil
+}
+
+func (s *Store) ListExpiringAssignments(ctx context.Context, tenantID string, before time.Time, limit int) ([]*assignment.Assignment, error) {
+	var models []assignmentModel
+	err := s.sdb.NewSelect(&models).
+		Where("tenant_id = ?", tenantID).
+		Where("expires_at IS NOT NULL").
+		Where("expires_at < ?", sqliteTime(before)).
+		OrderExpr("expires_at ASC").
+		Limit(fanoutLimit(limit)).
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("warden: list expiring assignments: %w", err)
+	}
+	result := make([]*assignment.Assignment, len(models))
+	for i := range models {
+		a, err := assignmentFromModel(&models[i])
+		if err != nil {
+			return nil, fmt.Errorf("warden: list expiring assignments: %w", err)
 		}
 		result[i] = a
 	}
@@ -791,9 +1020,11 @@ func (s *Store) DeleteAssignmentsBySubject(ctx context.Context, tenantID, subjec
 	return nil
 }
 
-func (s *Store) DeleteAssignmentsByRole(ctx context.Context, roleID id.RoleID) error {
+func (s *Store) DeleteAssignmentsByRole(ctx context.Context, tenantID string, roleID id.RoleID) error {
 	_, err := s.sdb.NewDelete((*assignmentModel)(nil)).
-		Where("role_id = ?", roleID.String()).Exec(ctx)
+		Where("role_id = ?", roleID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete assignments by role: %w", err)
 	}
@@ -835,11 +1066,16 @@ func (s *Store) CreateRelation(ctx context.Context, t *relation.Tuple) error {
 	return nil
 }
 
-func (s *Store) DeleteRelation(ctx context.Context, relID id.RelationID) error {
-	_, err := s.sdb.NewDelete((*relationModel)(nil)).
-		Where("id = ?", relID.String()).Exec(ctx)
+func (s *Store) DeleteRelation(ctx context.Context, tenantID string, relID id.RelationID) error {
+	res, err := s.sdb.NewDelete((*relationModel)(nil)).
+		Where("id = ?", relID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete relation: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("relation %s: %w", relID, wardenerr.ErrRelationNotFound)
 	}
 	return nil
 }
@@ -938,7 +1174,7 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	return count, nil
 }
 
-func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string, limit int) ([]*relation.Tuple, error) {
 	var models []relationModel
 	q := s.sdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
@@ -949,7 +1185,7 @@ func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, names
 		ph, nsArgs := inPlaceholders(namespacePaths)
 		q = q.Where("namespace_path IN ("+ph+")", nsArgs...)
 	}
-	err := q.OrderExpr("created_at ASC").Scan(ctx)
+	err := q.OrderExpr("created_at ASC").Limit(fanoutLimit(limit)).Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("warden: list relation subjects: %w", err)
 	}
@@ -964,7 +1200,7 @@ func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, names
 	return result, nil
 }
 
-func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath, subjectType, subjectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath, subjectType, subjectID, rel string, limit int) ([]*relation.Tuple, error) {
 	var models []relationModel
 	err := s.sdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
@@ -973,6 +1209,7 @@ func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath
 		Where("subject_id = ?", subjectID).
 		Where("relation = ?", rel).
 		OrderExpr("created_at ASC").
+		Limit(fanoutLimit(limit)).
 		Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("warden: list relation objects: %w", err)
@@ -1069,12 +1306,15 @@ func (s *Store) CreatePolicy(ctx context.Context, p *policy.Policy) error {
 	return nil
 }
 
-func (s *Store) GetPolicy(ctx context.Context, polID id.PolicyID) (*policy.Policy, error) {
+func (s *Store) GetPolicy(ctx context.Context, tenantID string, polID id.PolicyID) (*policy.Policy, error) {
 	m := new(policyModel)
-	err := s.sdb.NewSelect(m).Where("id = ?", polID.String()).Scan(ctx)
+	err := s.sdb.NewSelect(m).
+		Where("id = ?", polID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("policy %s: %w", polID, errNotFound)
+			return nil, fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
 		}
 		return nil, fmt.Errorf("warden: get policy: %w", err)
 	}
@@ -1094,7 +1334,7 @@ func (s *Store) GetPolicyByName(ctx context.Context, tenantID, namespacePath, na
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, errNotFound)
+			return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, wardenerr.ErrPolicyNotFound)
 		}
 		return nil, fmt.Errorf("warden: get policy by name: %w", err)
 	}
@@ -1111,17 +1351,30 @@ func (s *Store) UpdatePolicy(ctx context.Context, p *policy.Policy) error {
 	if err != nil {
 		return fmt.Errorf("warden: update policy: %w", err)
 	}
-	if _, err := s.sdb.NewUpdate(m).WherePK().Exec(ctx); err != nil {
+	res, err := s.sdb.NewUpdate(m).
+		Column(policyUpdateColumns...).
+		WherePK().
+		Where("tenant_id = ?", p.TenantID).
+		Exec(ctx)
+	if err != nil {
 		return fmt.Errorf("warden: update policy: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("policy %s: %w", p.ID, wardenerr.ErrPolicyNotFound)
 	}
 	return nil
 }
 
-func (s *Store) DeletePolicy(ctx context.Context, polID id.PolicyID) error {
-	_, err := s.sdb.NewDelete((*policyModel)(nil)).
-		Where("id = ?", polID.String()).Exec(ctx)
+func (s *Store) DeletePolicy(ctx context.Context, tenantID string, polID id.PolicyID) error {
+	res, err := s.sdb.NewDelete((*policyModel)(nil)).
+		Where("id = ?", polID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete policy: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
 	}
 	return nil
 }
@@ -1210,14 +1463,18 @@ func (s *Store) ListActivePolicies(ctx context.Context, tenantID string, namespa
 	return result, nil
 }
 
-func (s *Store) SetPolicyVersion(ctx context.Context, polID id.PolicyID, version int) error {
-	_, err := s.sdb.NewUpdate((*policyModel)(nil)).
+func (s *Store) SetPolicyVersion(ctx context.Context, tenantID string, polID id.PolicyID, version int) error {
+	res, err := s.sdb.NewUpdate((*policyModel)(nil)).
 		Set("version = ?", version).
-		Set("updated_at = ?", time.Now().UTC()).
+		Set("updated_at = ?", sqliteTime(time.Now().UTC())).
 		Where("id = ?", polID.String()).
+		Where("tenant_id = ?", tenantID).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: set policy version: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
 	}
 	return nil
 }
@@ -1260,12 +1517,15 @@ func (s *Store) CreateResourceType(ctx context.Context, rt *resourcetype.Resourc
 	return nil
 }
 
-func (s *Store) GetResourceType(ctx context.Context, rtID id.ResourceTypeID) (*resourcetype.ResourceType, error) {
+func (s *Store) GetResourceType(ctx context.Context, tenantID string, rtID id.ResourceTypeID) (*resourcetype.ResourceType, error) {
 	m := new(resourceTypeModel)
-	err := s.sdb.NewSelect(m).Where("id = ?", rtID.String()).Scan(ctx)
+	err := s.sdb.NewSelect(m).
+		Where("id = ?", rtID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("resource type %s: %w", rtID, errNotFound)
+			return nil, fmt.Errorf("resource type %s: %w", rtID, wardenerr.ErrResourceTypeNotFound)
 		}
 		return nil, fmt.Errorf("warden: get resource type: %w", err)
 	}
@@ -1285,7 +1545,7 @@ func (s *Store) GetResourceTypeByName(ctx context.Context, tenantID, namespacePa
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("resource type %q in ns %q: %w", name, namespacePath, errNotFound)
+			return nil, fmt.Errorf("resource type %q in ns %q: %w", name, namespacePath, wardenerr.ErrResourceTypeNotFound)
 		}
 		return nil, fmt.Errorf("warden: get resource type by name: %w", err)
 	}
@@ -1302,17 +1562,30 @@ func (s *Store) UpdateResourceType(ctx context.Context, rt *resourcetype.Resourc
 	if err != nil {
 		return fmt.Errorf("warden: update resource type: %w", err)
 	}
-	if _, err := s.sdb.NewUpdate(m).WherePK().Exec(ctx); err != nil {
+	res, err := s.sdb.NewUpdate(m).
+		Column(resourceTypeUpdateColumns...).
+		WherePK().
+		Where("tenant_id = ?", rt.TenantID).
+		Exec(ctx)
+	if err != nil {
 		return fmt.Errorf("warden: update resource type: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("resource type %s: %w", rt.ID, wardenerr.ErrResourceTypeNotFound)
 	}
 	return nil
 }
 
-func (s *Store) DeleteResourceType(ctx context.Context, rtID id.ResourceTypeID) error {
-	_, err := s.sdb.NewDelete((*resourceTypeModel)(nil)).
-		Where("id = ?", rtID.String()).Exec(ctx)
+func (s *Store) DeleteResourceType(ctx context.Context, tenantID string, rtID id.ResourceTypeID) error {
+	res, err := s.sdb.NewDelete((*resourceTypeModel)(nil)).
+		Where("id = ?", rtID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete resource type: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("resource type %s: %w", rtID, wardenerr.ErrResourceTypeNotFound)
 	}
 	return nil
 }
@@ -1395,12 +1668,15 @@ func (s *Store) CreateCheckLog(ctx context.Context, e *checklog.Entry) error {
 	return nil
 }
 
-func (s *Store) GetCheckLog(ctx context.Context, logID id.CheckLogID) (*checklog.Entry, error) {
+func (s *Store) GetCheckLog(ctx context.Context, tenantID string, logID id.CheckLogID) (*checklog.Entry, error) {
 	m := new(checkLogModel)
-	err := s.sdb.NewSelect(m).Where("id = ?", logID.String()).Scan(ctx)
+	err := s.sdb.NewSelect(m).
+		Where("id = ?", logID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
-			return nil, fmt.Errorf("check log %s: %w", logID, errNotFound)
+			return nil, fmt.Errorf("check log %s: %w", logID, wardenerr.ErrCheckLogNotFound)
 		}
 		return nil, fmt.Errorf("warden: get check log: %w", err)
 	}
@@ -1514,6 +1790,22 @@ func (s *Store) PurgeCheckLogs(ctx context.Context, before time.Time) (int64, er
 	return n, nil
 }
 
+func (s *Store) DeleteCheckLogsBySubject(ctx context.Context, tenantID, subjectKind, subjectID string) (int64, error) {
+	res, err := s.sdb.NewDelete((*checkLogModel)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("subject_kind = ?", subjectKind).
+		Where("subject_id = ?", subjectID).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("warden: delete check logs by subject: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("warden: delete check logs by subject rows: %w", err)
+	}
+	return n, nil
+}
+
 func (s *Store) DeleteCheckLogsByTenant(ctx context.Context, tenantID string) error {
 	_, err := s.sdb.NewDelete((*checkLogModel)(nil)).
 		Where("tenant_id = ?", tenantID).Exec(ctx)
@@ -1521,4 +1813,13 @@ func (s *Store) DeleteCheckLogsByTenant(ctx context.Context, tenantID string) er
 		return fmt.Errorf("warden: delete check logs by tenant: %w", err)
 	}
 	return nil
+}
+
+// roleIDStrings renders role IDs for an expanded IN list.
+func roleIDStrings(roleIDs []id.RoleID) []string {
+	out := make([]string, len(roleIDs))
+	for i, rid := range roleIDs {
+		out[i] = rid.String()
+	}
+	return out
 }

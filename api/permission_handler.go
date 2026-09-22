@@ -102,7 +102,9 @@ func (a *API) getPermission(ctx forge.Context, _ *GetPermissionRequest) (*permis
 		return nil, forge.BadRequest(fmt.Sprintf("invalid permission ID: %v", err))
 	}
 
-	p, err := a.eng.Store().GetPermission(ctx.Context(), permID)
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	p, err := a.eng.Store().GetPermission(ctx.Context(), tenantID, permID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -116,7 +118,9 @@ func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*str
 		return nil, forge.BadRequest(fmt.Sprintf("invalid permission ID: %v", err))
 	}
 
-	if err := a.eng.Store().DeletePermission(ctx.Context(), permID); err != nil {
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	if err := a.eng.Store().DeletePermission(ctx.Context(), tenantID, permID); err != nil {
 		return nil, mapError(err)
 	}
 

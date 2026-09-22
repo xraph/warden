@@ -127,7 +127,9 @@ func (a *API) getPolicy(ctx forge.Context, _ *GetPolicyRequest) (*policy.Policy,
 		return nil, forge.BadRequest(fmt.Sprintf("invalid policy ID: %v", err))
 	}
 
-	p, err := a.eng.Store().GetPolicy(ctx.Context(), polID)
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	p, err := a.eng.Store().GetPolicy(ctx.Context(), tenantID, polID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -141,7 +143,9 @@ func (a *API) updatePolicy(ctx forge.Context, req *UpdatePolicyRequest) (*policy
 		return nil, forge.BadRequest(fmt.Sprintf("invalid policy ID: %v", err))
 	}
 
-	p, err := a.eng.Store().GetPolicy(ctx.Context(), polID)
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	p, err := a.eng.Store().GetPolicy(ctx.Context(), tenantID, polID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -213,7 +217,9 @@ func (a *API) deletePolicy(ctx forge.Context, _ *GetPolicyRequest) (*struct{}, e
 		return nil, forge.BadRequest(fmt.Sprintf("invalid policy ID: %v", err))
 	}
 
-	if err := a.eng.Store().DeletePolicy(ctx.Context(), polID); err != nil {
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	if err := a.eng.Store().DeletePolicy(ctx.Context(), tenantID, polID); err != nil {
 		return nil, mapError(err)
 	}
 

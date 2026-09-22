@@ -164,6 +164,45 @@ func permissionFromModel(m *permissionModel) (*permission.Permission, error) {
 // Role-Permission junction model
 // ──────────────────────────────────────────────────
 
+// rolePermissionRow is the projection ListRolePermissionsForRoles scans: a
+// full permission record plus the role that grants it. The columns are spelled
+// out rather than embedded, because grove skips embedded fields whose type is
+// unexported. The table tag is only there to satisfy grove's model resolver;
+// the query is raw SQL and never uses the name.
+type rolePermissionRow struct {
+	grove.BaseModel `grove:"table:warden_role_permission_grants"`
+	RoleID          string     `grove:"role_id"`
+	ID              string     `grove:"id"`
+	TenantID        string     `grove:"tenant_id"`
+	NamespacePath   string     `grove:"namespace_path"`
+	AppID           string     `grove:"app_id"`
+	Name            string     `grove:"name"`
+	Description     string     `grove:"description"`
+	Resource        string     `grove:"resource"`
+	Action          string     `grove:"action"`
+	IsSystem        bool       `grove:"is_system"`
+	Metadata        string     `grove:"metadata"` // JSON text
+	CreatedAt       sqliteTime `grove:"created_at"`
+	UpdatedAt       sqliteTime `grove:"updated_at"`
+}
+
+func (r *rolePermissionRow) permission() *permissionModel {
+	return &permissionModel{
+		ID:            r.ID,
+		TenantID:      r.TenantID,
+		NamespacePath: r.NamespacePath,
+		AppID:         r.AppID,
+		Name:          r.Name,
+		Description:   r.Description,
+		Resource:      r.Resource,
+		Action:        r.Action,
+		IsSystem:      r.IsSystem,
+		Metadata:      r.Metadata,
+		CreatedAt:     r.CreatedAt,
+		UpdatedAt:     r.UpdatedAt,
+	}
+}
+
 type rolePermissionModel struct {
 	grove.BaseModel   `grove:"table:warden_role_permissions"`
 	RoleID            string `grove:"role_id,pk"`
@@ -577,8 +616,14 @@ type checkLogModel struct {
 	ResourceID      string     `grove:"resource_id,notnull"`
 	Decision        string     `grove:"decision,notnull"`
 	Reason          string     `grove:"reason"`
+	MatchedBy       string     `grove:"matched_by"`  // JSON text
+	Obligations     string     `grove:"obligations"` // JSON text
 	EvalTimeNs      int64      `grove:"eval_time_ns,notnull"`
 	RequestIP       string     `grove:"request_ip"`
+	RequestID       string     `grove:"request_id"`
+	TraceID         string     `grove:"trace_id"`
+	Cached          bool       `grove:"cached,notnull"`
+	Error           string     `grove:"error"`
 	Metadata        string     `grove:"metadata"` // JSON text
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 }
@@ -587,6 +632,14 @@ func checkLogToModel(e *checklog.Entry) (*checkLogModel, error) {
 	metadata, err := json.Marshal(e.Metadata)
 	if err != nil {
 		return nil, fmt.Errorf("marshal check log metadata: %w", err)
+	}
+	matchedBy, err := json.Marshal(e.MatchedBy)
+	if err != nil {
+		return nil, fmt.Errorf("marshal check log matched_by: %w", err)
+	}
+	obligations, err := json.Marshal(e.Obligations)
+	if err != nil {
+		return nil, fmt.Errorf("marshal check log obligations: %w", err)
 	}
 	return &checkLogModel{
 		ID:            e.ID.String(),
@@ -600,8 +653,14 @@ func checkLogToModel(e *checklog.Entry) (*checkLogModel, error) {
 		ResourceID:    e.ResourceID,
 		Decision:      e.Decision,
 		Reason:        e.Reason,
+		MatchedBy:     string(matchedBy),
+		Obligations:   string(obligations),
 		EvalTimeNs:    e.EvalTimeNs,
 		RequestIP:     e.RequestIP,
+		RequestID:     e.RequestID,
+		TraceID:       e.TraceID,
+		Cached:        e.Cached,
+		Error:         e.Error,
 		Metadata:      string(metadata),
 		CreatedAt:     sqliteTime(e.CreatedAt),
 	}, nil
@@ -613,6 +672,18 @@ func checkLogFromModel(m *checkLogModel) (*checklog.Entry, error) {
 	if m.Metadata != "" {
 		if err := json.Unmarshal([]byte(m.Metadata), &metadata); err != nil {
 			return nil, fmt.Errorf("unmarshal check log metadata: %w", err)
+		}
+	}
+	var matchedBy []checklog.MatchRef
+	if m.MatchedBy != "" {
+		if err := json.Unmarshal([]byte(m.MatchedBy), &matchedBy); err != nil {
+			return nil, fmt.Errorf("unmarshal check log matched_by: %w", err)
+		}
+	}
+	var obligations []string
+	if m.Obligations != "" {
+		if err := json.Unmarshal([]byte(m.Obligations), &obligations); err != nil {
+			return nil, fmt.Errorf("unmarshal check log obligations: %w", err)
 		}
 	}
 	return &checklog.Entry{
@@ -627,8 +698,14 @@ func checkLogFromModel(m *checkLogModel) (*checklog.Entry, error) {
 		ResourceID:    m.ResourceID,
 		Decision:      m.Decision,
 		Reason:        m.Reason,
+		MatchedBy:     matchedBy,
+		Obligations:   obligations,
 		EvalTimeNs:    m.EvalTimeNs,
 		RequestIP:     m.RequestIP,
+		RequestID:     m.RequestID,
+		TraceID:       m.TraceID,
+		Cached:        m.Cached,
+		Error:         m.Error,
 		Metadata:      metadata,
 		CreatedAt:     time.Time(m.CreatedAt),
 	}, nil

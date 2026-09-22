@@ -198,7 +198,7 @@ func (e *Evaluator) walkTraversal(ctx context.Context, steps []string, ec EvalCo
 	}
 	// Hop step 0: enumerate (object, relation=steps[0], ?) tuples.
 	tuples, err := e.relStore.ListRelationSubjects(ctx, ec.TenantID, ec.nsList(),
-		ec.ObjectType, ec.ObjectID, steps[0])
+		ec.ObjectType, ec.ObjectID, steps[0], 0)
 	if err != nil {
 		return false, err
 	}

@@ -257,13 +257,14 @@ func fetchCheckLogs(ctx context.Context, s store.Store, tenantID string, limit i
 	return entries, nil
 }
 
-// fetchRoleWithPermissions returns a role and its attached permissions.
-func fetchRoleWithPermissions(ctx context.Context, s store.Store, roleID id.RoleID) (*role.Role, []*permission.Permission, error) {
-	r, err := s.GetRole(ctx, roleID)
+// fetchRoleWithPermissions returns a role and its attached permissions
+// within a tenant.
+func fetchRoleWithPermissions(ctx context.Context, s store.Store, tenantID string, roleID id.RoleID) (*role.Role, []*permission.Permission, error) {
+	r, err := s.GetRole(ctx, tenantID, roleID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dashboard: fetch role: %w", err)
 	}
-	perms, err := s.ListPermissionsByRole(ctx, roleID)
+	perms, err := s.ListPermissionsByRole(ctx, tenantID, roleID)
 	if err != nil {
 		perms = nil
 	}
@@ -293,7 +294,7 @@ func fetchEntityCounts(ctx context.Context, s store.Store, tenantID string) enti
 
 // enrichRoleRows fetches permission counts, resolves parent role names,
 // and counts relation tuples for each role.
-func enrichRoleRows(ctx context.Context, s store.Store, roles []*role.Role) []pages.RoleRow {
+func enrichRoleRows(ctx context.Context, s store.Store, tenantID string, roles []*role.Role) []pages.RoleRow {
 	rows := make([]pages.RoleRow, len(roles))
 
 	// Cache parents we resolve via GetRoleBySlug, keyed by (tenant, namespace, slug).
@@ -333,7 +334,7 @@ func enrichRoleRows(ctx context.Context, s store.Store, roles []*role.Role) []pa
 		rows[i].Role = r
 
 		// Permission count.
-		if permIDs, err := s.ListRolePermissions(ctx, r.ID); err == nil {
+		if permIDs, err := s.ListRolePermissions(ctx, tenantID, r.ID); err == nil {
 			rows[i].PermissionCount = len(permIDs)
 		}
 

@@ -154,7 +154,9 @@ func (a *API) getRole(ctx forge.Context, _ *GetRoleRequest) (*role.Role, error) 
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 
-	r, err := a.eng.Store().GetRole(ctx.Context(), roleID)
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	r, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -168,7 +170,9 @@ func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role,
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 
-	r, err := a.eng.Store().GetRole(ctx.Context(), roleID)
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	r, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -216,7 +220,9 @@ func (a *API) deleteRole(ctx forge.Context, _ *GetRoleRequest) (*struct{}, error
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 
-	if err := a.eng.Store().DeleteRole(ctx.Context(), roleID); err != nil {
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	if err := a.eng.Store().DeleteRole(ctx.Context(), tenantID, roleID); err != nil {
 		return nil, mapError(err)
 	}
 
@@ -258,12 +264,9 @@ func (a *API) resolvePermRef(ctx forge.Context, tenantID, permIDStr, permName, p
 	if err != nil {
 		return permission.Ref{}, nil, forge.BadRequest(fmt.Sprintf("invalid permission ID: %v", err))
 	}
-	p, err := a.eng.Store().GetPermission(ctx.Context(), pid)
+	p, err := a.eng.Store().GetPermission(ctx.Context(), tenantID, pid)
 	if err != nil || p == nil {
 		return permission.Ref{}, nil, forge.NotFound(fmt.Sprintf("permission %q not found", permIDStr))
-	}
-	if p.TenantID != tenantID {
-		return permission.Ref{}, nil, forge.NotFound(fmt.Sprintf("permission %q not found in tenant", permIDStr))
 	}
 	return permission.Ref{NamespacePath: p.NamespacePath, Name: p.Name}, &pid, nil
 }
@@ -280,7 +283,7 @@ func (a *API) attachPermissionToRole(ctx forge.Context, req *AttachPermissionReq
 		return nil, perr
 	}
 
-	if err := a.eng.Store().AttachPermission(ctx.Context(), roleID, ref); err != nil {
+	if err := a.eng.Store().AttachPermission(ctx.Context(), tenantID, roleID, ref); err != nil {
 		return nil, mapError(err)
 	}
 
@@ -307,7 +310,7 @@ func (a *API) detachPermissionFromRole(ctx forge.Context, req *DetachPermissionR
 		return nil, perr
 	}
 
-	if err := a.eng.Store().DetachPermission(ctx.Context(), roleID, ref); err != nil {
+	if err := a.eng.Store().DetachPermission(ctx.Context(), tenantID, roleID, ref); err != nil {
 		return nil, mapError(err)
 	}
 

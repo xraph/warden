@@ -30,7 +30,7 @@ func main() {
 	_ = s.CreatePermission(ctx, &permission.Permission{
 		TenantID: "tenant-1", Name: "document:read", Resource: "document", Action: "read",
 	})
-	_ = s.AttachPermission(ctx, editor.ID, permission.Ref{Name: "document:read"})
+	_ = s.AttachPermission(ctx, "tenant-1", editor.ID, permission.Ref{Name: "document:read"})
 
 	// Assign role to user.
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{

@@ -71,7 +71,9 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		}
 		visited[visitKey] = struct{}{}
 
-		tuples, err := relStore.ListRelationSubjects(ctx, tenantID, namespaces, node.objectType, node.objectID, node.relation)
+		// Fan-out per hop is left at the store default here; Task 4 threads
+		// the configured cap through.
+		tuples, err := relStore.ListRelationSubjects(ctx, tenantID, namespaces, node.objectType, node.objectID, node.relation, 0)
 		if err != nil {
 			return false, "", fmt.Errorf("list subjects for %s: %w", visitKey, err)
 		}
