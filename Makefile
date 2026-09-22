@@ -197,19 +197,32 @@ test-coverage:
 	@echo "$(GREEN)✓ Coverage profile written: coverage.out$(NC)"
 
 ## coverage-check: Fail if total coverage < 70%, or api/middleware/store/memory/store/sqlite < 60%
+##
+## A package with no matching lines in coverage.out is a hard failure, not a
+## skip: a rename or a moved import path must not silently stop enforcing
+## that package's floor.
 coverage-check: test-coverage
 	@echo "$(BLUE)Checking coverage thresholds...$(NC)"
-	@TOTAL=$$($(GO) tool cover -func=coverage.out | tail -1 | awk '{gsub("%","",$$3); print $$3}'); \
+	@if [ ! -s coverage.out ]; then \
+	  echo "FAIL: coverage.out is missing or empty; test-coverage did not produce a profile"; \
+	  exit 1; \
+	fi; \
+	TOTAL=$$($(GO) tool cover -func=coverage.out | tail -1 | awk '{gsub("%","",$$3); print $$3}'); \
+	if [ -z "$$TOTAL" ]; then \
+	  echo "FAIL: could not compute total coverage from coverage.out (empty profile, or unexpected 'go tool cover -func' output)"; \
+	  exit 1; \
+	fi; \
 	echo "Total coverage: $${TOTAL}%"; \
-	awk -v t="$$TOTAL" 'BEGIN { if (t+0 < 70) { print "FAIL: total coverage " t "% is below the 70% floor"; exit 1 } }'; \
-	FAIL=$$?; \
+	FAIL=0; \
+	awk -v t="$$TOTAL" 'BEGIN { if (t+0 < 70) { print "FAIL: total coverage " t "% is below the 70% floor"; exit 1 } }' || FAIL=1; \
 	for pkg in api middleware store/memory store/sqlite; do \
 	  TMPFILE=$$(mktemp); \
 	  echo "mode: atomic" > "$$TMPFILE"; \
 	  grep "github.com/xraph/warden/$$pkg/" coverage.out >> "$$TMPFILE" || true; \
 	  if [ "$$(wc -l < "$$TMPFILE")" -le 1 ]; then \
-	    echo "SKIP: no coverage data for $$pkg"; \
+	    echo "FAIL: no coverage data for $$pkg (nothing in coverage.out matched import path github.com/xraph/warden/$$pkg/; if the package was renamed or moved, update this target too, don't let its floor go unenforced)"; \
 	    rm -f "$$TMPFILE"; \
+	    FAIL=1; \
 	    continue; \
 	  fi; \
 	  PCT=$$($(GO) tool cover -func="$$TMPFILE" | tail -1 | awk '{gsub("%","",$$3); print $$3}'); \
