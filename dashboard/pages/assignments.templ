@@ -17,7 +17,7 @@ import (
 	"github.com/xraph/forgeui/icons"
 )
 
-templ AssignmentsPage(assignments []*assignment.Assignment, subjectKind, subjectID, roleIDFilter string, allRoles []*role.Role, pg components.PaginationMeta) {
+templ AssignmentsPage(assignments []*assignment.Assignment, subjectKind, subjectID, roleIDFilter string, allRoles []*role.Role, pg components.PaginationMeta, basePath string) {
 	<div class="space-y-6">
 		@components.PageHeader("Role Assignments", strconv.FormatInt(pg.Total, 10), "") {
 			@button.Button(button.Props{
@@ -166,7 +166,7 @@ templ AssignmentsPage(assignments []*assignment.Assignment, subjectKind, subject
 		}
 
 		<!-- Create Assignment Dialog -->
-		@AssignmentCreateDialog(allRoles)
+		@AssignmentCreateDialog(allRoles, basePath)
 		@components.DialogHelpers()
 		<script>
 		if (new URLSearchParams(window.location.search).get('create') === '1') {

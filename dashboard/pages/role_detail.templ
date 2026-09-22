@@ -15,7 +15,7 @@ import (
 	"github.com/xraph/forgeui/icons"
 )
 
-templ RoleDetailPage(r *role.Role, perms []*permission.Permission, childRoles []*role.Role, allRoles []*role.Role, allPerms []*permission.Permission) {
+templ RoleDetailPage(r *role.Role, perms []*permission.Permission, childRoles []*role.Role, allRoles []*role.Role, allPerms []*permission.Permission, basePath string) {
 	<div class="space-y-6">
 		<!-- Header -->
 		<div class="flex items-center justify-between">
@@ -215,7 +215,7 @@ templ RoleDetailPage(r *role.Role, perms []*permission.Permission, childRoles []
 
 		<!-- Inline Dialogs -->
 		if !r.IsSystem {
-			@RoleEditDialog(r, allRoles)
+			@RoleEditDialog(r, allRoles, basePath)
 			@components.ConfirmDialog(components.ConfirmDialogProps{
 				ID:           "delete-role-" + r.ID.String(),
 				Title:        "Delete Role",

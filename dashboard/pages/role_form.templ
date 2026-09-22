@@ -12,8 +12,11 @@ import (
 	switchcomp "github.com/xraph/forgeui/components/switch"
 )
 
-// RoleCreateDialog renders a create role modal dialog.
-templ RoleCreateDialog(roles []*role.Role) {
+// RoleCreateDialog renders a create role modal dialog. basePath is the
+// warden extension's mounted API prefix (see PlaygroundPage), used so the
+// form posts to the right place regardless of where the host app mounts
+// the API.
+templ RoleCreateDialog(roles []*role.Role, basePath string) {
 	@dialog.Dialog(dialog.Props{ID: "create-role-dialog"}) {
 		@dialog.Content() {
 			@dialog.Header() {
@@ -26,7 +29,7 @@ templ RoleCreateDialog(roles []*role.Role) {
 			}
 			<div id="create-role-errors" class="text-sm text-destructive"></div>
 			<form
-				hx-post="/v1/roles"
+				hx-post={ basePath + "/v1/roles" }
 				hx-ext="json-enc"
 				hx-target="#create-role-errors"
 				hx-swap="innerHTML"
@@ -82,7 +85,7 @@ templ RoleCreateDialog(roles []*role.Role) {
 }
 
 // RoleEditDialog renders an edit role modal dialog.
-templ RoleEditDialog(r *role.Role, roles []*role.Role) {
+templ RoleEditDialog(r *role.Role, roles []*role.Role, basePath string) {
 	@dialog.Dialog(dialog.Props{ID: "edit-role-dialog"}) {
 		@dialog.Content() {
 			@dialog.Header() {
@@ -95,7 +98,7 @@ templ RoleEditDialog(r *role.Role, roles []*role.Role) {
 			}
 			<div id="edit-role-errors" class="text-sm text-destructive"></div>
 			<form
-				{ htmxFormAttrs("/v1/roles/" + r.ID.String(), "put", "#edit-role-errors", "edit-role-dialog", "/roles/detail?id=" + r.ID.String())... }
+				{ htmxFormAttrs(basePath+"/v1/roles/"+r.ID.String(), "put", "#edit-role-errors", "edit-role-dialog", "/roles/detail?id=" + r.ID.String())... }
 				class="space-y-4"
 			>
 				@form.Item() {

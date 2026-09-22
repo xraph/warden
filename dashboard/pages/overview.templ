@@ -15,7 +15,7 @@ import (
 	"github.com/xraph/forgeui/icons"
 )
 
-templ OverviewPage(roles, permissions, assignments, relations, policies, resourceTypes int64, recentLogs []*checklog.Entry, cfg warden.Config, allRoles []*role.Role) {
+templ OverviewPage(roles, permissions, assignments, relations, policies, resourceTypes int64, recentLogs []*checklog.Entry, cfg warden.Config, allRoles []*role.Role, basePath string) {
 	<div class="flex flex-col gap-8">
 		<!-- Page Header -->
 		<div>
@@ -230,10 +230,10 @@ templ OverviewPage(roles, permissions, assignments, relations, policies, resourc
 		{ children... }
 
 		<!-- Create Dialogs -->
-		@RoleCreateDialog(allRoles)
-		@PermissionCreateDialog()
-		@AssignmentCreateDialog(allRoles)
-		@RelationCreateDialog()
+		@RoleCreateDialog(allRoles, basePath)
+		@PermissionCreateDialog(basePath)
+		@AssignmentCreateDialog(allRoles, basePath)
+		@RelationCreateDialog(basePath)
 		@components.DialogHelpers()
 	</div>
 }

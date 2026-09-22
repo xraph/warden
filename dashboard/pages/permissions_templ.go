@@ -23,7 +23,7 @@ import (
 	"github.com/xraph/warden/permission"
 )
 
-func PermissionsPage(perms []*permission.Permission, search, resource, action string, pg components.PaginationMeta) templ.Component {
+func PermissionsPage(perms []*permission.Permission, search, resource, action string, pg components.PaginationMeta, basePath string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -779,7 +779,7 @@ func PermissionsPage(perms []*permission.Permission, search, resource, action st
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = PermissionCreateDialog().Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = PermissionCreateDialog(basePath).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

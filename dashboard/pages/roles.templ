@@ -15,7 +15,7 @@ import (
 	"github.com/xraph/forgeui/icons"
 )
 
-templ RolesPage(rows []RoleRow, search string, pg components.PaginationMeta) {
+templ RolesPage(rows []RoleRow, search string, pg components.PaginationMeta, basePath string) {
 	<div class="space-y-6">
 		@components.PageHeader("Roles", strconv.FormatInt(pg.Total, 10), "") {
 			@RoleCreateDialogTrigger()
@@ -190,7 +190,7 @@ templ RolesPage(rows []RoleRow, search string, pg components.PaginationMeta) {
 
 		<!-- Create Role Dialog -->
 		{{ roles := extractRoles(rows) }}
-		@RoleCreateDialog(roles)
+		@RoleCreateDialog(roles, basePath)
 		@components.DialogHelpers()
 		<script>
 		if (new URLSearchParams(window.location.search).get('create') === '1') {

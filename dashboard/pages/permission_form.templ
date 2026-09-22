@@ -10,7 +10,7 @@ import (
 )
 
 // PermissionCreateDialog renders a create permission modal dialog.
-templ PermissionCreateDialog() {
+templ PermissionCreateDialog(basePath string) {
 	@dialog.Dialog(dialog.Props{ID: "create-permission-dialog"}) {
 		@dialog.Content() {
 			@dialog.Header() {
@@ -23,7 +23,7 @@ templ PermissionCreateDialog() {
 			}
 			<div id="create-perm-errors" class="text-sm text-destructive"></div>
 			<form
-				hx-post="/v1/permissions"
+				hx-post={ basePath + "/v1/permissions" }
 				hx-ext="json-enc"
 				hx-target="#create-perm-errors"
 				hx-swap="innerHTML"

@@ -15,7 +15,7 @@ import (
 	"github.com/xraph/forgeui/icons"
 )
 
-templ PermissionsPage(perms []*permission.Permission, search, resource, action string, pg components.PaginationMeta) {
+templ PermissionsPage(perms []*permission.Permission, search, resource, action string, pg components.PaginationMeta, basePath string) {
 	<div class="space-y-6">
 		@components.PageHeader("Permissions", strconv.FormatInt(pg.Total, 10), "") {
 			@button.Button(button.Props{
@@ -157,7 +157,7 @@ templ PermissionsPage(perms []*permission.Permission, search, resource, action s
 		}
 
 		<!-- Create Permission Dialog -->
-		@PermissionCreateDialog()
+		@PermissionCreateDialog(basePath)
 		@components.DialogHelpers()
 		<script>
 		if (new URLSearchParams(window.location.search).get('create') === '1') {

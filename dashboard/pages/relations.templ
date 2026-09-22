@@ -15,7 +15,7 @@ import (
 	"github.com/xraph/forgeui/icons"
 )
 
-templ RelationsPage(tuples []*relation.Tuple, objectType, rel, subjectType string, pg components.PaginationMeta) {
+templ RelationsPage(tuples []*relation.Tuple, objectType, rel, subjectType string, pg components.PaginationMeta, basePath string) {
 	<div class="space-y-6">
 		@components.PageHeader("Relation Tuples", strconv.FormatInt(pg.Total, 10), "Zanzibar-style relation tuples for relationship-based access control (ReBAC).") {
 			@button.Button(button.Props{
@@ -156,7 +156,7 @@ templ RelationsPage(tuples []*relation.Tuple, objectType, rel, subjectType strin
 		}
 
 		<!-- Create Relation Dialog -->
-		@RelationCreateDialog()
+		@RelationCreateDialog(basePath)
 		@components.DialogHelpers()
 		<script>
 		if (new URLSearchParams(window.location.search).get('create') === '1') {

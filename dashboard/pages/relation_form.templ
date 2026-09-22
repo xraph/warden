@@ -8,7 +8,7 @@ import (
 )
 
 // RelationCreateDialog renders a write relation tuple modal dialog.
-templ RelationCreateDialog() {
+templ RelationCreateDialog(basePath string) {
 	@dialog.Dialog(dialog.Props{ID: "create-relation-dialog"}) {
 		@dialog.Content() {
 			@dialog.Header() {
@@ -21,7 +21,7 @@ templ RelationCreateDialog() {
 			}
 			<div id="create-relation-errors" class="text-sm text-destructive"></div>
 			<form
-				hx-post="/v1/relations"
+				hx-post={ basePath + "/v1/relations" }
 				hx-ext="json-enc"
 				hx-target="#create-relation-errors"
 				hx-swap="innerHTML"

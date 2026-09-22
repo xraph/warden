@@ -9,7 +9,7 @@ import (
 )
 
 // AssignmentCreateDialog renders a create assignment modal dialog.
-templ AssignmentCreateDialog(roles []*role.Role) {
+templ AssignmentCreateDialog(roles []*role.Role, basePath string) {
 	@dialog.Dialog(dialog.Props{ID: "create-assignment-dialog"}) {
 		@dialog.Content() {
 			@dialog.Header() {
@@ -22,7 +22,7 @@ templ AssignmentCreateDialog(roles []*role.Role) {
 			}
 			<div id="create-assignment-errors" class="text-sm text-destructive"></div>
 			<form
-				hx-post="/v1/assignments"
+				hx-post={ basePath + "/v1/assignments" }
 				hx-ext="json-enc"
 				hx-target="#create-assignment-errors"
 				hx-swap="innerHTML"

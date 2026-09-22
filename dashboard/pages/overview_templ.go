@@ -23,7 +23,7 @@ import (
 	"github.com/xraph/warden/role"
 )
 
-func OverviewPage(roles, permissions, assignments, relations, policies, resourceTypes int64, recentLogs []*checklog.Entry, cfg warden.Config, allRoles []*role.Role) templ.Component {
+func OverviewPage(roles, permissions, assignments, relations, policies, resourceTypes int64, recentLogs []*checklog.Entry, cfg warden.Config, allRoles []*role.Role, basePath string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -1136,19 +1136,19 @@ func OverviewPage(roles, permissions, assignments, relations, policies, resource
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = RoleCreateDialog(allRoles).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = RoleCreateDialog(allRoles, basePath).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = PermissionCreateDialog().Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = PermissionCreateDialog(basePath).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = AssignmentCreateDialog(allRoles).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = AssignmentCreateDialog(allRoles, basePath).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = RelationCreateDialog().Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = RelationCreateDialog(basePath).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

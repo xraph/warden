@@ -208,7 +208,7 @@ func (c *Contributor) renderOverview(ctx context.Context, s store.Store, tenantI
 
 	return templ.ComponentFunc(func(tCtx context.Context, w io.Writer) error {
 		childCtx := templ.WithChildren(tCtx, components.PluginSections(pluginSections))
-		return pages.OverviewPage(counts.Roles, counts.Permissions, counts.Assignments, counts.Relations, counts.Policies, counts.ResourceTypes, logs, cfg, allRoles).Render(childCtx, w)
+		return pages.OverviewPage(counts.Roles, counts.Permissions, counts.Assignments, counts.Relations, counts.Policies, counts.ResourceTypes, logs, cfg, allRoles, c.basePath).Render(childCtx, w)
 	}), nil
 }
 
@@ -230,7 +230,7 @@ func (c *Contributor) renderRoles(ctx context.Context, s store.Store, tenantID s
 	rows := enrichRoleRows(ctx, s, tenantID, roles)
 
 	pg := components.NewPaginationMeta(total, limit, offset)
-	return pages.RolesPage(rows, search, pg), nil
+	return pages.RolesPage(rows, search, pg, c.basePath), nil
 }
 
 func (c *Contributor) renderRoleDetail(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
@@ -262,7 +262,7 @@ func (c *Contributor) renderRoleDetail(ctx context.Context, s store.Store, tenan
 
 	return templ.ComponentFunc(func(tCtx context.Context, w io.Writer) error {
 		childCtx := templ.WithChildren(tCtx, components.PluginSections(pluginSections))
-		return pages.RoleDetailPage(r, perms, childRoles, allRoles, allPerms).Render(childCtx, w)
+		return pages.RoleDetailPage(r, perms, childRoles, allRoles, allPerms, c.basePath).Render(childCtx, w)
 	}), nil
 }
 
@@ -283,7 +283,7 @@ func (c *Contributor) renderPermissions(ctx context.Context, s store.Store, tena
 		total = 0
 	}
 	pg := components.NewPaginationMeta(total, limit, offset)
-	return pages.PermissionsPage(perms, search, resource, action, pg), nil
+	return pages.PermissionsPage(perms, search, resource, action, pg, c.basePath), nil
 }
 
 func (c *Contributor) renderAssignments(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
@@ -307,7 +307,7 @@ func (c *Contributor) renderAssignments(ctx context.Context, s store.Store, tena
 	allRoles, _ := fetchRoles(ctx, s, tenantID) //nolint:errcheck // display data
 
 	pg := components.NewPaginationMeta(total, limit, offset)
-	return pages.AssignmentsPage(items, subjectKind, subjectID, roleIDStr, allRoles, pg), nil
+	return pages.AssignmentsPage(items, subjectKind, subjectID, roleIDStr, allRoles, pg, c.basePath), nil
 }
 
 func (c *Contributor) renderRelations(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
@@ -329,7 +329,7 @@ func (c *Contributor) renderRelations(ctx context.Context, s store.Store, tenant
 		total = 0
 	}
 	pg := components.NewPaginationMeta(total, limit, offset)
-	return pages.RelationsPage(items, objectType, rel, subjectType, pg), nil
+	return pages.RelationsPage(items, objectType, rel, subjectType, pg, c.basePath), nil
 }
 
 func (c *Contributor) renderPolicies(ctx context.Context, s store.Store, tenantID string, params contributor.Params) (templ.Component, error) {
