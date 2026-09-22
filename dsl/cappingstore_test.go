@@ -52,8 +52,7 @@ func pageOf[T any](rows []T, key func(T) (time.Time, string), limit, offset int)
 	return rows
 }
 
-// stripPage returns a copy of the filter with Limit and Offset cleared, so the
-// wrapped store hands back every matching row for pageOf to order.
+// stripPage returns a copy of the filter with Limit and Offset cleared.
 func stripPage[F any](f *F, fields func(*F) (*int, *int)) *F {
 	if f == nil {
 		var zero F
@@ -65,9 +64,31 @@ func stripPage[F any](f *F, fields func(*F) (*int, *int)) *F {
 	return &c
 }
 
+// fetchAll fetches the full result set from the wrapped store in a single
+// call, with an explicit Limit (maxCollectedRows, the same ceiling
+// collectPages itself enforces) so the memory store's own default-limit
+// cap (applyPagination now truncates at 1000 when Limit is left at zero,
+// matching the SQL backends) never bites.
+//
+// A single call, not several with increasing Offset: the memory backend
+// enumerates in Go map order, which the language randomises fresh on
+// every separate range over the map. Two calls a moment apart can walk
+// the same rows in two different orders, so an Offset chosen against one
+// call's ordering does not name the same rows in the next call, and
+// paging across multiple calls would return rows out of sequence,
+// duplicated, or skipped. One call sees one consistent snapshot; pageOf
+// then imposes the one deterministic sort cappingStore promises, and
+// slices that sorted snapshot exactly like a real ordered backend would.
+func fetchAll[F any, T any](ctx context.Context, list func(context.Context, *F) ([]T, error), f *F, fields func(*F) (*int, *int)) ([]T, error) {
+	base := stripPage(f, fields)
+	limitPtr, offsetPtr := fields(base)
+	*limitPtr, *offsetPtr = maxCollectedRows, 0
+	return list(ctx, base)
+}
+
 func (c *cappingStore) ListRoles(ctx context.Context, f *role.ListFilter) ([]*role.Role, error) {
 	limit, offset := pageArgs(f, func(x *role.ListFilter) (int, int) { return x.Limit, x.Offset })
-	rows, err := c.Store.ListRoles(ctx, stripPage(f, func(x *role.ListFilter) (*int, *int) { return &x.Limit, &x.Offset }))
+	rows, err := fetchAll(ctx, c.Store.ListRoles, f, func(x *role.ListFilter) (*int, *int) { return &x.Limit, &x.Offset })
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +97,7 @@ func (c *cappingStore) ListRoles(ctx context.Context, f *role.ListFilter) ([]*ro
 
 func (c *cappingStore) ListPermissions(ctx context.Context, f *permission.ListFilter) ([]*permission.Permission, error) {
 	limit, offset := pageArgs(f, func(x *permission.ListFilter) (int, int) { return x.Limit, x.Offset })
-	rows, err := c.Store.ListPermissions(ctx, stripPage(f, func(x *permission.ListFilter) (*int, *int) { return &x.Limit, &x.Offset }))
+	rows, err := fetchAll(ctx, c.Store.ListPermissions, f, func(x *permission.ListFilter) (*int, *int) { return &x.Limit, &x.Offset })
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +106,7 @@ func (c *cappingStore) ListPermissions(ctx context.Context, f *permission.ListFi
 
 func (c *cappingStore) ListPolicies(ctx context.Context, f *policy.ListFilter) ([]*policy.Policy, error) {
 	limit, offset := pageArgs(f, func(x *policy.ListFilter) (int, int) { return x.Limit, x.Offset })
-	rows, err := c.Store.ListPolicies(ctx, stripPage(f, func(x *policy.ListFilter) (*int, *int) { return &x.Limit, &x.Offset }))
+	rows, err := fetchAll(ctx, c.Store.ListPolicies, f, func(x *policy.ListFilter) (*int, *int) { return &x.Limit, &x.Offset })
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +115,7 @@ func (c *cappingStore) ListPolicies(ctx context.Context, f *policy.ListFilter) (
 
 func (c *cappingStore) ListResourceTypes(ctx context.Context, f *resourcetype.ListFilter) ([]*resourcetype.ResourceType, error) {
 	limit, offset := pageArgs(f, func(x *resourcetype.ListFilter) (int, int) { return x.Limit, x.Offset })
-	rows, err := c.Store.ListResourceTypes(ctx, stripPage(f, func(x *resourcetype.ListFilter) (*int, *int) { return &x.Limit, &x.Offset }))
+	rows, err := fetchAll(ctx, c.Store.ListResourceTypes, f, func(x *resourcetype.ListFilter) (*int, *int) { return &x.Limit, &x.Offset })
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +124,7 @@ func (c *cappingStore) ListResourceTypes(ctx context.Context, f *resourcetype.Li
 
 func (c *cappingStore) ListRelations(ctx context.Context, f *relation.ListFilter) ([]*relation.Tuple, error) {
 	limit, offset := pageArgs(f, func(x *relation.ListFilter) (int, int) { return x.Limit, x.Offset })
-	rows, err := c.Store.ListRelations(ctx, stripPage(f, func(x *relation.ListFilter) (*int, *int) { return &x.Limit, &x.Offset }))
+	rows, err := fetchAll(ctx, c.Store.ListRelations, f, func(x *relation.ListFilter) (*int, *int) { return &x.Limit, &x.Offset })
 	if err != nil {
 		return nil, err
 	}
