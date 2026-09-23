@@ -12,6 +12,25 @@ import (
 	"github.com/xraph/warden/store/memory"
 )
 
+// probePlugin records whether OnBeforeCheck and OnAfterCheck fired, so a
+// test can assert a dry run reaches neither.
+type probePlugin struct {
+	beforeCheckCalled bool
+	afterCheckCalled  bool
+}
+
+func (p *probePlugin) Name() string { return "probe-plugin" }
+
+func (p *probePlugin) OnBeforeCheck(_ context.Context, _ any) error {
+	p.beforeCheckCalled = true
+	return nil
+}
+
+func (p *probePlugin) OnAfterCheck(_ context.Context, _, _ any) error {
+	p.afterCheckCalled = true
+	return nil
+}
+
 // seedAllow creates a tenant where user:alice may read document.
 func seedAllow(t *testing.T, s *memory.Store) {
 	t.Helper()
@@ -120,6 +139,39 @@ func TestDryRunNeitherReadsNorWritesCache(t *testing.T) {
 	}
 	if fresh.Allowed {
 		t.Fatal("dry run was served a cached allow; it must bypass the cache read")
+	}
+}
+
+func TestDryRunFiresNoPluginHooks(t *testing.T) {
+	s := memory.New()
+	seedAllow(t, s)
+	probe := &probePlugin{}
+	eng, err := NewEngine(WithStore(s), WithPlugin(probe))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, err := eng.Check(ctx, readReq(), WithCallDryRun()); err != nil {
+		t.Fatalf("dry run check: %v", err)
+	}
+	if probe.beforeCheckCalled {
+		t.Fatal("dry run check fired OnBeforeCheck; WithCallDryRun promises no plugin hooks fire")
+	}
+	if probe.afterCheckCalled {
+		t.Fatal("dry run check fired OnAfterCheck; WithCallDryRun promises no plugin hooks fire")
+	}
+
+	// The same check without the option still fires both hooks, so the
+	// assertions above are not passing because the hooks are broken.
+	if _, err := eng.Check(ctx, readReq()); err != nil {
+		t.Fatalf("normal check: %v", err)
+	}
+	if !probe.beforeCheckCalled {
+		t.Fatal("normal check did not fire OnBeforeCheck")
+	}
+	if !probe.afterCheckCalled {
+		t.Fatal("normal check did not fire OnAfterCheck")
 	}
 }
 

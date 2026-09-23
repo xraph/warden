@@ -233,7 +233,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 		log.String("scope_tenant_id", scope.tenantID),
 	)
 
-	if e.plugins != nil {
+	if e.plugins != nil && !co.dryRun {
 		e.plugins.EmitBeforeCheck(ctx, req)
 	}
 

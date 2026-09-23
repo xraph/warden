@@ -37,9 +37,10 @@ func WithCallNamespacePath(namespacePath string) CallOption {
 	}
 }
 
-// WithCallDryRun evaluates the check without any of its side effects: the
-// result cache is neither read nor written, no check log entry is enqueued,
-// and no plugin hooks fire.
+// WithCallDryRun evaluates the check without its externally visible side
+// effects: the result cache is neither read nor written, no check log entry
+// is enqueued, and no plugin hooks fire (neither OnBeforeCheck nor
+// OnAfterCheck, on any path including a failed evaluation).
 //
 // It exists for callers that ask "what would this decide" rather than
 // "decide this", the dashboard playground above all. Without it, pressing
@@ -48,7 +49,14 @@ func WithCallNamespacePath(namespacePath string) CallOption {
 // and serves the second press from cache, which skips evaluation entirely
 // and reports a cache lookup as the evaluation time.
 //
-// The decision itself is identical. Only the side effects are suppressed.
+// Internal metrics are not suppressed: CheckEvaluated still records the
+// decision and latency, and a failed evaluation still counts as a store
+// error. Those are operational counters, not externally observable side
+// effects, and a dry run should still be visible to whoever watches the
+// engine's own health.
+//
+// The decision itself is identical. Only the side effects above are
+// suppressed.
 func WithCallDryRun() CallOption {
 	return func(o *callOptions) {
 		o.dryRun = true
