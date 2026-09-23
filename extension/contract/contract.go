@@ -98,6 +98,21 @@ func Register(
 	if err := dispatcher.RegisterCommand(d, contributorName, "roles.setPermissions", 1, rolesSetPermissionsHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register roles.setPermissions: %w", err)
 	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "permissions.list", 1, permissionsListHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register permissions.list: %w", err)
+	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "permissions.detail", 1, permissionsDetailHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register permissions.detail: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "permissions.create", 1, permissionsCreateHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register permissions.create: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "permissions.update", 1, permissionsUpdateHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register permissions.update: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "permissions.delete", 1, permissionsDeleteHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register permissions.delete: %w", err)
+	}
 	if err := dispatcher.RegisterCommand(d, contributorName, "maintenance.run", 1, maintenanceRunHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register maintenance.run: %w", err)
 	}

@@ -88,6 +88,26 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := rolesSetPermissionsHandler(deps)(context.Background(), RoleSetPermissionsInput{}, dashcontract.Principal{})
 		return err
 	}},
+	{"permissions.list", func(deps Deps) error {
+		_, err := permissionsListHandler(deps)(context.Background(), PermissionsListInput{}, dashcontract.Principal{})
+		return err
+	}},
+	{"permissions.detail", func(deps Deps) error {
+		_, err := permissionsDetailHandler(deps)(context.Background(), PermissionDetailInput{}, dashcontract.Principal{})
+		return err
+	}},
+	{"permissions.create", func(deps Deps) error {
+		_, err := permissionsCreateHandler(deps)(context.Background(), PermissionCreateInput{}, dashcontract.Principal{})
+		return err
+	}},
+	{"permissions.update", func(deps Deps) error {
+		_, err := permissionsUpdateHandler(deps)(context.Background(), PermissionUpdateInput{}, dashcontract.Principal{})
+		return err
+	}},
+	{"permissions.delete", func(deps Deps) error {
+		_, err := permissionsDeleteHandler(deps)(context.Background(), PermissionDeleteInput{}, dashcontract.Principal{})
+		return err
+	}},
 	{"maintenance.run", func(deps Deps) error {
 		_, err := maintenanceRunHandler(deps)(context.Background(), struct{}{}, dashcontract.Principal{})
 		return err
