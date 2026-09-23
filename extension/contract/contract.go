@@ -65,6 +65,15 @@ func Register(
 	if err := dispatcher.RegisterQuery(d, contributorName, "config.detail", 1, configDetailHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register config.detail: %w", err)
 	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "overview.stats", 1, overviewStatsHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register overview.stats: %w", err)
+	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "overview.recentChecks", 1, overviewRecentChecksHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register overview.recentChecks: %w", err)
+	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "namespaces.list", 1, namespacesListHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register namespaces.list: %w", err)
+	}
 
 	return nil
 }

@@ -13,11 +13,23 @@ contributor:
     home: /
 
 intents:
-  - { name: config.detail, kind: query, version: 1, capability: read }
+  - { name: config.detail,          kind: query, version: 1, capability: read }
+  - { name: overview.stats,         kind: query, version: 1, capability: read }
+  - { name: overview.recentChecks,  kind: query, version: 1, capability: read }
+  - { name: namespaces.list,        kind: query, version: 1, capability: read }
 
 queries:
   config:
     intent: config.detail
+    cache: { staleTime: 60s }
+  overviewStats:
+    intent: overview.stats
+    cache: { staleTime: 15s }
+  recentChecks:
+    intent: overview.recentChecks
+    cache: { staleTime: 15s }
+  namespaces:
+    intent: namespaces.list
     cache: { staleTime: 60s }
 
 graph: []

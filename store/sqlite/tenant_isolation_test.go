@@ -17,23 +17,37 @@ import (
 // against an on-disk sqlite store, so the tenant predicate is exercised as
 // real SQL. It needs no Docker and runs under plain `go test`.
 func TestSQLite_TenantIsolationContract(t *testing.T) {
-	contract.RunTenantIsolationContract(t, func(t *testing.T) store.Store {
-		dbPath := filepath.Join(t.TempDir(), "warden.db")
-		drv := sqlitedriver.New()
-		if err := drv.Open(context.Background(), dbPath); err != nil {
-			t.Fatalf("open sqlite: %v", err)
-		}
-		db, err := grove.Open(drv)
-		if err != nil {
-			_ = drv.Close()
-			t.Fatalf("grove open: %v", err)
-		}
-		s := New(db)
-		if err := s.Migrate(context.Background()); err != nil {
-			_ = drv.Close()
-			t.Fatalf("migrate: %v", err)
-		}
-		t.Cleanup(func() { _ = drv.Close() })
-		return s
-	})
+	contract.RunTenantIsolationContract(t, newSQLiteContractStore)
+}
+
+// TestSQLite_ActorFieldsContract runs the CreatedBy/UpdatedBy/GrantedBy
+// round-trip contract against an on-disk sqlite store.
+func TestSQLite_ActorFieldsContract(t *testing.T) {
+	contract.RunActorFieldsContract(t, newSQLiteContractStore)
+}
+
+// TestEmptyTenantContract pins what an on-disk sqlite store does with an
+// empty TenantID.
+func TestEmptyTenantContract(t *testing.T) {
+	contract.RunEmptyTenantContract(t, newSQLiteContractStore)
+}
+
+func newSQLiteContractStore(t *testing.T) store.Store {
+	dbPath := filepath.Join(t.TempDir(), "warden.db")
+	drv := sqlitedriver.New()
+	if err := drv.Open(context.Background(), dbPath); err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db, err := grove.Open(drv)
+	if err != nil {
+		_ = drv.Close()
+		t.Fatalf("grove open: %v", err)
+	}
+	s := New(db)
+	if err := s.Migrate(context.Background()); err != nil {
+		_ = drv.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { _ = drv.Close() })
+	return s
 }
