@@ -80,6 +80,15 @@ func Register(
 	if err := dispatcher.RegisterQuery(d, contributorName, "roles.detail", 1, rolesDetailHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register roles.detail: %w", err)
 	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "roles.create", 1, rolesCreateHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register roles.create: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "roles.update", 1, rolesUpdateHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register roles.update: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "roles.delete", 1, rolesDeleteHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register roles.delete: %w", err)
+	}
 	if err := dispatcher.RegisterCommand(d, contributorName, "maintenance.run", 1, maintenanceRunHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register maintenance.run: %w", err)
 	}

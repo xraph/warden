@@ -19,6 +19,18 @@ intents:
   - { name: namespaces.list,        kind: query, version: 1, capability: read }
   - { name: roles.list,   kind: query, version: 1, capability: read }
   - { name: roles.detail, kind: query, version: 1, capability: read }
+  # A create changes the list and the counters, and can change another
+  # role's children if it names a parent.
+  - { name: roles.create, kind: command, version: 1, capability: write,
+      invalidates: [roles.list, roles.detail, overview.stats, namespaces.list] }
+  # An update can change the name shown in the list, the parent (which moves
+  # this role between two other roles' children), and nothing else.
+  - { name: roles.update, kind: command, version: 1, capability: write,
+      invalidates: [roles.list, roles.detail] }
+  # A delete cascades: DeleteAssignmentsByRole removes every assignment of
+  # this role, so the assignments list and the counters change too.
+  - { name: roles.delete, kind: command, version: 1, capability: write,
+      invalidates: [roles.list, roles.detail, overview.stats] }
   - { name: maintenance.run, kind: command, version: 1, capability: write,
       invalidates: [overview.stats, overview.recentChecks] }
   - { name: maintenance.cacheInvalidate, kind: command, version: 1, capability: write }

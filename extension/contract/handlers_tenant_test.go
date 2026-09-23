@@ -64,6 +64,18 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := rolesDetailHandler(deps)(context.Background(), RoleDetailInput{}, dashcontract.Principal{})
 		return err
 	}},
+	{"roles.create", func(deps Deps) error {
+		_, err := rolesCreateHandler(deps)(context.Background(), RoleCreateInput{}, dashcontract.Principal{})
+		return err
+	}},
+	{"roles.update", func(deps Deps) error {
+		_, err := rolesUpdateHandler(deps)(context.Background(), RoleUpdateInput{}, dashcontract.Principal{})
+		return err
+	}},
+	{"roles.delete", func(deps Deps) error {
+		_, err := rolesDeleteHandler(deps)(context.Background(), RoleDeleteInput{}, dashcontract.Principal{})
+		return err
+	}},
 	{"maintenance.run", func(deps Deps) error {
 		_, err := maintenanceRunHandler(deps)(context.Background(), struct{}{}, dashcontract.Principal{})
 		return err

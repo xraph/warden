@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/xraph/warden"
+	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store/memory"
@@ -200,5 +201,215 @@ func TestRolesDetailOfAnotherTenantsRoleIsNotFound(t *testing.T) {
 	var ce *dashcontract.Error
 	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeNotFound {
 		t.Errorf("want CodeNotFound, got %v", err)
+	}
+}
+
+func TestRolesCreateReturnsTheNewID(t *testing.T) {
+	s := memory.New()
+	h := rolesCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	got, err := h(context.Background(), RoleCreateInput{
+		Name: "Reader", Slug: "reader", Description: "can read",
+	}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("roles.create: %v", err)
+	}
+	if got.ID == "" {
+		t.Fatal("create returned no id: the page cannot navigate to what it made")
+	}
+	rid, err := id.ParseRoleID(got.ID)
+	if err != nil {
+		t.Fatalf("returned id %q is not a role id: %v", got.ID, err)
+	}
+	stored, err := s.GetRole(context.Background(), "t1", rid)
+	if err != nil {
+		t.Fatalf("get created role: %v", err)
+	}
+	if stored.Name != "Reader" || stored.Slug != "reader" {
+		t.Errorf("stored %+v, want name Reader slug reader", stored)
+	}
+}
+
+func TestRolesCreateRejectsAnInvalidNamespace(t *testing.T) {
+	// ValidateNamespacePath forbids a leading or trailing slash and caps
+	// depth. A bad namespace must be refused here rather than written and
+	// then be unreachable by every namespaced query.
+	s := memory.New()
+	h := rolesCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(context.Background(), RoleCreateInput{
+		Name: "X", Slug: "x", NamespacePath: "/leading",
+	}, principalFor("t1"))
+	if err == nil {
+		t.Fatal("want a refusal for a namespace with a leading slash")
+	}
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
+		t.Errorf("want CodeBadRequest, got %v", err)
+	}
+}
+
+func TestRolesUpdateLeavesOmittedFieldsAlone(t *testing.T) {
+	// The trap. UpdateRole takes a whole *role.Role and writes it, so a
+	// handler that builds a fresh struct from the request erases every
+	// field the request did not mention. Here: update only the name, and
+	// the description, parent and member cap must survive.
+	s := memory.New()
+	ctx := context.Background()
+	seedRoles(t, s, "", "base")
+	r := &role.Role{
+		TenantID: "t1", Name: "Original", Slug: "target",
+		Description: "keep me", ParentSlug: "base", MaxMembers: 7,
+	}
+	if err := s.CreateRole(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	h := rolesUpdateHandler(Deps{Engine: engineOver(t, s)})
+
+	newName := "Renamed"
+	if _, err := h(ctx, RoleUpdateInput{ID: r.ID.String(), Name: &newName}, principalFor("t1")); err != nil {
+		t.Fatalf("roles.update: %v", err)
+	}
+
+	after, err := s.GetRole(ctx, "t1", r.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if after.Name != "Renamed" {
+		t.Errorf("name = %q, want Renamed", after.Name)
+	}
+	if after.Description != "keep me" {
+		t.Errorf("description = %q, want it untouched", after.Description)
+	}
+	if after.ParentSlug != "base" {
+		t.Errorf("parentSlug = %q, want it untouched", after.ParentSlug)
+	}
+	if after.MaxMembers != 7 {
+		t.Errorf("maxMembers = %d, want it untouched", after.MaxMembers)
+	}
+}
+
+func TestRolesUpdateCanClearAFieldDeliberately(t *testing.T) {
+	// The other half of the pointer contract: a pointer to the empty
+	// string means "set it to empty", which is different from omitting it.
+	s := memory.New()
+	ctx := context.Background()
+	seedRoles(t, s, "", "base")
+	r := &role.Role{TenantID: "t1", Name: "R", Slug: "target", ParentSlug: "base"}
+	if err := s.CreateRole(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	h := rolesUpdateHandler(Deps{Engine: engineOver(t, s)})
+
+	empty := ""
+	if _, err := h(ctx, RoleUpdateInput{ID: r.ID.String(), ParentSlug: &empty}, principalFor("t1")); err != nil {
+		t.Fatalf("roles.update: %v", err)
+	}
+	after, err := s.GetRole(ctx, "t1", r.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if after.ParentSlug != "" {
+		t.Errorf("parentSlug = %q, want cleared", after.ParentSlug)
+	}
+}
+
+func TestRolesUpdateRefusesASystemRole(t *testing.T) {
+	// Nothing below the contract enforces this. See immutable.go.
+	s := memory.New()
+	ctx := context.Background()
+	r := &role.Role{TenantID: "t1", Name: "System", Slug: "system-role", IsSystem: true}
+	if err := s.CreateRole(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	h := rolesUpdateHandler(Deps{Engine: engineOver(t, s)})
+
+	newName := "Hijacked"
+	_, err := h(ctx, RoleUpdateInput{ID: r.ID.String(), Name: &newName}, principalFor("t1"))
+	if err == nil {
+		t.Fatal("want a refusal updating a system role")
+	}
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodePermissionDenied {
+		t.Errorf("want CodePermissionDenied, got %v", err)
+	}
+	after, getErr := s.GetRole(ctx, "t1", r.ID)
+	if getErr != nil {
+		t.Fatalf("get: %v", getErr)
+	}
+	if after.Name != "System" {
+		t.Errorf("the refusal did not prevent the write: name is now %q", after.Name)
+	}
+}
+
+func TestRolesUpdateRefusesAParentCycle(t *testing.T) {
+	// Setting a role's parent to its own descendant makes the engine's
+	// inheritance walk loop. ErrCyclicRoleInheritance exists for this.
+	s := memory.New()
+	ctx := context.Background()
+	parent := &role.Role{TenantID: "t1", Name: "P", Slug: "p"}
+	if err := s.CreateRole(ctx, parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child := &role.Role{TenantID: "t1", Name: "C", Slug: "c", ParentSlug: "p"}
+	if err := s.CreateRole(ctx, child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	h := rolesUpdateHandler(Deps{Engine: engineOver(t, s)})
+
+	cycle := "c"
+	_, err := h(ctx, RoleUpdateInput{ID: parent.ID.String(), ParentSlug: &cycle}, principalFor("t1"))
+	if err == nil {
+		t.Fatal("want a refusal setting a role's parent to its own child")
+	}
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
+		t.Errorf("want CodeBadRequest for a cycle, got %v", err)
+	}
+}
+
+func TestRolesUpdateRefusesARoleAsItsOwnParent(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	r := &role.Role{TenantID: "t1", Name: "R", Slug: "self"}
+	if err := s.CreateRole(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	h := rolesUpdateHandler(Deps{Engine: engineOver(t, s)})
+
+	self := "self"
+	if _, err := h(ctx, RoleUpdateInput{ID: r.ID.String(), ParentSlug: &self}, principalFor("t1")); err == nil {
+		t.Fatal("want a refusal for a role parented to itself")
+	}
+}
+
+func TestRolesDeleteRemovesTheRole(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	r := seedRoles(t, s, "", "doomed")[0]
+	h := rolesDeleteHandler(Deps{Engine: engineOver(t, s)})
+
+	if _, err := h(ctx, RoleDeleteInput{ID: r.ID.String()}, principalFor("t1")); err != nil {
+		t.Fatalf("roles.delete: %v", err)
+	}
+	if _, err := s.GetRole(ctx, "t1", r.ID); err == nil {
+		t.Fatal("the role is still there after delete")
+	}
+}
+
+func TestRolesDeleteRefusesASystemRole(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	r := &role.Role{TenantID: "t1", Name: "System", Slug: "sys", IsSystem: true}
+	if err := s.CreateRole(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	h := rolesDeleteHandler(Deps{Engine: engineOver(t, s)})
+
+	if _, err := h(ctx, RoleDeleteInput{ID: r.ID.String()}, principalFor("t1")); err == nil {
+		t.Fatal("want a refusal deleting a system role")
+	}
+	if _, err := s.GetRole(ctx, "t1", r.ID); err != nil {
+		t.Errorf("the refusal did not prevent the delete: %v", err)
 	}
 }

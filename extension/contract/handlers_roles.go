@@ -10,9 +10,11 @@ import (
 	"context"
 	"time"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/role"
+	"github.com/xraph/warden/store"
 
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
@@ -204,5 +206,216 @@ func rolesDetailHandler(deps Deps) func(context.Context, RoleDetailInput, dashco
 			out.Children = append(out.Children, projectRole(c))
 		}
 		return out, nil
+	}
+}
+
+// AckResponse is what a command returns when the only thing worth reporting
+// is which row it touched. ID is empty for a delete.
+type AckResponse struct {
+	ID string `json:"id,omitempty"`
+}
+
+// RoleCreateInput creates a role. Non-pointer fields because a create has
+// no "leave this alone": every field is either given or defaulted.
+type RoleCreateInput struct {
+	Name          string `json:"name"`
+	Slug          string `json:"slug"`
+	NamespacePath string `json:"namespacePath,omitempty"`
+	Description   string `json:"description,omitempty"`
+	ParentSlug    string `json:"parentSlug,omitempty"`
+	MaxMembers    int    `json:"maxMembers,omitempty"`
+	IsDefault     bool   `json:"isDefault,omitempty"`
+}
+
+// RoleUpdateInput patches a role.
+//
+// Every optional field is a pointer, and the distinction is load-bearing:
+// nil means "leave this alone", and a pointer to the zero value means "set
+// it to empty". A non-pointer field cannot express the difference, and the
+// UI would silently erase values the operator never touched.
+type RoleUpdateInput struct {
+	ID          string  `json:"id"`
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	ParentSlug  *string `json:"parentSlug,omitempty"`
+	MaxMembers  *int    `json:"maxMembers,omitempty"`
+	IsDefault   *bool   `json:"isDefault,omitempty"`
+}
+
+// RoleDeleteInput names the role to remove.
+type RoleDeleteInput struct {
+	ID string `json:"id"`
+}
+
+// badRequest is the shape for anything a person can fix by retyping.
+func badRequest(msg string) error {
+	return &dashcontract.Error{Code: dashcontract.CodeBadRequest, Message: msg}
+}
+
+// validateNamespace refuses a malformed namespace before it is written. A
+// row with an invalid namespace is reachable by no namespaced query, so
+// writing one loses it silently.
+//
+// The brief for this task named deps.Engine.Config().MaxNamespaceDepth as
+// the depth cap to read, with an instruction to verify that field exists
+// before relying on it. It does not: warden.Config (config.go) carries no
+// MaxNamespaceDepth field, only the package-level constant
+// warden.MaxNamespaceDepth. warden.ValidateNamespacePath already documents
+// 0 as "use that default cap", so this passes 0 through rather than
+// referencing a field that would not compile.
+func validateNamespace(path string) error {
+	if err := warden.ValidateNamespacePath(path, 0); err != nil {
+		return badRequest(err.Error())
+	}
+	return nil
+}
+
+func rolesCreateHandler(deps Deps) func(context.Context, RoleCreateInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in RoleCreateInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		if in.Name == "" || in.Slug == "" {
+			return AckResponse{}, badRequest("a role needs a name and a slug")
+		}
+		if err := validateNamespace(in.NamespacePath); err != nil {
+			return AckResponse{}, err
+		}
+		if in.ParentSlug == in.Slug && in.ParentSlug != "" {
+			return AckResponse{}, badRequest("a role cannot be its own parent")
+		}
+		r := &role.Role{
+			TenantID:      tenantID,
+			NamespacePath: in.NamespacePath,
+			Name:          in.Name,
+			Slug:          in.Slug,
+			Description:   in.Description,
+			ParentSlug:    in.ParentSlug,
+			MaxMembers:    in.MaxMembers,
+			IsDefault:     in.IsDefault,
+		}
+		if err := deps.Engine.Store().CreateRole(ctx, r); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		return AckResponse{ID: r.ID.String()}, nil
+	}
+}
+
+func rolesUpdateHandler(deps Deps) func(context.Context, RoleUpdateInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in RoleUpdateInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		rid, err := parseRoleID(in.ID)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		s := deps.Engine.Store()
+
+		// Read, patch, write. UpdateRole persists the whole struct, so
+		// building a fresh one from the request would erase every field
+		// the request omitted.
+		r, err := s.GetRole(ctx, tenantID, rid)
+		if err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		if err := guardSystemRole(r); err != nil {
+			return AckResponse{}, err
+		}
+		if in.Name != nil {
+			if *in.Name == "" {
+				return AckResponse{}, badRequest("a role's name cannot be empty")
+			}
+			r.Name = *in.Name
+		}
+		if in.Description != nil {
+			r.Description = *in.Description
+		}
+		if in.MaxMembers != nil {
+			r.MaxMembers = *in.MaxMembers
+		}
+		if in.IsDefault != nil {
+			r.IsDefault = *in.IsDefault
+		}
+		if in.ParentSlug != nil {
+			if err := checkParent(ctx, s, tenantID, r, *in.ParentSlug); err != nil {
+				return AckResponse{}, err
+			}
+			r.ParentSlug = *in.ParentSlug
+		}
+		if err := s.UpdateRole(ctx, r); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		return AckResponse{ID: r.ID.String()}, nil
+	}
+}
+
+// checkParent refuses a parent that would create a cycle.
+//
+// Walks up from the proposed parent following ParentSlug. If the walk
+// reaches the role being edited, the proposed parent is one of its own
+// descendants and the engine's inheritance resolution would loop. The walk
+// is bounded by the number of roles it has already seen, so a cycle that
+// already exists in the data cannot hang this check either.
+func checkParent(ctx context.Context, s store.Store, tenantID string, r *role.Role, parentSlug string) error {
+	if parentSlug == "" {
+		return nil
+	}
+	if parentSlug == r.Slug {
+		return badRequest("a role cannot be its own parent")
+	}
+	seen := map[string]struct{}{r.Slug: {}}
+	slug := parentSlug
+	for slug != "" {
+		if _, loop := seen[slug]; loop {
+			return badRequest("that parent would create a cycle in role inheritance")
+		}
+		seen[slug] = struct{}{}
+		next, err := s.GetRoleBySlug(ctx, tenantID, r.NamespacePath, slug)
+		if err != nil {
+			// A parent that does not exist in this namespace is bad input,
+			// not a cycle. Report it as such.
+			return badRequest("no role with slug " + slug + " in this namespace")
+		}
+		slug = next.ParentSlug
+	}
+	return nil
+}
+
+func rolesDeleteHandler(deps Deps) func(context.Context, RoleDeleteInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in RoleDeleteInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		rid, err := parseRoleID(in.ID)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		s := deps.Engine.Store()
+		// Read first so the system guard has something to check, and so a
+		// delete of another tenant's role is NOT_FOUND rather than silent.
+		r, err := s.GetRole(ctx, tenantID, rid)
+		if err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		if err := guardSystemRole(r); err != nil {
+			return AckResponse{}, err
+		}
+		if err := s.DeleteRole(ctx, tenantID, rid); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		return AckResponse{}, nil
 	}
 }
