@@ -1,0 +1,70 @@
+package contract
+
+import (
+	"bytes"
+	_ "embed"
+	"fmt"
+
+	"github.com/xraph/warden"
+
+	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
+	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
+	"github.com/xraph/forge/extensions/dashboard/contract/loader"
+)
+
+//go:embed manifest.yaml
+var manifestYAML []byte
+
+// contributorName is the join key. The React plugin's `extension` field must
+// match it exactly. A mismatch does not error anywhere: the plugin resolves
+// to `hidden`, no routes mount, no nav appears, and nothing is logged,
+// because a contributor the server never mentioned is an ordinary thing for
+// a shell to encounter.
+const contributorName = "warden"
+
+// Deps bundles what the contract handlers need at registration time.
+type Deps struct {
+	// Engine is the live warden engine. Required.
+	Engine *warden.Engine
+
+	// DefaultTenantID is the tenant every dashboard request is scoped to
+	// when the principal carries no tenant claim. Required for any
+	// deployment that wants the dashboard to answer at all today, because
+	// nothing populates Principal.Claims yet.
+	//
+	// Leave it empty in a multi-tenant deployment. Every read then refuses
+	// with PERMISSION_DENIED, which is correct: a dashboard that cannot
+	// tell which tenant it is looking at must not guess, and the empty
+	// string would match every tenant's rows rather than none.
+	DefaultTenantID string
+}
+
+// Register loads the embedded manifest, validates it, registers the `warden`
+// contributor with reg, and binds the handlers against deps.
+func Register(
+	d *dispatcher.Dispatcher,
+	reg dashcontract.Registry,
+	wreg dashcontract.WardenRegistry,
+	deps Deps,
+) error {
+	if deps.Engine == nil {
+		return fmt.Errorf("warden/contract: Engine is required")
+	}
+
+	m, err := loader.Load(bytes.NewReader(manifestYAML), "warden/extension/contract/manifest.yaml")
+	if err != nil {
+		return fmt.Errorf("warden/contract: load manifest: %w", err)
+	}
+	if err := loader.Validate(m, wreg); err != nil {
+		return fmt.Errorf("warden/contract: validate manifest: %w", err)
+	}
+	if err := reg.Register(m); err != nil {
+		return fmt.Errorf("warden/contract: register manifest: %w", err)
+	}
+
+	if err := dispatcher.RegisterQuery(d, contributorName, "config.detail", 1, configDetailHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register config.detail: %w", err)
+	}
+
+	return nil
+}

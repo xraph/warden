@@ -149,6 +149,26 @@ type Config struct {
 	// check log store. A nil pointer means "use the engine's default
 	// (true)"; only an explicit false disables it.
 	EnableCheckLog *bool `json:"enable_check_log,omitempty" mapstructure:"enable_check_log" yaml:"enable_check_log"`
+
+	// Dashboard configures the React dashboard surfaces.
+	Dashboard DashboardConfig `json:"dashboard" mapstructure:"dashboard" yaml:"dashboard"`
+}
+
+// DashboardConfig configures warden's dashboard surfaces.
+type DashboardConfig struct {
+	// TenantID scopes every dashboard request when the caller's principal
+	// carries no tenant claim.
+	//
+	// Nothing populates dashboard principal claims today, so in practice
+	// this is what makes the dashboard answer at all. Set it for a
+	// single-tenant deployment.
+	//
+	// Leave it empty in a multi-tenant deployment. Every read then refuses
+	// with PERMISSION_DENIED, which is the correct behaviour: the empty
+	// string in a store ListFilter matches every tenant's rows rather than
+	// none, so guessing would serve one operator every tenant's data, and
+	// on a check could return an allow the real tenant would have denied.
+	TenantID string `json:"tenant_id" mapstructure:"tenant_id" yaml:"tenant_id"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.

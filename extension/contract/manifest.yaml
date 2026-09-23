@@ -1,0 +1,23 @@
+schemaVersion: 1
+contributor:
+  name: warden
+  envelope:
+    supports: [v1]
+    preferred: v1
+  capabilities: [warden.read, warden.write]
+  app:
+    displayName: Warden
+    slug: warden
+    icon: shield-check
+    priority: 20
+    home: /
+
+intents:
+  - { name: config.detail, kind: query, version: 1, capability: read }
+
+queries:
+  config:
+    intent: config.detail
+    cache: { staleTime: 60s }
+
+graph: []

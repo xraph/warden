@@ -16,6 +16,8 @@ import (
 
 	"github.com/xraph/forge"
 	dashboard "github.com/xraph/forge/extensions/dashboard"
+	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
+	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
 	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
@@ -24,6 +26,7 @@ import (
 	"github.com/xraph/warden/api"
 	wardendash "github.com/xraph/warden/dashboard"
 	"github.com/xraph/warden/dsl"
+	wardencontract "github.com/xraph/warden/extension/contract"
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/plugin/auditlog"
 	"github.com/xraph/warden/store"
@@ -630,4 +633,25 @@ func (e *Extension) DashboardContributor() contributor.LocalContributor {
 		e.plugins,
 		basePath,
 	)
+}
+
+// RegisterContractContributor implements the dashboard's contract
+// auto-discovery. It registers the `warden` contributor so the React shell
+// can read warden's intents.
+//
+// This is the parallel surface to DashboardContributor above. Both exist
+// while the templ dashboard is being retired; see warden/MIGRATION.md.
+func (e *Extension) RegisterContractContributor(
+	disp *dispatcher.Dispatcher,
+	reg dashcontract.Registry,
+	wreg dashcontract.WardenRegistry,
+) error {
+	if e.eng == nil {
+		e.Logger().Warn("warden: engine not initialised; skipping contract contributor registration")
+		return nil
+	}
+	if err := wardencontract.Register(disp, reg, wreg, wardencontract.Deps{Engine: e.eng, DefaultTenantID: e.config.Dashboard.TenantID}); err != nil {
+		return fmt.Errorf("warden: register contract contributor: %w", err)
+	}
+	return nil
 }
