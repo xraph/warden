@@ -69,6 +69,57 @@ func TestConfigDetailDefaultsAreReportedAsEnabled(t *testing.T) {
 	}
 }
 
+// TestConfigDetailPinnedToWardenDefaultConfig guards against configDetailHandler's
+// `enabled()` helper drifting from warden.DefaultConfig().
+//
+// `enabled()` in handlers_config.go duplicates the five unexported tri-state
+// accessors in config.go (rbacEnabled, abacEnabled, rebacEnabled,
+// checkLogEnabled, requireTenant), because this package cannot call
+// unexported methods on warden.Config. Today every one of DefaultConfig()'s
+// five *bool fields is set to an explicit non-nil true. This test pins
+// config.detail's report to that fact: if a future change flips one of those
+// defaults to false, the hardcoded expectation below fails loudly, forcing
+// whoever made the change to also decide whether enabled() (and this test)
+// should move with it.
+//
+// What this cannot catch: config.go's accessors are unexported, so this
+// test cannot call rbacEnabled() and friends directly, and it does not
+// exercise the engine's actual runtime behaviour (whether RBAC evaluation
+// genuinely runs or is skipped). It also cannot catch a change to the "nil
+// means enabled" rule itself, since DefaultConfig() always sets these
+// pointers to a non-nil value and never leaves them nil; the nil path is
+// covered separately by TestConfigDetailDefaultsAreReportedAsEnabled above,
+// but that test also only pins enabled()'s own hardcoded rule, not the
+// engine's independently-verified behaviour for a nil flag.
+func TestConfigDetailPinnedToWardenDefaultConfig(t *testing.T) {
+	cfg := warden.DefaultConfig()
+
+	defaults := map[string]*bool{
+		"EnableRBAC":     cfg.EnableRBAC,
+		"EnableABAC":     cfg.EnableABAC,
+		"EnableReBAC":    cfg.EnableReBAC,
+		"EnableCheckLog": cfg.EnableCheckLog,
+		"RequireTenant":  cfg.RequireTenant,
+	}
+	for name, flag := range defaults {
+		if flag == nil || !*flag {
+			t.Fatalf("warden.DefaultConfig().%s = %v, want a non-nil true; config.detail assumes this default is enabled", name, flag)
+		}
+	}
+
+	eng := testEngine(t, cfg)
+	h := configDetailHandler(Deps{Engine: eng})
+	got, err := h(context.Background(), struct{}{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("config.detail: %v", err)
+	}
+
+	if !got.RBACEnabled || !got.ABACEnabled || !got.ReBACEnabled ||
+		!got.CheckLogEnabled || !got.RequireTenant {
+		t.Errorf("config.detail must report warden.DefaultConfig()'s flags as enabled, got %+v", got)
+	}
+}
+
 func TestConfigDetailWithoutAnEngineIsUnavailable(t *testing.T) {
 	h := configDetailHandler(Deps{})
 	_, err := h(context.Background(), struct{}{}, dashcontract.Principal{})
