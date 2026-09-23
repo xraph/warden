@@ -74,6 +74,12 @@ func Register(
 	if err := dispatcher.RegisterQuery(d, contributorName, "namespaces.list", 1, namespacesListHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register namespaces.list: %w", err)
 	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "roles.list", 1, rolesListHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register roles.list: %w", err)
+	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "roles.detail", 1, rolesDetailHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register roles.detail: %w", err)
+	}
 	if err := dispatcher.RegisterCommand(d, contributorName, "maintenance.run", 1, maintenanceRunHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register maintenance.run: %w", err)
 	}

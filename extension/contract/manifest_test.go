@@ -46,6 +46,8 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"overview.stats":              dashcontract.IntentKindQuery,
 		"overview.recentChecks":       dashcontract.IntentKindQuery,
 		"namespaces.list":             dashcontract.IntentKindQuery,
+		"roles.list":                  dashcontract.IntentKindQuery,
+		"roles.detail":                dashcontract.IntentKindQuery,
 		"maintenance.run":             dashcontract.IntentKindCommand,
 		"maintenance.cacheInvalidate": dashcontract.IntentKindCommand,
 	}
