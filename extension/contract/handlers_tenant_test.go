@@ -76,6 +76,18 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := rolesDeleteHandler(deps)(context.Background(), RoleDeleteInput{}, dashcontract.Principal{})
 		return err
 	}},
+	{"roles.attachPermission", func(deps Deps) error {
+		_, err := rolesAttachPermissionHandler(deps)(context.Background(), RolePermissionInput{}, dashcontract.Principal{})
+		return err
+	}},
+	{"roles.detachPermission", func(deps Deps) error {
+		_, err := rolesDetachPermissionHandler(deps)(context.Background(), RolePermissionInput{}, dashcontract.Principal{})
+		return err
+	}},
+	{"roles.setPermissions", func(deps Deps) error {
+		_, err := rolesSetPermissionsHandler(deps)(context.Background(), RoleSetPermissionsInput{}, dashcontract.Principal{})
+		return err
+	}},
 	{"maintenance.run", func(deps Deps) error {
 		_, err := maintenanceRunHandler(deps)(context.Background(), struct{}{}, dashcontract.Principal{})
 		return err

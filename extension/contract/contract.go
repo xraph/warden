@@ -89,6 +89,15 @@ func Register(
 	if err := dispatcher.RegisterCommand(d, contributorName, "roles.delete", 1, rolesDeleteHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register roles.delete: %w", err)
 	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "roles.attachPermission", 1, rolesAttachPermissionHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register roles.attachPermission: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "roles.detachPermission", 1, rolesDetachPermissionHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register roles.detachPermission: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "roles.setPermissions", 1, rolesSetPermissionsHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register roles.setPermissions: %w", err)
+	}
 	if err := dispatcher.RegisterCommand(d, contributorName, "maintenance.run", 1, maintenanceRunHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register maintenance.run: %w", err)
 	}

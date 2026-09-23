@@ -31,6 +31,15 @@ intents:
   # this role, so the assignments list and the counters change too.
   - { name: roles.delete, kind: command, version: 1, capability: write,
       invalidates: [roles.list, roles.detail, overview.stats] }
+  # A grant change alters the role's detail page. It does NOT change the
+  # roles list, which shows no grant information, and it does not change
+  # any counter.
+  - { name: roles.attachPermission, kind: command, version: 1, capability: write,
+      invalidates: [roles.detail] }
+  - { name: roles.detachPermission, kind: command, version: 1, capability: write,
+      invalidates: [roles.detail] }
+  - { name: roles.setPermissions, kind: command, version: 1, capability: write,
+      invalidates: [roles.detail] }
   - { name: maintenance.run, kind: command, version: 1, capability: write,
       invalidates: [overview.stats, overview.recentChecks] }
   - { name: maintenance.cacheInvalidate, kind: command, version: 1, capability: write }

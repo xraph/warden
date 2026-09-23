@@ -390,6 +390,171 @@ func checkParent(ctx context.Context, s store.Store, tenantID string, r *role.Ro
 	return nil
 }
 
+// PermissionRef names one permission by its natural key.
+//
+// The junction is keyed by (namespacePath, name), not by id, because that
+// is what the DSL declares and what survives a re-apply. An empty
+// NamespacePath means the tenant root, which is a real namespace rather
+// than an absent value.
+type PermissionRef struct {
+	Name          string `json:"name"`
+	NamespacePath string `json:"namespacePath,omitempty"`
+}
+
+// RolePermissionInput attaches or detaches one grant.
+type RolePermissionInput struct {
+	RoleID                  string `json:"roleId"`
+	PermissionName          string `json:"permissionName"`
+	PermissionNamespacePath string `json:"permissionNamespacePath,omitempty"`
+}
+
+// RoleSetPermissionsInput replaces a role's whole grant set.
+//
+// An empty Permissions slice is a real instruction: it revokes everything.
+// That is why the field is not a pointer; there is no "leave the set alone"
+// case for an intent whose only job is to replace it.
+type RoleSetPermissionsInput struct {
+	RoleID      string          `json:"roleId"`
+	Permissions []PermissionRef `json:"permissions"`
+}
+
+// loadWritableRole fetches a role and refuses if it is a system role. Every
+// junction command starts here.
+func loadWritableRole(ctx context.Context, deps Deps, tenantID, rawID string) (*role.Role, error) {
+	rid, err := parseRoleID(rawID)
+	if err != nil {
+		return nil, err
+	}
+	r, err := deps.Engine.Store().GetRole(ctx, tenantID, rid)
+	if err != nil {
+		return nil, mapWardenError(err)
+	}
+	if err := guardSystemRole(r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// resolvePermissionRef confirms a named permission exists in this tenant
+// before it is used as a junction key.
+//
+// Without this the store records a grant for a name that is not there. The
+// role then appears to grant something and grants nothing, because the RBAC
+// evaluator resolves grants by joining against the permissions table.
+func resolvePermissionRef(ctx context.Context, deps Deps, tenantID string, ref PermissionRef) (permission.Ref, error) {
+	if ref.Name == "" {
+		return permission.Ref{}, badRequest("a permission reference needs a name")
+	}
+	if _, err := deps.Engine.Store().GetPermissionByName(ctx, tenantID, ref.NamespacePath, ref.Name); err != nil {
+		return permission.Ref{}, &dashcontract.Error{
+			Code:    dashcontract.CodeNotFound,
+			Message: "no permission named " + ref.Name + " in that namespace",
+		}
+	}
+	return permission.Ref{NamespacePath: ref.NamespacePath, Name: ref.Name}, nil
+}
+
+func rolesAttachPermissionHandler(deps Deps) func(context.Context, RolePermissionInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in RolePermissionInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		r, err := loadWritableRole(ctx, deps, tenantID, in.RoleID)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		ref, err := resolvePermissionRef(ctx, deps, tenantID, PermissionRef{
+			Name: in.PermissionName, NamespacePath: in.PermissionNamespacePath,
+		})
+		if err != nil {
+			return AckResponse{}, err
+		}
+		if err := deps.Engine.Store().AttachPermission(ctx, tenantID, r.ID, ref); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		return AckResponse{ID: r.ID.String()}, nil
+	}
+}
+
+func rolesDetachPermissionHandler(deps Deps) func(context.Context, RolePermissionInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in RolePermissionInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		r, err := loadWritableRole(ctx, deps, tenantID, in.RoleID)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		s := deps.Engine.Store()
+
+		// Confirm the grant is actually there. DetachPermission removes
+		// nothing and returns no error when the (namespace, name) key does
+		// not match, so a detach with the wrong namespace would report
+		// success while the grant survived.
+		grants, err := s.ListRolePermissions(ctx, tenantID, r.ID)
+		if err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		var held bool
+		for _, g := range grants {
+			if g.Name == in.PermissionName && g.NamespacePath == in.PermissionNamespacePath {
+				held = true
+				break
+			}
+		}
+		if !held {
+			return AckResponse{}, &dashcontract.Error{
+				Code:    dashcontract.CodeNotFound,
+				Message: r.Name + " does not grant " + in.PermissionName,
+			}
+		}
+		ref := permission.Ref{NamespacePath: in.PermissionNamespacePath, Name: in.PermissionName}
+		if err := s.DetachPermission(ctx, tenantID, r.ID, ref); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		return AckResponse{ID: r.ID.String()}, nil
+	}
+}
+
+func rolesSetPermissionsHandler(deps Deps) func(context.Context, RoleSetPermissionsInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in RoleSetPermissionsInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		r, err := loadWritableRole(ctx, deps, tenantID, in.RoleID)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		// Resolve every reference BEFORE writing any of them. All or
+		// nothing: silently dropping an unknown name would leave the role
+		// with a set the operator did not choose.
+		refs := make([]permission.Ref, 0, len(in.Permissions))
+		for _, ref := range in.Permissions {
+			resolved, err := resolvePermissionRef(ctx, deps, tenantID, ref)
+			if err != nil {
+				return AckResponse{}, err
+			}
+			refs = append(refs, resolved)
+		}
+		if err := deps.Engine.Store().SetRolePermissions(ctx, tenantID, r.ID, refs); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		return AckResponse{ID: r.ID.String()}, nil
+	}
+}
+
 func rolesDeleteHandler(deps Deps) func(context.Context, RoleDeleteInput, dashcontract.Principal) (AckResponse, error) {
 	return func(ctx context.Context, in RoleDeleteInput, p dashcontract.Principal) (AckResponse, error) {
 		if err := requireEngine(deps); err != nil {

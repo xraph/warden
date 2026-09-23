@@ -413,3 +413,230 @@ func TestRolesDeleteRefusesASystemRole(t *testing.T) {
 		t.Errorf("the refusal did not prevent the delete: %v", err)
 	}
 }
+
+func TestRolesAttachPermissionGrantsIt(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	r := seedRoles(t, s, "", "reader")[0]
+	pm := &permission.Permission{TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"}
+	if err := s.CreatePermission(ctx, pm); err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+	h := rolesAttachPermissionHandler(Deps{Engine: engineOver(t, s)})
+
+	if _, err := h(ctx, RolePermissionInput{
+		RoleID: r.ID.String(), PermissionName: "document:read",
+	}, principalFor("t1")); err != nil {
+		t.Fatalf("roles.attachPermission: %v", err)
+	}
+	grants, err := s.ListRolePermissions(ctx, "t1", r.ID)
+	if err != nil {
+		t.Fatalf("list grants: %v", err)
+	}
+	if len(grants) != 1 || grants[0].Name != "document:read" {
+		t.Errorf("grants = %+v, want one document:read", grants)
+	}
+}
+
+func TestRolesAttachPermissionThatDoesNotExistIsRefused(t *testing.T) {
+	// The junction is keyed by (namespacePath, name) and the store will
+	// happily record a grant for a permission that is not there, which
+	// then grants nothing and looks like it worked. Resolve it first.
+	s := memory.New()
+	ctx := context.Background()
+	r := seedRoles(t, s, "", "reader")[0]
+	h := rolesAttachPermissionHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(ctx, RolePermissionInput{
+		RoleID: r.ID.String(), PermissionName: "nope:nope",
+	}, principalFor("t1"))
+	if err == nil {
+		t.Fatal("want a refusal attaching a permission that does not exist")
+	}
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeNotFound {
+		t.Errorf("want CodeNotFound, got %v", err)
+	}
+}
+
+func TestRolesDetachPermissionThatWasNeverAttachedIsRefused(t *testing.T) {
+	// A detach with the wrong namespace silently affects nothing and
+	// returns no error, so the page would report success and the grant
+	// would still be there. Verify the grant exists before detaching.
+	s := memory.New()
+	ctx := context.Background()
+	r := seedRoles(t, s, "", "reader")[0]
+	pm := &permission.Permission{TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"}
+	if err := s.CreatePermission(ctx, pm); err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+	h := rolesDetachPermissionHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(ctx, RolePermissionInput{
+		RoleID: r.ID.String(), PermissionName: "document:read",
+	}, principalFor("t1"))
+	if err == nil {
+		t.Fatal("want a refusal detaching a grant the role does not have")
+	}
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeNotFound {
+		t.Errorf("want CodeNotFound, got %v", err)
+	}
+}
+
+func TestRolesDetachPermissionRemovesTheGrant(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	r := seedRoles(t, s, "", "reader")[0]
+	pm := &permission.Permission{TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"}
+	if err := s.CreatePermission(ctx, pm); err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+	if err := s.AttachPermission(ctx, "t1", r.ID, permission.Ref{Name: "document:read"}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	h := rolesDetachPermissionHandler(Deps{Engine: engineOver(t, s)})
+
+	if _, err := h(ctx, RolePermissionInput{
+		RoleID: r.ID.String(), PermissionName: "document:read",
+	}, principalFor("t1")); err != nil {
+		t.Fatalf("roles.detachPermission: %v", err)
+	}
+	grants, err := s.ListRolePermissions(ctx, "t1", r.ID)
+	if err != nil {
+		t.Fatalf("list grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Errorf("grants = %+v, want none", grants)
+	}
+}
+
+func TestRolesSetPermissionsReplacesTheWholeSet(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	r := seedRoles(t, s, "", "reader")[0]
+	for _, p := range []struct{ name, resource, action string }{
+		{"document:read", "document", "read"},
+		{"document:write", "document", "write"},
+		{"folder:read", "folder", "read"},
+	} {
+		pm := &permission.Permission{
+			TenantID: "t1", Name: p.name, Resource: p.resource, Action: p.action,
+		}
+		if err := s.CreatePermission(ctx, pm); err != nil {
+			t.Fatalf("create %q: %v", p.name, err)
+		}
+	}
+	if err := s.AttachPermission(ctx, "t1", r.ID, permission.Ref{Name: "document:read"}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	h := rolesSetPermissionsHandler(Deps{Engine: engineOver(t, s)})
+
+	if _, err := h(ctx, RoleSetPermissionsInput{
+		RoleID: r.ID.String(),
+		Permissions: []PermissionRef{
+			{Name: "document:write"},
+			{Name: "folder:read"},
+		},
+	}, principalFor("t1")); err != nil {
+		t.Fatalf("roles.setPermissions: %v", err)
+	}
+	grants, err := s.ListRolePermissions(ctx, "t1", r.ID)
+	if err != nil {
+		t.Fatalf("list grants: %v", err)
+	}
+	if len(grants) != 2 {
+		t.Fatalf("grants = %+v, want exactly the two named", grants)
+	}
+	for _, g := range grants {
+		if g.Name == "document:read" {
+			t.Error("setPermissions did not replace: the old grant survived")
+		}
+	}
+}
+
+func TestRolesSetPermissionsToAnEmptyListRevokesEverything(t *testing.T) {
+	// An empty list is a real instruction, not a missing one: it means
+	// this role grants nothing. A handler that treated empty as "no
+	// change" would make revoke-all impossible from the UI.
+	s := memory.New()
+	ctx := context.Background()
+	r := seedRoles(t, s, "", "reader")[0]
+	pm := &permission.Permission{TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"}
+	if err := s.CreatePermission(ctx, pm); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.AttachPermission(ctx, "t1", r.ID, permission.Ref{Name: "document:read"}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	h := rolesSetPermissionsHandler(Deps{Engine: engineOver(t, s)})
+
+	if _, err := h(ctx, RoleSetPermissionsInput{
+		RoleID: r.ID.String(), Permissions: []PermissionRef{},
+	}, principalFor("t1")); err != nil {
+		t.Fatalf("roles.setPermissions: %v", err)
+	}
+	grants, err := s.ListRolePermissions(ctx, "t1", r.ID)
+	if err != nil {
+		t.Fatalf("list grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Errorf("grants = %+v, want none after an empty set", grants)
+	}
+}
+
+func TestRolesSetPermissionsRefusesAnUnknownPermission(t *testing.T) {
+	// All or nothing. Silently dropping the unknown names would leave the
+	// role with a set the operator did not choose.
+	s := memory.New()
+	ctx := context.Background()
+	r := seedRoles(t, s, "", "reader")[0]
+	pm := &permission.Permission{TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"}
+	if err := s.CreatePermission(ctx, pm); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.AttachPermission(ctx, "t1", r.ID, permission.Ref{Name: "document:read"}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	h := rolesSetPermissionsHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(ctx, RoleSetPermissionsInput{
+		RoleID:      r.ID.String(),
+		Permissions: []PermissionRef{{Name: "document:read"}, {Name: "ghost:read"}},
+	}, principalFor("t1"))
+	if err == nil {
+		t.Fatal("want a refusal when one named permission does not exist")
+	}
+	grants, listErr := s.ListRolePermissions(ctx, "t1", r.ID)
+	if listErr != nil {
+		t.Fatalf("list: %v", listErr)
+	}
+	if len(grants) != 1 {
+		t.Errorf("the refused call changed the grants anyway: %+v", grants)
+	}
+}
+
+func TestJunctionCommandsRefuseASystemRole(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	r := &role.Role{TenantID: "t1", Name: "System", Slug: "sys", IsSystem: true}
+	if err := s.CreateRole(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pm := &permission.Permission{TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"}
+	if err := s.CreatePermission(ctx, pm); err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+	deps := Deps{Engine: engineOver(t, s)}
+
+	if _, err := rolesAttachPermissionHandler(deps)(ctx, RolePermissionInput{
+		RoleID: r.ID.String(), PermissionName: "document:read",
+	}, principalFor("t1")); err == nil {
+		t.Error("attach to a system role must be refused")
+	}
+	if _, err := rolesSetPermissionsHandler(deps)(ctx, RoleSetPermissionsInput{
+		RoleID: r.ID.String(), Permissions: []PermissionRef{},
+	}, principalFor("t1")); err == nil {
+		t.Error("setPermissions on a system role must be refused")
+	}
+}
