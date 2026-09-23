@@ -238,8 +238,10 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	}
 
 	// 1. Cache hit? Hooks and the check log still fire on a hit: only the
-	// RBAC/ReBAC/ABAC evaluation itself is skipped.
-	if e.cache != nil {
+	// RBAC/ReBAC/ABAC evaluation itself is skipped. A dry run skips the
+	// lookup entirely, because a cached answer carries no reasoning and its
+	// EvalTimeNs is a cache lookup rather than an evaluation.
+	if e.cache != nil && !co.dryRun {
 		if cached, ok := e.cache.Get(ctx, scope.tenantID, scope.namespacePath, req); ok {
 			result := *cached
 			result.EvalTimeNs = time.Since(start).Nanoseconds()
@@ -258,7 +260,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	if e.config.rbacEnabled() {
 		rbacResult, rbacRoles, err = e.evaluateRBAC(ctx, scope, req)
 		if err != nil {
-			return e.failCheck(ctx, scope, req, fmt.Errorf("warden rbac: %w", err))
+			return e.failCheck(ctx, scope, req, fmt.Errorf("warden rbac: %w", err), co.dryRun)
 		}
 	}
 
@@ -269,7 +271,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	if e.config.rebacEnabled() && (rbacResult == nil || !rbacResult.Allowed || e.config.EvaluateAllModels) {
 		rebacResult, err = e.evaluateReBAC(ctx, scope, req)
 		if err != nil {
-			return e.failCheck(ctx, scope, req, fmt.Errorf("warden rebac: %w", err))
+			return e.failCheck(ctx, scope, req, fmt.Errorf("warden rebac: %w", err), co.dryRun)
 		}
 	}
 
@@ -280,7 +282,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	if e.config.abacEnabled() {
 		abacResult, err = e.evaluateABAC(ctx, scope, req, rolesToSlugs(rbacRoles))
 		if err != nil {
-			return e.failCheck(ctx, scope, req, fmt.Errorf("warden abac: %w", err))
+			return e.failCheck(ctx, scope, req, fmt.Errorf("warden abac: %w", err), co.dryRun)
 		}
 	}
 
@@ -291,16 +293,20 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	e.metrics.CheckEvaluated(result.Decision, decisionSource(result), time.Since(start), false)
 
 	// 6. Cache the result.
-	if e.cache != nil {
+	if e.cache != nil && !co.dryRun {
 		e.cache.Set(ctx, scope.tenantID, scope.namespacePath, req, result)
 	}
 
 	// 7. Extension hooks: per-obligation, then after check.
-	e.emitAfterCheck(ctx, req, result)
+	if !co.dryRun {
+		e.emitAfterCheck(ctx, req, result)
+	}
 
 	// 8. Write check log entry (via the bounded batching writer, never a
 	// per-call goroutine).
-	e.writeCheckLog(ctx, scope, req, result, false, "")
+	if !co.dryRun {
+		e.writeCheckLog(ctx, scope, req, result, false, "")
+	}
 
 	return result, nil
 }
@@ -317,10 +323,13 @@ func (e *Engine) emitAfterCheck(ctx context.Context, req *CheckRequest, result *
 
 // failCheck records a check-evaluation failure (as a check log entry with
 // Decision "error") and returns the error unchanged, so every Check error
-// path still leaves an audit trail.
-func (e *Engine) failCheck(ctx context.Context, scope tenantScope, req *CheckRequest, err error) (*CheckResult, error) {
+// path still leaves an audit trail. A dry run leaves none, the same as its
+// success path.
+func (e *Engine) failCheck(ctx context.Context, scope tenantScope, req *CheckRequest, err error, dryRun bool) (*CheckResult, error) {
 	e.metrics.StoreError("check")
-	e.writeCheckLog(ctx, scope, req, nil, false, err.Error())
+	if !dryRun {
+		e.writeCheckLog(ctx, scope, req, nil, false, err.Error())
+	}
 	return nil, err
 }
 
