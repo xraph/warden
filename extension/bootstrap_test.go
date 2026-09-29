@@ -2,10 +2,12 @@ package extension
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/store/memory"
 )
 
@@ -214,5 +216,115 @@ func TestBootstrapAdmin_GrantsTheDashboardContractPermissions(t *testing.T) {
 		if err := ext.Engine().Enforce(ctx, req); err != nil {
 			t.Errorf("bootstrap admin lacks %s on %s: %v", c.action, c.resource, err)
 		}
+	}
+}
+
+// auditRecorder collects audit events from the engine's plugin registry.
+type auditRecorder struct {
+	mu     sync.Mutex
+	events []plugin.Event
+}
+
+func (a *auditRecorder) Name() string { return "audit-recorder" }
+
+func (a *auditRecorder) OnAudit(_ context.Context, ev plugin.Event) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = append(a.events, ev)
+	return nil
+}
+
+func (a *auditRecorder) reset() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = nil
+}
+
+func (a *auditRecorder) counts() map[string]int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := map[string]int{}
+	for _, e := range a.events {
+		out[e.Action]++
+	}
+	return out
+}
+
+func newAuditedExtension(t *testing.T, name string) (*Extension, *auditRecorder) {
+	t.Helper()
+	rec := &auditRecorder{}
+	ext := New(WithStore(memory.New()), WithPlugin(rec))
+	if err := ext.Register(newTestApp(name)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	return ext, rec
+}
+
+func TestBootstrapAdmin_EmitsAuditForEverythingItCreates(t *testing.T) {
+	ext, rec := newAuditedExtension(t, "bootstrap-audit")
+	ctx := context.Background()
+
+	if err := ext.BootstrapAdmin(ctx, bootstrapTenant, warden.Subject{Kind: warden.SubjectUser, ID: "alice"}); err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+
+	n := len(bootstrapPermissions)
+	want := map[string]int{
+		"role.created":        1,
+		"permission.created":  n,
+		"permission.attached": n,
+		"assignment.created":  1,
+	}
+	got := rec.counts()
+	for action, c := range want {
+		if got[action] != c {
+			t.Errorf("%s events = %d, want %d (all: %v)", action, got[action], c, got)
+		}
+	}
+
+	wantActor := warden.Actor{Kind: warden.SystemActor.Kind, ID: warden.SystemActor.ID, Via: "bootstrap"}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	for _, e := range rec.events {
+		if e.Actor != wantActor {
+			t.Errorf("%s actor = %+v, want %+v", e.Action, e.Actor, wantActor)
+		}
+		if e.TenantID != bootstrapTenant {
+			t.Errorf("%s tenant = %q, want %q", e.Action, e.TenantID, bootstrapTenant)
+		}
+		if e.At.IsZero() {
+			t.Errorf("%s has no timestamp", e.Action)
+		}
+		if e.Action == "assignment.created" {
+			a, ok := e.Entity.(*assignment.Assignment)
+			if !ok || a.SubjectID != "alice" || a.SubjectKind != "user" {
+				t.Errorf("assignment.created Entity = %#v, want the alice assignment", e.Entity)
+			}
+		}
+	}
+}
+
+func TestBootstrapAdmin_SecondCallEmitsNothing(t *testing.T) {
+	ext, rec := newAuditedExtension(t, "bootstrap-audit-idempotent")
+	ctx := context.Background()
+	subject := warden.Subject{Kind: warden.SubjectUser, ID: "alice"}
+	if err := ext.BootstrapAdmin(ctx, bootstrapTenant, subject); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+
+	rec.reset()
+	if err := ext.BootstrapAdmin(ctx, bootstrapTenant, subject); err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if got := rec.counts(); len(got) != 0 {
+		t.Fatalf("an idempotent second call emitted %v, want nothing", got)
+	}
+
+	rec.reset()
+	if err := ext.BootstrapAdmin(ctx, bootstrapTenant, warden.Subject{Kind: warden.SubjectUser, ID: "bob"}); err != nil {
+		t.Fatalf("second subject: %v", err)
+	}
+	if got := rec.counts(); len(got) != 1 || got["assignment.created"] != 1 {
+		t.Fatalf("a second subject emitted %v, want one assignment.created", got)
 	}
 }

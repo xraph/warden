@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/role"
 )
 
@@ -74,6 +75,20 @@ func (e *Extension) BootstrapAdmin(ctx context.Context, tenantID string, subject
 
 	now := time.Now().UTC()
 
+	// Every row BootstrapAdmin creates is audited as the system, tagged
+	// "bootstrap" so a reader of the trail can tell it from a maintenance
+	// job or a declarative apply. Only rows actually created emit, so an
+	// idempotent second call leaves no events.
+	actor := warden.Actor{Kind: warden.SystemActor.Kind, ID: warden.SystemActor.ID, Via: "bootstrap"}
+	audit := func(action, entityID string, entity any) {
+		if pl := e.eng.Plugins(); pl != nil {
+			pl.EmitAudit(ctx, plugin.Event{
+				Actor: actor, At: now, Action: action,
+				TenantID: tenantID, EntityID: entityID, Entity: entity,
+			})
+		}
+	}
+
 	r, rerr := st.GetRoleBySlug(ctx, tenantID, "", bootstrapAdminSlug)
 	if rerr != nil || r == nil {
 		r = &role.Role{
@@ -91,6 +106,7 @@ func (e *Extension) BootstrapAdmin(ctx context.Context, tenantID string, subject
 		if err := st.CreateRole(ctx, r); err != nil {
 			return fmt.Errorf("warden: bootstrap admin: create role: %w", err)
 		}
+		audit("role.created", r.ID.String(), r)
 	}
 
 	granted, gerr := st.ListRolePermissions(ctx, tenantID, r.ID)
@@ -123,6 +139,7 @@ func (e *Extension) BootstrapAdmin(ctx context.Context, tenantID string, subject
 			if err := st.CreatePermission(ctx, p); err != nil {
 				return fmt.Errorf("warden: bootstrap admin: create permission %s: %w", name, err)
 			}
+			audit("permission.created", p.ID.String(), p)
 		}
 		if _, ok := grantedNames[name]; ok {
 			continue
@@ -130,6 +147,9 @@ func (e *Extension) BootstrapAdmin(ctx context.Context, tenantID string, subject
 		if err := st.AttachPermission(ctx, tenantID, r.ID, permission.Ref{Name: name}); err != nil {
 			return fmt.Errorf("warden: bootstrap admin: attach %s: %w", name, err)
 		}
+		audit("permission.attached", r.ID.String(), map[string]string{
+			"role_id": r.ID.String(), "permission_namespace_path": "", "permission_name": name,
+		})
 	}
 
 	existing, aerr := st.ListAssignments(ctx, &assignment.ListFilter{
@@ -157,5 +177,6 @@ func (e *Extension) BootstrapAdmin(ctx context.Context, tenantID string, subject
 	if err := st.CreateAssignment(ctx, ass); err != nil {
 		return fmt.Errorf("warden: bootstrap admin: assign role: %w", err)
 	}
+	audit("assignment.created", ass.ID.String(), ass)
 	return nil
 }
