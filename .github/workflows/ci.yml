@@ -29,8 +29,8 @@ jobs:
       os: '["ubuntu-latest"]'
 
   # ─── Coverage gate ──────────────────────────────────────────────────
-  # Runs after the shared workflow's test job so coverage.out reflects
-  # the same code it just tested. `make coverage-check` depends on the
+  # Runs after the shared workflow's test job, and fails the build below the
+  # thresholds in the Makefile. `make coverage-check` depends on the
   # `test-coverage` Makefile target and runs it first, so this job invokes
   # `make coverage-check` alone rather than both targets separately.
   # test-coverage now runs with -tags=integration, so this job's postgres
@@ -55,9 +55,6 @@ jobs:
           check-latest: true
           cache: true
           cache-dependency-path: go.sum
-
-      - name: Download modules
-        run: go mod download
 
       - name: Run coverage check
         run: make coverage-check

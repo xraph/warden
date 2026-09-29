@@ -1073,7 +1073,9 @@ func (s *Store) filterPolicies(filter *policy.ListFilter) []*policy.Policy {
 		}
 		result = append(result, copyPolicy(p))
 	}
-	sortByCreatedAt(result, func(p *policy.Policy) (time.Time, string) { return p.CreatedAt, p.ID.String() })
+	// Priority first, like the SQL and mongo backends: ListPolicies is the
+	// evaluation order, not just a stable one.
+	sortActivePolicies(result)
 	return result
 }
 
@@ -1319,7 +1321,13 @@ func (s *Store) filterCheckLogs(filter *checklog.QueryFilter) []*checklog.Entry 
 		}
 		result = append(result, copyCheckLog(e))
 	}
-	sortByCreatedAt(result, func(e *checklog.Entry) (time.Time, string) { return e.CreatedAt, e.ID.String() })
+	// Newest first, matching the other backends' created_at DESC, id DESC.
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		}
+		return result[i].ID.String() > result[j].ID.String()
+	})
 	return result
 }
 

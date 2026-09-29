@@ -2,6 +2,7 @@ package contract
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ func RunListFiltersContract(t *testing.T, mk MakeStore) {
 	t.Run("CountIgnoresLimitOffset", func(t *testing.T) { runCountIgnoresLimitOffset(t, mk) })
 	t.Run("DefaultLimitCap", func(t *testing.T) { runListDefaultLimitCap(t, mk) })
 	t.Run("PagingWalk", func(t *testing.T) { runListPagingWalk(t, mk) })
+	t.Run("Ordering", func(t *testing.T) { runListOrdering(t, mk) })
 }
 
 func runListFilterRoles(t *testing.T, mk MakeStore) {
@@ -589,4 +591,149 @@ func idStrings[T any](items []T, idOf func(T) string) []string {
 		out[i] = idOf(item)
 	}
 	return out
+}
+
+// ──────────────────────────────────────────────────
+// Ordering contract
+// ──────────────────────────────────────────────────
+
+// runListOrdering pins the row order two List* calls promise, which the
+// paging walk cannot: it only checks that every row is visited once, so a
+// backend that pages a stable but different order still passes it. A caller
+// asking for Limit: 10 gets a different slice depending on that order.
+//
+//   - ListCheckLogs is newest first: an audit reader wants the latest
+//     decisions, so created_at descending, then id descending.
+//   - ListPolicies is evaluation order: priority ascending, then created_at
+//     ascending, then id ascending.
+func runListOrdering(t *testing.T, mk MakeStore) {
+	t.Helper()
+
+	t.Run("CheckLogsNewestFirst", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+
+		base := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
+		// Seed out of order so insertion order cannot pass by accident.
+		offsets := []int{3, 0, 4, 1, 2}
+		for _, off := range offsets {
+			e := &checklog.Entry{
+				ID: id.NewCheckLogID(), TenantID: "t1",
+				SubjectKind: "user", SubjectID: "alice", Action: "read",
+				ResourceType: "doc", ResourceID: slugFor("ord", off), Decision: "allow",
+				CreatedAt: base.Add(time.Duration(off) * time.Minute),
+			}
+			if err := s.CreateCheckLog(ctx, e); err != nil {
+				t.Fatalf("seed check log %d: %v", off, err)
+			}
+		}
+
+		got, err := s.ListCheckLogs(ctx, &checklog.QueryFilter{TenantID: "t1"})
+		if err != nil {
+			t.Fatalf("ListCheckLogs: %v", err)
+		}
+		want := []string{slugFor("ord", 4), slugFor("ord", 3), slugFor("ord", 2), slugFor("ord", 1), slugFor("ord", 0)}
+		gotOrder := make([]string, len(got))
+		for i, e := range got {
+			gotOrder[i] = e.ResourceID
+		}
+		if !equalStrings(gotOrder, want) {
+			t.Errorf("ListCheckLogs order: want newest first %v, got %v", want, gotOrder)
+		}
+
+		top, err := s.ListCheckLogs(ctx, &checklog.QueryFilter{TenantID: "t1", Limit: 2})
+		if err != nil {
+			t.Fatalf("ListCheckLogs Limit 2: %v", err)
+		}
+		if len(top) != 2 || top[0].ResourceID != want[0] || top[1].ResourceID != want[1] {
+			t.Errorf("ListCheckLogs Limit 2: want the two newest %v, got %d rows", want[:2], len(top))
+		}
+	})
+
+	t.Run("PoliciesPriorityFirst", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+
+		base := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
+		type seed struct {
+			name     string
+			priority int
+			offset   int
+		}
+		// Later-created rows carry the lower priority number, so a created_at
+		// only sort visibly disagrees with the contract.
+		seeds := []seed{
+			{"p10-early", 10, 0},
+			{"p10-late", 10, 2},
+			{"p1-late", 1, 3},
+			{"p5-mid", 5, 1},
+			{"p1-early", 1, 1},
+		}
+		for _, sd := range seeds {
+			p := &policy.Policy{
+				ID: id.NewPolicyID(), TenantID: "t1",
+				Name: sd.name, Effect: policy.EffectAllow, IsActive: true, Priority: sd.priority,
+				Subjects: []policy.SubjectMatch{}, Actions: []string{},
+				Resources: []string{}, Conditions: []policy.Condition{},
+				Obligations: []string{},
+				CreatedAt:   base.Add(time.Duration(sd.offset) * time.Minute),
+			}
+			if err := s.CreatePolicy(ctx, p); err != nil {
+				t.Fatalf("seed policy %s: %v", sd.name, err)
+			}
+		}
+		// Two rows tied on both priority and created_at: id breaks the tie.
+		tieIDs := make([]string, 0, 2)
+		for _, name := range []string{"tie-a", "tie-b"} {
+			p := &policy.Policy{
+				ID: id.NewPolicyID(), TenantID: "t1",
+				Name: name, Effect: policy.EffectAllow, IsActive: true, Priority: 20,
+				Subjects: []policy.SubjectMatch{}, Actions: []string{},
+				Resources: []string{}, Conditions: []policy.Condition{},
+				Obligations: []string{},
+				CreatedAt:   base,
+			}
+			if err := s.CreatePolicy(ctx, p); err != nil {
+				t.Fatalf("seed policy %s: %v", name, err)
+			}
+			tieIDs = append(tieIDs, p.ID.String())
+		}
+		sort.Strings(tieIDs)
+
+		got, err := s.ListPolicies(ctx, &policy.ListFilter{TenantID: "t1"})
+		if err != nil {
+			t.Fatalf("ListPolicies: %v", err)
+		}
+		wantNames := []string{"p1-early", "p1-late", "p5-mid", "p10-early", "p10-late"}
+		if len(got) != len(wantNames)+2 {
+			t.Fatalf("ListPolicies: want %d rows, got %d", len(wantNames)+2, len(got))
+		}
+		for i, name := range wantNames {
+			if got[i].Name != name {
+				gotNames := make([]string, len(got))
+				for j, p := range got {
+					gotNames[j] = p.Name
+				}
+				t.Fatalf("ListPolicies order: want priority, then created_at first %v, got %v", wantNames, gotNames)
+			}
+		}
+		gotTie := []string{got[5].ID.String(), got[6].ID.String()}
+		if !equalStrings(gotTie, tieIDs) {
+			t.Errorf("ListPolicies tie on priority and created_at: want id ascending %v, got %v", tieIDs, gotTie)
+		}
+	})
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
