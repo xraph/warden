@@ -836,3 +836,84 @@ func TestAssignmentsExpiringHonoursASmallLimit(t *testing.T) {
 }
 
 func parseRoleIDForTest(raw string) (id.RoleID, error) { return id.ParseRoleID(raw) }
+
+func TestAssignmentsCreateRefusesAHalfScopedResource(t *testing.T) {
+	// An id without a type is a GLOBAL grant (ListRolesForSubject keeps any
+	// row whose ResourceType is empty, whatever its ResourceID), and a type
+	// without an id matches only checks on a resource whose id is "". Both
+	// look scoped and are not, so both are refused and nothing is stored.
+	s := memory.New()
+	r := seedRoles(t, s, "", "reader")[0]
+	h := assignmentsCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	cases := map[string]struct {
+		in   AssignmentCreateInput
+		want string
+	}{
+		"id without type": {
+			in:   AssignmentCreateInput{RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "alice", ResourceID: "d-42"},
+			want: "resourceId needs a resourceType",
+		},
+		"type without id": {
+			in:   AssignmentCreateInput{RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "alice", ResourceType: "document"},
+			want: "resourceType needs a resourceId",
+		},
+	}
+	for name, tc := range cases {
+		_, err := h(context.Background(), tc.in, principalFor("t1"))
+		var ce *dashcontract.Error
+		if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
+			t.Errorf("%s: want CodeBadRequest, got %v", name, err)
+			continue
+		}
+		if !containsText(ce.Message, tc.want) {
+			t.Errorf("%s: message %q does not name the rule %q", name, ce.Message, tc.want)
+		}
+	}
+	if n, _ := s.CountAssignments(context.Background(), &assignment.ListFilter{TenantID: "t1"}); n != 0 {
+		t.Errorf("a refused half-scoped create still stored %d rows", n)
+	}
+}
+
+func TestAssignmentsCreateAcceptsBothOrNeitherResourceField(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	r := seedRoles(t, s, "", "reader")[0]
+	h := assignmentsCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	if _, err := h(ctx, AssignmentCreateInput{
+		RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "alice",
+		ResourceType: "document", ResourceID: "d-42",
+	}, principalFor("t1")); err != nil {
+		t.Fatalf("both resource fields: %v", err)
+	}
+	if _, err := h(ctx, AssignmentCreateInput{
+		RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "bob",
+	}, principalFor("t1")); err != nil {
+		t.Fatalf("neither resource field: %v", err)
+	}
+	if n, _ := s.CountAssignments(ctx, &assignment.ListFilter{TenantID: "t1"}); n != 2 {
+		t.Errorf("stored %d rows, want 2", n)
+	}
+}
+
+func TestAssignmentsCreateReportsAHalfScopeBeforeTheCap(t *testing.T) {
+	// Input first, cap last: a half-scoped request against a full role must
+	// name the scope rule, not the cap.
+	s := memory.New()
+	ctx := context.Background()
+	r := &role.Role{TenantID: "t1", Name: "Small", Slug: "small", MaxMembers: 1}
+	if err := s.CreateRole(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	seedBinding(t, s, r, "alice", "", "", "")
+	h := assignmentsCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(ctx, AssignmentCreateInput{
+		RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "bob", ResourceID: "d-42",
+	}, principalFor("t1"))
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
+		t.Fatalf("half scope on a full role: want CodeBadRequest, got %v", err)
+	}
+}

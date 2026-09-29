@@ -114,6 +114,31 @@ var validSubjectKinds = map[string]struct{}{
 	"service_acct": {},
 }
 
+// validateResourceScope refuses an assignment that names half a resource.
+//
+// The engine reads the two fields as one key, and each half on its own
+// grants something other than what it looks like:
+//
+//   - An id without a type is a GLOBAL grant. ListRolesForSubject keeps
+//     every row whose ResourceType is empty, whatever its ResourceID, so the
+//     id is ignored and the subject holds the role for every resource.
+//   - A type without an id matches only a check whose resource id is the
+//     empty string, because ListRolesForSubjectOnResource compares both
+//     fields exactly. It looks scoped to a type and matches almost nothing.
+//
+// So the rule is both or neither.
+func validateResourceScope(resourceType, resourceID string) error {
+	switch {
+	case resourceID != "" && resourceType == "":
+		return badRequest("resourceId needs a resourceType: warden ignores an id without a type, " +
+			"so this assignment would apply to every resource, not one. Give both, or neither")
+	case resourceType != "" && resourceID == "":
+		return badRequest("resourceType needs a resourceId: without one this assignment would match " +
+			"only checks on a resource whose id is empty. Give both, or neither")
+	}
+	return nil
+}
+
 func parseAssignmentID(raw string) (id.AssignmentID, error) {
 	aid, err := id.ParseAssignmentID(raw)
 	if err != nil {
@@ -240,6 +265,9 @@ func assignmentsCreateHandler(deps Deps) func(context.Context, AssignmentCreateI
 				"subjectKind must be one of user, api_key, service, service_acct, got " + in.SubjectKind)
 		}
 		if err := validateNamespace(in.NamespacePath); err != nil {
+			return AckResponse{}, err
+		}
+		if err := validateResourceScope(in.ResourceType, in.ResourceID); err != nil {
 			return AckResponse{}, err
 		}
 		rid, err := parseRoleID(in.RoleID)

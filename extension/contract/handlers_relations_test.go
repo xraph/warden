@@ -195,12 +195,12 @@ func TestRelationsDeleteOfAnotherTenantsTupleIsNotFound(t *testing.T) {
 	}
 }
 
-func TestRelationsListDoesNotCascadeAcrossNamespaces(t *testing.T) {
-	// Roles, permissions, policies and resource types resolve up the
-	// ancestor chain. Tuples deliberately do not, because they name
-	// concrete object and subject pairs and cross-namespace matching would
-	// be semantically wrong (see relation/relation.go's type comment).
-	// A list that cascaded would imply access the engine will not grant.
+func TestRelationsListFilterIsExactMatchAndOmitsAncestorTuples(t *testing.T) {
+	// This pins the LIST filter, not the check. At check time a tuple at the
+	// root DOES apply in eng, because tuples cascade down like roles and
+	// policies (TestReBAC_NamespaceCascade). The list filter is an exact
+	// match on purpose: filtering on eng shows what is stored at eng, so the
+	// root tuple is absent from the listing even though it is in effect.
 	s := memory.New()
 	seedTuple(t, s, "", "document", "root-doc", "viewer", "user", "alice")
 	seedTuple(t, s, "eng", "document", "eng-doc", "viewer", "user", "alice")
@@ -292,8 +292,9 @@ func TestRelationsDeleteRefusesAMalformedID(t *testing.T) {
 }
 
 func TestRelationsListDoesNotIncludeDescendantNamespaces(t *testing.T) {
-	// The other direction of the no-cascade rule: filtering on "eng" must not
-	// sweep in "eng/platform" the way a prefix match would.
+	// The other direction of the exact-match list filter: filtering on "eng"
+	// must not sweep in "eng/platform" the way a prefix match would. This is
+	// about the listing only; see the test above for how checks differ.
 	s := memory.New()
 	seedTuple(t, s, "eng", "document", "eng-doc", "viewer", "user", "alice")
 	seedTuple(t, s, "eng/platform", "document", "platform-doc", "viewer", "user", "alice")

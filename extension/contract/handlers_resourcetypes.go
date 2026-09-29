@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/dsl"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/relation"
@@ -266,7 +267,13 @@ func validateDefinitions(relations []RelationDefDTO, permissions []PermissionDef
 			}
 			msg := "relation " + ref.name + " is not declared on this type"
 			if _, isPerm := permNames[ref.name]; isPerm {
-				msg = ref.name + " is a permission, not a relation, and an expression can only reference relations"
+				// Not "an expression can only reference relations": the last
+				// step of a traversal (parent->read) can name a permission on
+				// the hopped type. What cannot is a bare name or a
+				// traversal's first step, because the evaluator looks those
+				// up as relation tuples and never as permissions.
+				msg = ref.name + " is a permission, not a relation. A bare name, like the first step of a traversal, " +
+					"is looked up as a relation, not evaluated as a permission"
 			}
 			diags = append(diags, ExpressionDiagnostic{
 				Permission: p.Name, Line: ref.pos.Line, Col: ref.pos.Col, Message: msg,
@@ -472,9 +479,13 @@ func resourceTypesDeleteHandler(deps Deps) func(context.Context, ResourceTypeDel
 		if err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
-		// Tuples resolve their type by name, from their own namespace up, so
-		// the ones this type answers for sit at its namespace or below it.
-		// The empty prefix (the tenant root) matches everything.
+		// A check resolves a type by name from the check's namespace up, and
+		// considers tuples from the check's namespace up. So this type
+		// answers for checks at its namespace and below, and every tuple in
+		// scope for those checks uses it: tuples at its namespace or below
+		// it, and tuples at each of its strict ancestors, because tuples
+		// cascade downward. The empty prefix (the tenant root) matches
+		// everything, and a root type has no strict ancestors.
 		used, err := s.CountRelations(ctx, &relation.ListFilter{
 			TenantID:        tenantID,
 			NamespacePrefix: rt.NamespacePath,
@@ -482,6 +493,21 @@ func resourceTypesDeleteHandler(deps Deps) func(context.Context, ResourceTypeDel
 		})
 		if err != nil {
 			return AckResponse{}, mapWardenError(err)
+		}
+		// AncestorNamespaces returns the path itself first, then each
+		// ancestor up to the root, so [1:] is the strict ancestors. Each is
+		// counted by exact namespace so no tuple is counted twice.
+		for _, ns := range warden.AncestorNamespaces(rt.NamespacePath)[1:] {
+			exact := ns
+			n, err := s.CountRelations(ctx, &relation.ListFilter{
+				TenantID:      tenantID,
+				NamespacePath: &exact,
+				ObjectType:    rt.Name,
+			})
+			if err != nil {
+				return AckResponse{}, mapWardenError(err)
+			}
+			used += n
 		}
 		if used > 0 {
 			return AckResponse{}, &dashcontract.Error{

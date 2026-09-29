@@ -559,6 +559,34 @@ func TestResourceTypesCreateRefusesAnExpressionNamingAPermission(t *testing.T) {
 	if !containsText(ce.Message, "permission, not a relation") {
 		t.Errorf("message %q does not explain that read is a permission", ce.Message)
 	}
+	if !containsText(ce.Message, "A bare name, like the first step of a traversal, is looked up as a relation") {
+		t.Errorf("message %q does not say how a bare name is resolved", ce.Message)
+	}
+	// A traversal's last hop CAN name a permission (see the test above), so
+	// the old blanket claim was false and must not come back.
+	if containsText(ce.Message, "can only reference relations") {
+		t.Errorf("message %q repeats the overbroad claim", ce.Message)
+	}
+}
+
+func TestResourceTypesCreateRefusesATraversalWhoseFirstStepIsAPermission(t *testing.T) {
+	// The first step of a traversal is a relation lookup too, so the same
+	// refusal applies there.
+	s := memory.New()
+	h := resourceTypesCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(context.Background(), ResourceTypeCreateInput{
+		Name:      "document",
+		Relations: []RelationDefDTO{{Name: "viewer"}},
+		Permissions: []PermissionDefDTO{
+			{Name: "read", Expression: "viewer"},
+			{Name: "write", Expression: "read->viewer"},
+		},
+	}, principalFor("t1"))
+	ce := refusal(t, err, dashcontract.CodeBadRequest)
+	if !containsText(ce.Message, "read is a permission, not a relation") {
+		t.Errorf("message %q does not refuse the permission used as a first hop", ce.Message)
+	}
 }
 
 func TestResourceTypesCreateRefusesAnEmptyExpression(t *testing.T) {
@@ -1029,6 +1057,49 @@ func TestResourceTypesDeleteCountsTuplesInDescendantNamespaces(t *testing.T) {
 	ce := refusal(t, err, dashcontract.CodeConflict)
 	if !containsText(ce.Message, "1 relation tuples") {
 		t.Errorf("message %q should count the descendant's tuple", ce.Message)
+	}
+}
+
+func TestResourceTypesDeleteCountsTuplesInAncestorNamespaces(t *testing.T) {
+	// Tuples cascade at check time: a tuple at the tenant root is in scope
+	// for a check at eng, and a check at eng resolves "document" to the type
+	// at eng. So the root tuple is used through this type, and deleting the
+	// type would strand it just as surely as one stored at eng.
+	s := memory.New()
+	ctx := context.Background()
+	eng := seedResourceType(t, s, "eng", "document")
+	seedTuple(t, s, "", "document", "readme", "viewer", "user", "alice")
+	h := resourceTypesDeleteHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(ctx, ResourceTypeDeleteInput{ID: eng.ID.String()}, principalFor("t1"))
+	ce := refusal(t, err, dashcontract.CodeConflict)
+	if !containsText(ce.Message, "1 relation tuples") {
+		t.Errorf("message %q should count the root tuple", ce.Message)
+	}
+	if _, getErr := s.GetResourceType(ctx, "t1", eng.ID); getErr != nil {
+		t.Errorf("the refusal did not prevent the delete: %v", getErr)
+	}
+}
+
+func TestResourceTypesDeleteCountsEveryAncestorOnceAndNothingBeside(t *testing.T) {
+	// A type two levels down counts each strict ancestor's tuples once, by
+	// exact namespace, alongside its own and its descendants'. A sibling
+	// namespace and another object type at an ancestor are not counted.
+	s := memory.New()
+	ctx := context.Background()
+	rt := seedResourceType(t, s, "eng/platform", "document")
+	seedTuple(t, s, "", "document", "a", "viewer", "user", "alice")             // root: counted
+	seedTuple(t, s, "eng", "document", "b", "viewer", "user", "alice")          // parent: counted
+	seedTuple(t, s, "eng/platform", "document", "c", "viewer", "user", "alice") // self: counted
+	seedTuple(t, s, "eng/platform/x", "document", "d", "viewer", "user", "bob") // child: counted
+	seedTuple(t, s, "", "folder", "root", "viewer", "user", "alice")            // root, other type
+	seedTuple(t, s, "eng/data", "document", "e", "viewer", "user", "alice")     // sibling
+	h := resourceTypesDeleteHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(ctx, ResourceTypeDeleteInput{ID: rt.ID.String()}, principalFor("t1"))
+	ce := refusal(t, err, dashcontract.CodeConflict)
+	if !containsText(ce.Message, "4 relation tuples") {
+		t.Errorf("message %q should count root, parent, self and child, 4 in all", ce.Message)
 	}
 }
 

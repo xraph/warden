@@ -14,10 +14,14 @@ import (
 //	document:readme#viewer@user:bob
 //	folder:root#parent@document:readme
 //
-// NamespacePath partitions the relation space — a tuple at namespace N is
-// only matched when checking inside N (no ancestor cascading for tuples,
-// since they reference concrete object/subject pairs and cross-namespace
-// matching would be semantically wrong).
+// NamespacePath places the tuple in the namespace tree. Tuples cascade the
+// same way roles and policies do: a tuple at namespace N is in scope for a
+// check at N and at every namespace below N, because the engine hands
+// AncestorNamespaces(checkNamespace) to every tuple lookup a check makes
+// (the direct check, the expression evaluator and the graph walker). A
+// tuple at N is never matched by a check at an ancestor of N or at a
+// sibling. ListFilter's NamespacePath is different: it is an exact match,
+// so listing N does not return the ancestors' tuples that also apply at N.
 type Tuple struct {
 	ID              id.RelationID  `json:"id" db:"id"`
 	TenantID        string         `json:"tenant_id" db:"tenant_id"`

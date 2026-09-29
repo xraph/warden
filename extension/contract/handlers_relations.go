@@ -9,12 +9,16 @@
 // changing a tuple means deleting one and writing another. There is no
 // patch input here and no edit form on the page.
 //
-// Their namespace does NOT cascade. Roles, permissions, policies and
-// resource types at an ancestor namespace are in scope for a check in a
-// descendant. Tuples are not, because they name concrete pairs and matching
-// them across namespaces would be wrong. relation/relation.go's type
-// comment says so, and a list that implied otherwise would promise access
-// the engine will not grant.
+// Their namespace cascades at check time but not in the list. Like roles
+// and policies, a tuple stored at a namespace is in scope for a check in
+// that namespace and in every namespace below it: the engine passes
+// AncestorNamespaces(checkNamespace) to every tuple lookup a check makes,
+// in the direct check, the expression evaluator and the graph walker alike
+// (see evaluateReBAC in engine.go and TestReBAC_NamespaceCascade). The list
+// filter, by contrast, is an exact match on purpose, so it shows what is
+// stored in one namespace. A namespace's listing therefore does NOT show a
+// parent's tuples that also apply there, and a page must say so rather
+// than let the listing read as everything in effect.
 package contract
 
 import (
