@@ -209,6 +209,7 @@ func (s *Store) filterRoles(filter *role.ListFilter) []*role.Role {
 		}
 		result = append(result, copyRole(r))
 	}
+	sortByCreatedAt(result, func(r *role.Role) (time.Time, string) { return r.CreatedAt, r.ID.String() })
 	return result
 }
 
@@ -365,6 +366,7 @@ func (s *Store) ListChildRoles(_ context.Context, tenantID, parentSlug string) (
 			result = append(result, copyRole(r))
 		}
 	}
+	sortByCreatedAt(result, func(r *role.Role) (time.Time, string) { return r.CreatedAt, r.ID.String() })
 	return result, nil
 }
 
@@ -495,6 +497,7 @@ func (s *Store) filterPermissions(filter *permission.ListFilter) []*permission.P
 		}
 		result = append(result, copyPermission(p))
 	}
+	sortByCreatedAt(result, func(p *permission.Permission) (time.Time, string) { return p.CreatedAt, p.ID.String() })
 	return result
 }
 
@@ -650,6 +653,7 @@ func (s *Store) filterAssignments(filter *assignment.ListFilter) []*assignment.A
 		}
 		result = append(result, copyAssignment(a))
 	}
+	sortByCreatedAt(result, func(a *assignment.Assignment) (time.Time, string) { return a.CreatedAt, a.ID.String() })
 	return result
 }
 
@@ -720,6 +724,7 @@ func (s *Store) ListSubjectsForRole(_ context.Context, tenantID string, roleID i
 			result = append(result, copyAssignment(a))
 		}
 	}
+	sortByCreatedAt(result, func(a *assignment.Assignment) (time.Time, string) { return a.CreatedAt, a.ID.String() })
 	return result, nil
 }
 
@@ -734,7 +739,10 @@ func (s *Store) ListExpiringAssignments(_ context.Context, tenantID string, befo
 		result = append(result, copyAssignment(a))
 	}
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].ExpiresAt.Before(*result[j].ExpiresAt)
+		if !result[i].ExpiresAt.Equal(*result[j].ExpiresAt) {
+			return result[i].ExpiresAt.Before(*result[j].ExpiresAt)
+		}
+		return result[i].ID.String() < result[j].ID.String()
 	})
 	if n := fanoutLimit(limit); len(result) > n {
 		result = result[:n]
@@ -877,6 +885,7 @@ func (s *Store) filterRelations(filter *relation.ListFilter) []*relation.Tuple {
 		}
 		result = append(result, copyTuple(t))
 	}
+	sortByCreatedAt(result, func(t *relation.Tuple) (time.Time, string) { return t.CreatedAt, t.ID.String() })
 	return result
 }
 
@@ -896,33 +905,25 @@ func (s *Store) ListRelationSubjects(_ context.Context, tenantID string, namespa
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	nsSet := namespacePathSet(namespacePaths)
-	maxRows := fanoutLimit(limit)
 	var result []*relation.Tuple
 	for _, t := range s.relations {
 		if t.TenantID == tenantID && nsSet.matches(t.NamespacePath) && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel {
 			result = append(result, copyTuple(t))
-			if len(result) == maxRows {
-				break
-			}
 		}
 	}
-	return result, nil
+	return capTuples(result, limit), nil
 }
 
 func (s *Store) ListRelationObjects(_ context.Context, tenantID, namespacePath, subjectType, subjectID, rel string, limit int) ([]*relation.Tuple, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	maxRows := fanoutLimit(limit)
 	var result []*relation.Tuple
 	for _, t := range s.relations {
 		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.SubjectType == subjectType && t.SubjectID == subjectID && t.Relation == rel {
 			result = append(result, copyTuple(t))
-			if len(result) == maxRows {
-				break
-			}
 		}
 	}
-	return result, nil
+	return capTuples(result, limit), nil
 }
 
 func (s *Store) CheckDirectRelation(_ context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
@@ -1072,6 +1073,7 @@ func (s *Store) filterPolicies(filter *policy.ListFilter) []*policy.Policy {
 		}
 		result = append(result, copyPolicy(p))
 	}
+	sortByCreatedAt(result, func(p *policy.Policy) (time.Time, string) { return p.CreatedAt, p.ID.String() })
 	return result
 }
 
@@ -1101,6 +1103,7 @@ func (s *Store) ListActivePolicies(_ context.Context, tenantID string, namespace
 		}
 		result = append(result, copyPolicy(p))
 	}
+	sortActivePolicies(result)
 	return result, nil
 }
 
@@ -1222,6 +1225,7 @@ func (s *Store) filterResourceTypes(filter *resourcetype.ListFilter) []*resource
 		}
 		result = append(result, copyResourceType(rt))
 	}
+	sortByCreatedAt(result, func(rt *resourcetype.ResourceType) (time.Time, string) { return rt.CreatedAt, rt.ID.String() })
 	return result
 }
 
@@ -1315,6 +1319,7 @@ func (s *Store) filterCheckLogs(filter *checklog.QueryFilter) []*checklog.Entry 
 		}
 		result = append(result, copyCheckLog(e))
 	}
+	sortByCreatedAt(result, func(e *checklog.Entry) (time.Time, string) { return e.CreatedAt, e.ID.String() })
 	return result
 }
 
@@ -1500,6 +1505,64 @@ func copyCheckLog(e *checklog.Entry) *checklog.Entry {
 		copy(c.Obligations, e.Obligations)
 	}
 	return &c
+}
+
+// sortByCreatedAt orders items by (CreatedAt, ID) ascending, using key to
+// pull the sort fields out of each item.
+//
+// Every List* method walks a Go map to build its result, and Go
+// deliberately randomizes map iteration order, so two calls with the same
+// filter could come back in a different row order. That's invisible to a
+// caller who reads a whole result set in one call, but it breaks
+// offset-based paging (dsl/paginate.go collectPages, and any caller doing
+// its own Offset/Limit sweep): a row can be skipped or repeated across
+// pages if it lands on either side of a page boundary differently call to
+// call. Sorting by creation time, with ID as a tiebreak for rows created in
+// the same instant, gives every List* call the same total order the SQL
+// backends already provide via ORDER BY created_at.
+func sortByCreatedAt[T any](items []*T, key func(*T) (time.Time, string)) {
+	sort.Slice(items, func(i, j int) bool {
+		ti, idi := key(items[i])
+		tj, idj := key(items[j])
+		if !ti.Equal(tj) {
+			return ti.Before(tj)
+		}
+		return idi < idj
+	})
+}
+
+// capTuples puts a relation fanout in (CreatedAt, ID) order and then
+// truncates it to the caller's limit.
+//
+// The obvious optimisation here is to stop walking as soon as the result
+// hits the cap, and that is what this used to do. It is wrong against a Go
+// map: the SQL backends stop early on rows an index already handed over in
+// created_at order, whereas a map hands them over shuffled, so breaking
+// early samples an arbitrary subset rather than truncating a defined one.
+// Two calls with identical arguments could return different tuples. Paying
+// for the full walk buys the caller the same rows every backend returns.
+func capTuples(result []*relation.Tuple, limit int) []*relation.Tuple {
+	sortByCreatedAt(result, func(t *relation.Tuple) (time.Time, string) { return t.CreatedAt, t.ID.String() })
+	if n := fanoutLimit(limit); len(result) > n {
+		result = result[:n]
+	}
+	return result
+}
+
+// sortActivePolicies matches the order the SQL backends evaluate policies
+// in: priority first, then creation time, then ID. Priority alone leaves
+// ties unordered, which meant two calls could disagree about which of two
+// equal-priority policies the engine saw first.
+func sortActivePolicies(result []*policy.Policy) {
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Priority != result[j].Priority {
+			return result[i].Priority < result[j].Priority
+		}
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID.String() < result[j].ID.String()
+	})
 }
 
 // Pagination helpers for each entity type.

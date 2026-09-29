@@ -3,6 +3,7 @@ package contract
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/checklog"
@@ -32,6 +33,7 @@ func RunListFiltersContract(t *testing.T, mk MakeStore) {
 	t.Run("CheckLogs", func(t *testing.T) { runListFilterCheckLogs(t, mk) })
 	t.Run("CountIgnoresLimitOffset", func(t *testing.T) { runCountIgnoresLimitOffset(t, mk) })
 	t.Run("DefaultLimitCap", func(t *testing.T) { runListDefaultLimitCap(t, mk) })
+	t.Run("PagingWalk", func(t *testing.T) { runListPagingWalk(t, mk) })
 }
 
 func runListFilterRoles(t *testing.T, mk MakeStore) {
@@ -327,4 +329,264 @@ func assertNamespaces[T any](t *testing.T, label string, got []T, nsOf func(T) s
 	if gotSet["other"] != 0 {
 		t.Errorf("%s: decoy row at namespace %q leaked into result", label, "other")
 	}
+}
+
+// ──────────────────────────────────────────────────
+// Paging contract
+// ──────────────────────────────────────────────────
+
+const (
+	// pagingSeeded is well past the default cap, so an unlimited call has
+	// something to truncate.
+	//
+	// It is 5000 rather than a hair over the cap for a second reason:
+	// Postgres only reorders tied rows once the table is big enough that
+	// the planner picks a different sort for a shallow page than for a deep
+	// one (a parallel Gather Merge near the start, a plain serial Sort once
+	// LIMIT+OFFSET grows). Below roughly 3000 rows every page shares one
+	// plan and the missing tiebreaker stays invisible; at 5000 a walk
+	// reproducibly loses rows. Lower this and the test stops being able to
+	// fail.
+	pagingSeeded = 5000
+	// pagingPage is the explicit Limit the offset walk pages with.
+	pagingPage = 500
+	// pagingCap mirrors the L6 default every backend applies when a caller
+	// leaves Limit unset.
+	pagingCap = 1000
+)
+
+// pagingCreatedAt is the single timestamp every row in the paging contract
+// shares. created_at is the leading sort key on all four backends, so
+// pinning it puts the whole burden of ordering on the tiebreaker: with no
+// tiebreaker, a page boundary lands in the middle of one tied run and rows
+// shuffle between calls. Real data ties like this too, whenever a bulk seed
+// or a migration writes a batch of rows inside one timestamp tick.
+var pagingCreatedAt = time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
+
+// runListPagingWalk asserts both halves of the L6 pagination contract for
+// every general List*: an unlimited call truncates at the default cap, and
+// paging with an explicit Limit visits every seeded row exactly once. The
+// second half is what catches a non-total ORDER BY, where offset paging
+// silently repeats some rows and skips others.
+func runListPagingWalk(t *testing.T, mk MakeStore) {
+	t.Helper()
+
+	t.Run("Roles", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+		seeded := make([]string, 0, pagingSeeded)
+		for i := range pagingSeeded {
+			r := &role.Role{
+				ID: id.NewRoleID(), TenantID: "t1",
+				Name: slugFor("pg", i), Slug: slugFor("pg", i),
+				CreatedAt: pagingCreatedAt,
+			}
+			if err := s.CreateRole(ctx, r); err != nil {
+				t.Fatalf("seed role %d: %v", i, err)
+			}
+			seeded = append(seeded, r.ID.String())
+		}
+		assertPagingWalk(t, "ListRoles", seeded, func(limit, offset int) ([]string, error) {
+			got, err := s.ListRoles(ctx, &role.ListFilter{TenantID: "t1", Limit: limit, Offset: offset})
+			return idStrings(got, func(r *role.Role) string { return r.ID.String() }), err
+		})
+	})
+
+	t.Run("Permissions", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+		seeded := make([]string, 0, pagingSeeded)
+		for i := range pagingSeeded {
+			p := &permission.Permission{
+				ID: id.NewPermissionID(), TenantID: "t1",
+				Name: slugFor("pg", i), Resource: "doc", Action: "read",
+				CreatedAt: pagingCreatedAt,
+			}
+			if err := s.CreatePermission(ctx, p); err != nil {
+				t.Fatalf("seed permission %d: %v", i, err)
+			}
+			seeded = append(seeded, p.ID.String())
+		}
+		assertPagingWalk(t, "ListPermissions", seeded, func(limit, offset int) ([]string, error) {
+			got, err := s.ListPermissions(ctx, &permission.ListFilter{TenantID: "t1", Limit: limit, Offset: offset})
+			return idStrings(got, func(p *permission.Permission) string { return p.ID.String() }), err
+		})
+	})
+
+	t.Run("Policies", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+		seeded := make([]string, 0, pagingSeeded)
+		for i := range pagingSeeded {
+			p := &policy.Policy{
+				ID: id.NewPolicyID(), TenantID: "t1",
+				Name: slugFor("pg", i), Effect: policy.EffectAllow, IsActive: true,
+				Subjects: []policy.SubjectMatch{}, Actions: []string{},
+				Resources: []string{}, Conditions: []policy.Condition{},
+				Obligations: []string{},
+				CreatedAt:   pagingCreatedAt,
+			}
+			if err := s.CreatePolicy(ctx, p); err != nil {
+				t.Fatalf("seed policy %d: %v", i, err)
+			}
+			seeded = append(seeded, p.ID.String())
+		}
+		assertPagingWalk(t, "ListPolicies", seeded, func(limit, offset int) ([]string, error) {
+			got, err := s.ListPolicies(ctx, &policy.ListFilter{TenantID: "t1", Limit: limit, Offset: offset})
+			return idStrings(got, func(p *policy.Policy) string { return p.ID.String() }), err
+		})
+	})
+
+	t.Run("ResourceTypes", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+		seeded := make([]string, 0, pagingSeeded)
+		for i := range pagingSeeded {
+			rt := &resourcetype.ResourceType{
+				ID: id.NewResourceTypeID(), TenantID: "t1",
+				Name:      slugFor("pg", i),
+				Relations: []resourcetype.RelationDef{}, Permissions: []resourcetype.PermissionDef{},
+				CreatedAt: pagingCreatedAt,
+			}
+			if err := s.CreateResourceType(ctx, rt); err != nil {
+				t.Fatalf("seed resource type %d: %v", i, err)
+			}
+			seeded = append(seeded, rt.ID.String())
+		}
+		assertPagingWalk(t, "ListResourceTypes", seeded, func(limit, offset int) ([]string, error) {
+			got, err := s.ListResourceTypes(ctx, &resourcetype.ListFilter{TenantID: "t1", Limit: limit, Offset: offset})
+			return idStrings(got, func(rt *resourcetype.ResourceType) string { return rt.ID.String() }), err
+		})
+	})
+
+	t.Run("Assignments", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+		roleID := seedRole(t, s, "t1", "", "pg-asg-role")
+		seeded := make([]string, 0, pagingSeeded)
+		for i := range pagingSeeded {
+			a := &assignment.Assignment{
+				ID: id.NewAssignmentID(), TenantID: "t1",
+				RoleID: roleID, SubjectKind: "user", SubjectID: "alice",
+				ResourceType: "doc", ResourceID: slugFor("pg", i),
+				CreatedAt: pagingCreatedAt,
+			}
+			if err := s.CreateAssignment(ctx, a); err != nil {
+				t.Fatalf("seed assignment %d: %v", i, err)
+			}
+			seeded = append(seeded, a.ID.String())
+		}
+		assertPagingWalk(t, "ListAssignments", seeded, func(limit, offset int) ([]string, error) {
+			got, err := s.ListAssignments(ctx, &assignment.ListFilter{TenantID: "t1", Limit: limit, Offset: offset})
+			return idStrings(got, func(a *assignment.Assignment) string { return a.ID.String() }), err
+		})
+	})
+
+	t.Run("Relations", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+		seeded := make([]string, 0, pagingSeeded)
+		for i := range pagingSeeded {
+			tuple := &relation.Tuple{
+				ID: id.NewRelationID(), TenantID: "t1",
+				ObjectType: "doc", ObjectID: slugFor("pg", i), Relation: "viewer",
+				SubjectType: "user", SubjectID: "alice",
+				CreatedAt: pagingCreatedAt,
+			}
+			if err := s.CreateRelation(ctx, tuple); err != nil {
+				t.Fatalf("seed relation %d: %v", i, err)
+			}
+			seeded = append(seeded, tuple.ID.String())
+		}
+		assertPagingWalk(t, "ListRelations", seeded, func(limit, offset int) ([]string, error) {
+			got, err := s.ListRelations(ctx, &relation.ListFilter{TenantID: "t1", Limit: limit, Offset: offset})
+			return idStrings(got, func(tu *relation.Tuple) string { return tu.ID.String() }), err
+		})
+	})
+
+	t.Run("CheckLogs", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+		seeded := make([]string, 0, pagingSeeded)
+		for i := range pagingSeeded {
+			e := &checklog.Entry{
+				ID: id.NewCheckLogID(), TenantID: "t1",
+				SubjectKind: "user", SubjectID: "alice", Action: "read",
+				ResourceType: "doc", ResourceID: slugFor("pg", i), Decision: "allow",
+				CreatedAt: pagingCreatedAt,
+			}
+			if err := s.CreateCheckLog(ctx, e); err != nil {
+				t.Fatalf("seed check log %d: %v", i, err)
+			}
+			seeded = append(seeded, e.ID.String())
+		}
+		assertPagingWalk(t, "ListCheckLogs", seeded, func(limit, offset int) ([]string, error) {
+			got, err := s.ListCheckLogs(ctx, &checklog.QueryFilter{TenantID: "t1", Limit: limit, Offset: offset})
+			return idStrings(got, func(e *checklog.Entry) string { return e.ID.String() }), err
+		})
+	})
+}
+
+// assertPagingWalk checks that listIDs caps an unlimited call at pagingCap
+// and that paging it with pagingPage visits every seeded id exactly once.
+func assertPagingWalk(t *testing.T, label string, seeded []string, listIDs func(limit, offset int) ([]string, error)) {
+	t.Helper()
+
+	unlimited, err := listIDs(0, 0)
+	if err != nil {
+		t.Fatalf("%s with no Limit: %v", label, err)
+	}
+	if len(unlimited) != pagingCap {
+		t.Errorf("%s with no Limit set: want the default cap of %d rows, got %d", label, pagingCap, len(unlimited))
+	}
+
+	// The walk is bounded rather than "until an empty page" so a backend
+	// that keeps handing back full pages fails the assertion below instead
+	// of hanging the suite.
+	seen := make(map[string]int, len(seeded))
+	for offset := 0; offset <= len(seeded)+pagingPage; offset += pagingPage {
+		page, err := listIDs(pagingPage, offset)
+		if err != nil {
+			t.Fatalf("%s Limit=%d Offset=%d: %v", label, pagingPage, offset, err)
+		}
+		for _, rowID := range page {
+			seen[rowID]++
+		}
+		if len(page) < pagingPage {
+			break
+		}
+	}
+
+	var missing, repeated int
+	for _, rowID := range seeded {
+		switch n := seen[rowID]; {
+		case n == 0:
+			missing++
+		case n > 1:
+			repeated++
+		}
+	}
+	if missing != 0 || repeated != 0 {
+		t.Errorf("%s paged with Limit=%d: want each of the %d seeded rows exactly once, got %d never visited and %d visited more than once",
+			label, pagingPage, len(seeded), missing, repeated)
+	}
+	if unseeded := len(seen) - (len(seeded) - missing); unseeded > 0 {
+		t.Errorf("%s paged with Limit=%d: %d rows came back that were never seeded", label, pagingPage, unseeded)
+	}
+}
+
+// idStrings projects a list result down to the ids the paging walk tracks.
+func idStrings[T any](items []T, idOf func(T) string) []string {
+	out := make([]string, len(items))
+	for i, item := range items {
+		out[i] = idOf(item)
+	}
+	return out
 }

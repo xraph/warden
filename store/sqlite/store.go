@@ -90,21 +90,21 @@ var (
 	roleUpdateColumns = []string{
 		"namespace_path", "app_id", "name", "description", "slug",
 		"is_system", "is_default", "parent_slug", "max_members", "metadata",
-		"updated_at",
+		"updated_by", "updated_at",
 	}
 	permissionUpdateColumns = []string{
 		"namespace_path", "app_id", "name", "description", "resource",
-		"action", "is_system", "metadata", "updated_at",
+		"action", "is_system", "metadata", "updated_by", "updated_at",
 	}
 	policyUpdateColumns = []string{
 		"namespace_path", "app_id", "name", "description", "effect",
 		"priority", "is_active", "not_before", "not_after", "obligations",
 		"version", "subjects", "actions", "resources", "conditions",
-		"metadata", "updated_at",
+		"metadata", "updated_by", "updated_at",
 	}
 	resourceTypeUpdateColumns = []string{
 		"namespace_path", "app_id", "name", "description", "relations",
-		"permissions", "metadata", "updated_at",
+		"permissions", "metadata", "updated_by", "updated_at",
 	}
 )
 
@@ -339,7 +339,7 @@ func (s *Store) DeleteRole(ctx context.Context, tenantID string, roleID id.RoleI
 
 func (s *Store) ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role.Role, error) {
 	var models []roleModel
-	q := s.sdb.NewSelect(&models).OrderExpr("created_at ASC")
+	q := s.sdb.NewSelect(&models).OrderExpr("created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
@@ -610,7 +610,7 @@ func (s *Store) ListChildRoles(ctx context.Context, tenantID, parentSlug string)
 	err := s.sdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
 		Where("parent_slug = ?", parentSlug).
-		OrderExpr("created_at ASC").
+		OrderExpr("created_at ASC, id ASC").
 		Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("warden: list child roles: %w", err)
@@ -768,7 +768,7 @@ func (s *Store) DeletePermission(ctx context.Context, tenantID string, permID id
 
 func (s *Store) ListPermissions(ctx context.Context, filter *permission.ListFilter) ([]*permission.Permission, error) {
 	var models []permissionModel
-	q := s.sdb.NewSelect(&models).OrderExpr("created_at ASC")
+	q := s.sdb.NewSelect(&models).OrderExpr("created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
@@ -955,7 +955,7 @@ func (s *Store) DeleteAssignment(ctx context.Context, tenantID string, assID id.
 
 func (s *Store) ListAssignments(ctx context.Context, filter *assignment.ListFilter) ([]*assignment.Assignment, error) {
 	var models []assignmentModel
-	q := s.sdb.NewSelect(&models).OrderExpr("created_at ASC")
+	q := s.sdb.NewSelect(&models).OrderExpr("created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
@@ -1097,7 +1097,7 @@ func (s *Store) ListSubjectsForRole(ctx context.Context, tenantID string, roleID
 	err := s.sdb.NewSelect(&models).
 		Where("role_id = ?", roleID.String()).
 		Where("tenant_id = ?", tenantID).
-		OrderExpr("created_at ASC").
+		OrderExpr("created_at ASC, id ASC").
 		Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("warden: list subjects for role: %w", err)
@@ -1119,7 +1119,7 @@ func (s *Store) ListExpiringAssignments(ctx context.Context, tenantID string, be
 		Where("tenant_id = ?", tenantID).
 		Where("expires_at IS NOT NULL").
 		Where("expires_at < ?", sqliteTime(before)).
-		OrderExpr("expires_at ASC").
+		OrderExpr("expires_at ASC, id ASC").
 		Limit(fanoutLimit(limit)).
 		Scan(ctx)
 	if err != nil {
@@ -1241,7 +1241,7 @@ func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath
 
 func (s *Store) ListRelations(ctx context.Context, filter *relation.ListFilter) ([]*relation.Tuple, error) {
 	var models []relationModel
-	q := s.sdb.NewSelect(&models).OrderExpr("created_at ASC")
+	q := s.sdb.NewSelect(&models).OrderExpr("created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
@@ -1344,7 +1344,7 @@ func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, names
 		ph, nsArgs := inPlaceholders(namespacePaths)
 		q = q.Where("namespace_path IN ("+ph+")", nsArgs...)
 	}
-	err := q.OrderExpr("created_at ASC").Limit(fanoutLimit(limit)).Scan(ctx)
+	err := q.OrderExpr("created_at ASC, id ASC").Limit(fanoutLimit(limit)).Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("warden: list relation subjects: %w", err)
 	}
@@ -1367,7 +1367,7 @@ func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath
 		Where("subject_type = ?", subjectType).
 		Where("subject_id = ?", subjectID).
 		Where("relation = ?", rel).
-		OrderExpr("created_at ASC").
+		OrderExpr("created_at ASC, id ASC").
 		Limit(fanoutLimit(limit)).
 		Scan(ctx)
 	if err != nil {
@@ -1540,7 +1540,7 @@ func (s *Store) DeletePolicy(ctx context.Context, tenantID string, polID id.Poli
 
 func (s *Store) ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]*policy.Policy, error) {
 	var models []policyModel
-	q := s.sdb.NewSelect(&models).OrderExpr("priority ASC, created_at ASC")
+	q := s.sdb.NewSelect(&models).OrderExpr("priority ASC, created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
@@ -1623,7 +1623,7 @@ func (s *Store) ListActivePolicies(ctx context.Context, tenantID string, namespa
 		ph, nsArgs := inPlaceholders(namespacePaths)
 		q = q.Where("namespace_path IN ("+ph+")", nsArgs...)
 	}
-	q = q.OrderExpr("priority ASC")
+	q = q.OrderExpr("priority ASC, created_at ASC, id ASC")
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list active policies: %w", err)
 	}
@@ -1767,7 +1767,7 @@ func (s *Store) DeleteResourceType(ctx context.Context, tenantID string, rtID id
 
 func (s *Store) ListResourceTypes(ctx context.Context, filter *resourcetype.ListFilter) ([]*resourcetype.ResourceType, error) {
 	var models []resourceTypeModel
-	q := s.sdb.NewSelect(&models).OrderExpr("created_at ASC")
+	q := s.sdb.NewSelect(&models).OrderExpr("created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
@@ -1880,7 +1880,7 @@ func (s *Store) GetCheckLog(ctx context.Context, tenantID string, logID id.Check
 
 func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter) ([]*checklog.Entry, error) {
 	var models []checkLogModel
-	q := s.sdb.NewSelect(&models).OrderExpr("created_at DESC")
+	q := s.sdb.NewSelect(&models).OrderExpr("created_at DESC, id DESC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)

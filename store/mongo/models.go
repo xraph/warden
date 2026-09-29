@@ -61,6 +61,8 @@ type roleModel struct {
 	ParentSlug      *string        `grove:"parent_slug"     bson:"parent_slug,omitempty"`
 	MaxMembers      int            `grove:"max_members"     bson:"max_members"`
 	Metadata        map[string]any `grove:"metadata"        bson:"metadata,omitempty"`
+	CreatedBy       string         `grove:"created_by"      bson:"created_by"`
+	UpdatedBy       string         `grove:"updated_by"      bson:"updated_by"`
 	CreatedAt       time.Time      `grove:"created_at"      bson:"created_at"`
 	UpdatedAt       time.Time      `grove:"updated_at"      bson:"updated_at"`
 }
@@ -78,6 +80,8 @@ func roleToModel(r *role.Role) *roleModel {
 		IsDefault:     r.IsDefault,
 		MaxMembers:    r.MaxMembers,
 		Metadata:      nonNilMap(r.Metadata),
+		CreatedBy:     r.CreatedBy,
+		UpdatedBy:     r.UpdatedBy,
 		CreatedAt:     r.CreatedAt,
 		UpdatedAt:     r.UpdatedAt,
 	}
@@ -102,6 +106,8 @@ func roleFromModel(m *roleModel) *role.Role {
 		IsDefault:     m.IsDefault,
 		MaxMembers:    m.MaxMembers,
 		Metadata:      m.Metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     m.CreatedAt,
 		UpdatedAt:     m.UpdatedAt,
 	}
@@ -127,6 +133,8 @@ type permissionModel struct {
 	Action          string         `grove:"action"          bson:"action"`
 	IsSystem        bool           `grove:"is_system"       bson:"is_system"`
 	Metadata        map[string]any `grove:"metadata"        bson:"metadata,omitempty"`
+	CreatedBy       string         `grove:"created_by"      bson:"created_by"`
+	UpdatedBy       string         `grove:"updated_by"      bson:"updated_by"`
 	CreatedAt       time.Time      `grove:"created_at"      bson:"created_at"`
 	UpdatedAt       time.Time      `grove:"updated_at"      bson:"updated_at"`
 }
@@ -143,6 +151,8 @@ func permissionToModel(p *permission.Permission) *permissionModel {
 		Action:        p.Action,
 		IsSystem:      p.IsSystem,
 		Metadata:      nonNilMap(p.Metadata),
+		CreatedBy:     p.CreatedBy,
+		UpdatedBy:     p.UpdatedBy,
 		CreatedAt:     p.CreatedAt,
 		UpdatedAt:     p.UpdatedAt,
 	}
@@ -161,6 +171,8 @@ func permissionFromModel(m *permissionModel) *permission.Permission {
 		Action:        m.Action,
 		IsSystem:      m.IsSystem,
 		Metadata:      m.Metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     m.CreatedAt,
 		UpdatedAt:     m.UpdatedAt,
 	}
@@ -264,6 +276,7 @@ type relationModel struct {
 	SubjectID       string         `grove:"subject_id"         bson:"subject_id"`
 	SubjectRelation string         `grove:"subject_relation"   bson:"subject_relation"`
 	Metadata        map[string]any `grove:"metadata"           bson:"metadata,omitempty"`
+	CreatedBy       string         `grove:"created_by"         bson:"created_by"`
 	CreatedAt       time.Time      `grove:"created_at"         bson:"created_at"`
 }
 
@@ -280,6 +293,7 @@ func relationToModel(t *relation.Tuple) *relationModel {
 		SubjectID:       t.SubjectID,
 		SubjectRelation: t.SubjectRelation,
 		Metadata:        nonNilMap(t.Metadata),
+		CreatedBy:       t.CreatedBy,
 		CreatedAt:       t.CreatedAt,
 	}
 }
@@ -298,6 +312,7 @@ func relationFromModel(m *relationModel) *relation.Tuple {
 		SubjectID:       m.SubjectID,
 		SubjectRelation: m.SubjectRelation,
 		Metadata:        m.Metadata,
+		CreatedBy:       m.CreatedBy,
 		CreatedAt:       m.CreatedAt,
 	}
 }
@@ -326,6 +341,8 @@ type policyModel struct {
 	Resources       []string              `grove:"resources"       bson:"resources"`
 	Conditions      []policy.Condition    `grove:"conditions"      bson:"conditions,omitempty"`
 	Metadata        map[string]any        `grove:"metadata"        bson:"metadata,omitempty"`
+	CreatedBy       string                `grove:"created_by"      bson:"created_by"`
+	UpdatedBy       string                `grove:"updated_by"      bson:"updated_by"`
 	CreatedAt       time.Time             `grove:"created_at"      bson:"created_at"`
 	UpdatedAt       time.Time             `grove:"updated_at"      bson:"updated_at"`
 }
@@ -350,6 +367,8 @@ func policyToModel(p *policy.Policy) *policyModel {
 		Resources:     nonNilSlice(p.Resources),
 		Conditions:    nonNilSlice(p.Conditions),
 		Metadata:      nonNilMap(p.Metadata),
+		CreatedBy:     p.CreatedBy,
+		UpdatedBy:     p.UpdatedBy,
 		CreatedAt:     p.CreatedAt,
 		UpdatedAt:     p.UpdatedAt,
 	}
@@ -376,6 +395,8 @@ func policyFromModel(m *policyModel) *policy.Policy {
 		Resources:     m.Resources,
 		Conditions:    m.Conditions,
 		Metadata:      m.Metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     m.CreatedAt,
 		UpdatedAt:     m.UpdatedAt,
 	}
@@ -396,6 +417,8 @@ type resourceTypeModel struct {
 	Relations       []resourcetype.RelationDef   `grove:"relations"       bson:"relations"`
 	Permissions     []resourcetype.PermissionDef `grove:"permissions"     bson:"permissions"`
 	Metadata        map[string]any               `grove:"metadata"        bson:"metadata,omitempty"`
+	CreatedBy       string                       `grove:"created_by"      bson:"created_by"`
+	UpdatedBy       string                       `grove:"updated_by"      bson:"updated_by"`
 	CreatedAt       time.Time                    `grove:"created_at"      bson:"created_at"`
 	UpdatedAt       time.Time                    `grove:"updated_at"      bson:"updated_at"`
 }
@@ -411,6 +434,8 @@ func resourceTypeToModel(rt *resourcetype.ResourceType) *resourceTypeModel {
 		Relations:     nonNilSlice(rt.Relations),
 		Permissions:   nonNilSlice(rt.Permissions),
 		Metadata:      nonNilMap(rt.Metadata),
+		CreatedBy:     rt.CreatedBy,
+		UpdatedBy:     rt.UpdatedBy,
 		CreatedAt:     rt.CreatedAt,
 		UpdatedAt:     rt.UpdatedAt,
 	}
@@ -428,6 +453,8 @@ func resourceTypeFromModel(m *resourceTypeModel) *resourcetype.ResourceType {
 		Relations:     m.Relations,
 		Permissions:   m.Permissions,
 		Metadata:      m.Metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     m.CreatedAt,
 		UpdatedAt:     m.UpdatedAt,
 	}
@@ -538,6 +565,7 @@ func roleUpdateDoc(m *roleModel) bson.M {
 		"parent_slug":    m.ParentSlug,
 		"max_members":    m.MaxMembers,
 		"metadata":       m.Metadata,
+		"updated_by":     m.UpdatedBy,
 		"updated_at":     m.UpdatedAt,
 	}
 }
@@ -552,6 +580,7 @@ func permissionUpdateDoc(m *permissionModel) bson.M {
 		"action":         m.Action,
 		"is_system":      m.IsSystem,
 		"metadata":       m.Metadata,
+		"updated_by":     m.UpdatedBy,
 		"updated_at":     m.UpdatedAt,
 	}
 }
@@ -574,6 +603,7 @@ func policyUpdateDoc(m *policyModel) bson.M {
 		"resources":      m.Resources,
 		"conditions":     m.Conditions,
 		"metadata":       m.Metadata,
+		"updated_by":     m.UpdatedBy,
 		"updated_at":     m.UpdatedAt,
 	}
 }
@@ -587,6 +617,7 @@ func resourceTypeUpdateDoc(m *resourceTypeModel) bson.M {
 		"relations":      m.Relations,
 		"permissions":    m.Permissions,
 		"metadata":       m.Metadata,
+		"updated_by":     m.UpdatedBy,
 		"updated_at":     m.UpdatedAt,
 	}
 }

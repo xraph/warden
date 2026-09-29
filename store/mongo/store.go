@@ -395,14 +395,14 @@ func (s *Store) ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role
 	}
 	q := s.mdb.NewFind(&models).
 		Filter(f).
-		Sort(bson.D{{Key: "created_at", Value: 1}})
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
+	reqLimit, reqOffset := 0, 0
 	if filter != nil {
-		if filter.Limit > 0 {
-			q = q.Limit(int64(filter.Limit))
-		}
-		if filter.Offset > 0 {
-			q = q.Skip(int64(filter.Offset))
-		}
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(int64(fanoutLimit(reqLimit)))
+	if reqOffset > 0 {
+		q = q.Skip(int64(reqOffset))
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles: %w", err)
@@ -611,7 +611,7 @@ func (s *Store) ListChildRoles(ctx context.Context, tenantID, parentSlug string)
 	var models []roleModel
 	if err := s.mdb.NewFind(&models).
 		Filter(bson.M{"tenant_id": tenantID, "parent_slug": parentSlug}).
-		Sort(bson.D{{Key: "created_at", Value: 1}}).
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list child roles: %w", err)
 	}
@@ -770,14 +770,14 @@ func (s *Store) ListPermissions(ctx context.Context, filter *permission.ListFilt
 	}
 	q := s.mdb.NewFind(&models).
 		Filter(f).
-		Sort(bson.D{{Key: "created_at", Value: 1}})
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
+	reqLimit, reqOffset := 0, 0
 	if filter != nil {
-		if filter.Limit > 0 {
-			q = q.Limit(int64(filter.Limit))
-		}
-		if filter.Offset > 0 {
-			q = q.Skip(int64(filter.Offset))
-		}
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(int64(fanoutLimit(reqLimit)))
+	if reqOffset > 0 {
+		q = q.Skip(int64(reqOffset))
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list permissions: %w", err)
@@ -967,14 +967,14 @@ func (s *Store) ListAssignments(ctx context.Context, filter *assignment.ListFilt
 	}
 	q := s.mdb.NewFind(&models).
 		Filter(f).
-		Sort(bson.D{{Key: "created_at", Value: 1}})
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
+	reqLimit, reqOffset := 0, 0
 	if filter != nil {
-		if filter.Limit > 0 {
-			q = q.Limit(int64(filter.Limit))
-		}
-		if filter.Offset > 0 {
-			q = q.Skip(int64(filter.Offset))
-		}
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(int64(fanoutLimit(reqLimit)))
+	if reqOffset > 0 {
+		q = q.Skip(int64(reqOffset))
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list assignments: %w", err)
@@ -1079,7 +1079,7 @@ func (s *Store) ListSubjectsForRole(ctx context.Context, tenantID string, roleID
 	var models []assignmentModel
 	if err := s.mdb.NewFind(&models).
 		Filter(bson.M{"tenant_id": tenantID, "role_id": roleID.String()}).
-		Sort(bson.D{{Key: "created_at", Value: 1}}).
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list subjects for role: %w", err)
 	}
@@ -1097,7 +1097,7 @@ func (s *Store) ListExpiringAssignments(ctx context.Context, tenantID string, be
 			"tenant_id":  tenantID,
 			"expires_at": bson.M{"$ne": nil, "$lt": before},
 		}).
-		Sort(bson.D{{Key: "expires_at", Value: 1}}).
+		Sort(bson.D{{Key: "expires_at", Value: 1}, {Key: "_id", Value: 1}}).
 		Limit(int64(fanoutLimit(limit))).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list expiring assignments: %w", err)
@@ -1246,14 +1246,14 @@ func (s *Store) ListRelations(ctx context.Context, filter *relation.ListFilter) 
 	}
 	q := s.mdb.NewFind(&models).
 		Filter(f).
-		Sort(bson.D{{Key: "created_at", Value: 1}})
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
+	reqLimit, reqOffset := 0, 0
 	if filter != nil {
-		if filter.Limit > 0 {
-			q = q.Limit(int64(filter.Limit))
-		}
-		if filter.Offset > 0 {
-			q = q.Skip(int64(filter.Offset))
-		}
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(int64(fanoutLimit(reqLimit)))
+	if reqOffset > 0 {
+		q = q.Skip(int64(reqOffset))
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list relations: %w", err)
@@ -1313,7 +1313,7 @@ func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, names
 	}
 	if err := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "created_at", Value: 1}}).
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}).
 		Limit(int64(fanoutLimit(limit))).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list relation subjects: %w", err)
@@ -1335,7 +1335,7 @@ func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath
 			"subject_id":     subjectID,
 			"relation":       rel,
 		}).
-		Sort(bson.D{{Key: "created_at", Value: 1}}).
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}).
 		Limit(int64(fanoutLimit(limit))).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list relation objects: %w", err)
@@ -1512,14 +1512,14 @@ func (s *Store) ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]
 	}
 	q := s.mdb.NewFind(&models).
 		Filter(f).
-		Sort(bson.D{{Key: "priority", Value: 1}, {Key: "created_at", Value: 1}})
+		Sort(bson.D{{Key: "priority", Value: 1}, {Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
+	reqLimit, reqOffset := 0, 0
 	if filter != nil {
-		if filter.Limit > 0 {
-			q = q.Limit(int64(filter.Limit))
-		}
-		if filter.Offset > 0 {
-			q = q.Skip(int64(filter.Offset))
-		}
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(int64(fanoutLimit(reqLimit)))
+	if reqOffset > 0 {
+		q = q.Skip(int64(reqOffset))
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list policies: %w", err)
@@ -1568,7 +1568,7 @@ func (s *Store) ListActivePolicies(ctx context.Context, tenantID string, namespa
 	}
 	if err := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "priority", Value: 1}}).
+		Sort(bson.D{{Key: "priority", Value: 1}, {Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}).
 		Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list active policies: %w", err)
 	}
@@ -1702,14 +1702,14 @@ func (s *Store) ListResourceTypes(ctx context.Context, filter *resourcetype.List
 	}
 	q := s.mdb.NewFind(&models).
 		Filter(f).
-		Sort(bson.D{{Key: "created_at", Value: 1}})
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
+	reqLimit, reqOffset := 0, 0
 	if filter != nil {
-		if filter.Limit > 0 {
-			q = q.Limit(int64(filter.Limit))
-		}
-		if filter.Offset > 0 {
-			q = q.Skip(int64(filter.Offset))
-		}
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(int64(fanoutLimit(reqLimit)))
+	if reqOffset > 0 {
+		q = q.Skip(int64(reqOffset))
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list resource types: %w", err)
@@ -1823,14 +1823,14 @@ func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter)
 	}
 	q := s.mdb.NewFind(&models).
 		Filter(f).
-		Sort(bson.D{{Key: "created_at", Value: -1}})
+		Sort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}})
+	reqLimit, reqOffset := 0, 0
 	if filter != nil {
-		if filter.Limit > 0 {
-			q = q.Limit(int64(filter.Limit))
-		}
-		if filter.Offset > 0 {
-			q = q.Skip(int64(filter.Offset))
-		}
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(int64(fanoutLimit(reqLimit)))
+	if reqOffset > 0 {
+		q = q.Skip(int64(reqOffset))
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list check logs: %w", err)
