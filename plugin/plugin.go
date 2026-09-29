@@ -176,7 +176,9 @@ type Event struct {
 	// "permission.detached", "assignment.created", "assignment.deleted",
 	// "relation.written", "relation.deleted", "policy.created",
 	// "policy.updated", "policy.deleted", "resourcetype.created",
-	// "resourcetype.updated", "resourcetype.deleted", "declarative.applied".
+	// "resourcetype.updated", "resourcetype.deleted", "declarative.applied",
+	// "permission.updated", "role.permissions_set", "maintenance.run",
+	// "maintenance.cache_invalidated".
 	Action   string
 	TenantID string
 	EntityID string

@@ -118,7 +118,7 @@ type Event struct {
     RequestID string
     TraceID   string
     At        time.Time
-    Action    string // "role.created", "permission.attached", "declarative.applied", ...
+    Action    string // "role.created", "permission.attached", "maintenance.run", "declarative.applied", ...
     TenantID  string
     EntityID  string
     Entity    any // the entity after the change, nil on delete

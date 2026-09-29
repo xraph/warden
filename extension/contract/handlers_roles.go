@@ -288,6 +288,8 @@ func rolesCreateHandler(deps Deps) func(context.Context, RoleCreateInput, dashco
 		if in.ParentSlug == in.Slug && in.ParentSlug != "" {
 			return AckResponse{}, badRequest("a role cannot be its own parent")
 		}
+		ctx = withActor(ctx, p)
+		actor := actorFor(p)
 		r := &role.Role{
 			TenantID:      tenantID,
 			NamespacePath: in.NamespacePath,
@@ -297,10 +299,22 @@ func rolesCreateHandler(deps Deps) func(context.Context, RoleCreateInput, dashco
 			ParentSlug:    in.ParentSlug,
 			MaxMembers:    in.MaxMembers,
 			IsDefault:     in.IsDefault,
+			CreatedBy:     actor.ID,
+			UpdatedBy:     actor.ID,
+		}
+		// A parent that does not exist would be stored as a dangling slug
+		// that inheritance resolution silently skips. The REST handler
+		// refuses it, and so does this one.
+		if err := checkParent(ctx, deps.Engine.Store(), tenantID, r, in.ParentSlug); err != nil {
+			return AckResponse{}, err
 		}
 		if err := deps.Engine.Store().CreateRole(ctx, r); err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitRoleCreated(ctx, r)
+		}
+		emitAudit(ctx, deps, p, "role.created", tenantID, r.ID.String(), r, nil)
 		return AckResponse{ID: r.ID.String()}, nil
 	}
 }
@@ -330,6 +344,8 @@ func rolesUpdateHandler(deps Deps) func(context.Context, RoleUpdateInput, dashco
 		if err := guardSystemRole(r); err != nil {
 			return AckResponse{}, err
 		}
+		ctx = withActor(ctx, p)
+		before := *r
 		if in.Name != nil {
 			if *in.Name == "" {
 				return AckResponse{}, badRequest("a role's name cannot be empty")
@@ -351,9 +367,15 @@ func rolesUpdateHandler(deps Deps) func(context.Context, RoleUpdateInput, dashco
 			}
 			r.ParentSlug = *in.ParentSlug
 		}
+		r.UpdatedBy = actorFor(p).ID
+		r.UpdatedAt = time.Now()
 		if err := s.UpdateRole(ctx, r); err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitRoleUpdated(ctx, r)
+		}
+		emitAudit(ctx, deps, p, "role.updated", tenantID, r.ID.String(), r, &before)
 		return AckResponse{ID: r.ID.String()}, nil
 	}
 }
@@ -441,17 +463,47 @@ func loadWritableRole(ctx context.Context, deps Deps, tenantID, rawID string) (*
 // Without this the store records a grant for a name that is not there. The
 // role then appears to grant something and grants nothing, because the RBAC
 // evaluator resolves grants by joining against the permissions table.
-func resolvePermissionRef(ctx context.Context, deps Deps, tenantID string, ref PermissionRef) (permission.Ref, error) {
+//
+// It also returns the permission's id, which the typed attach and detach
+// hooks carry.
+func resolvePermissionRef(ctx context.Context, deps Deps, tenantID string, ref PermissionRef) (permission.Ref, id.PermissionID, error) {
 	if ref.Name == "" {
-		return permission.Ref{}, badRequest("a permission reference needs a name")
+		return permission.Ref{}, id.Nil, badRequest("a permission reference needs a name")
 	}
-	if _, err := deps.Engine.Store().GetPermissionByName(ctx, tenantID, ref.NamespacePath, ref.Name); err != nil {
-		return permission.Ref{}, &dashcontract.Error{
+	pm, err := deps.Engine.Store().GetPermissionByName(ctx, tenantID, ref.NamespacePath, ref.Name)
+	if err != nil {
+		return permission.Ref{}, id.Nil, &dashcontract.Error{
 			Code:    dashcontract.CodeNotFound,
 			Message: "no permission named " + ref.Name + " in that namespace",
 		}
 	}
-	return permission.Ref{NamespacePath: ref.NamespacePath, Name: ref.Name}, nil
+	return permission.Ref{NamespacePath: ref.NamespacePath, Name: ref.Name}, pm.ID, nil
+}
+
+// grantEntity is the audit payload for one attach or detach, shaped like the
+// REST handlers' so a consumer parses both the same way.
+func grantEntity(roleID id.RoleID, ref permission.Ref) map[string]string {
+	return map[string]string{
+		"role_id":                   roleID.String(),
+		"permission_namespace_path": ref.NamespacePath,
+		"permission_name":           ref.Name,
+	}
+}
+
+func refsForAudit(refs []permission.Ref) []map[string]string {
+	out := make([]map[string]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, map[string]string{"namespace_path": r.NamespacePath, "name": r.Name})
+	}
+	return out
+}
+
+func grantsForAudit(grants []*permission.Permission) []map[string]string {
+	out := make([]map[string]string, 0, len(grants))
+	for _, g := range grants {
+		out = append(out, map[string]string{"namespace_path": g.NamespacePath, "name": g.Name})
+	}
+	return out
 }
 
 func rolesAttachPermissionHandler(deps Deps) func(context.Context, RolePermissionInput, dashcontract.Principal) (AckResponse, error) {
@@ -467,15 +519,20 @@ func rolesAttachPermissionHandler(deps Deps) func(context.Context, RolePermissio
 		if err != nil {
 			return AckResponse{}, err
 		}
-		ref, err := resolvePermissionRef(ctx, deps, tenantID, PermissionRef{
+		ref, permID, err := resolvePermissionRef(ctx, deps, tenantID, PermissionRef{
 			Name: in.PermissionName, NamespacePath: in.PermissionNamespacePath,
 		})
 		if err != nil {
 			return AckResponse{}, err
 		}
+		ctx = withActor(ctx, p)
 		if err := deps.Engine.Store().AttachPermission(ctx, tenantID, r.ID, ref); err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitPermissionAttached(ctx, r.ID, permID)
+		}
+		emitAudit(ctx, deps, p, "permission.attached", tenantID, r.ID.String(), grantEntity(r.ID, ref), nil)
 		return AckResponse{ID: r.ID.String()}, nil
 	}
 }
@@ -503,23 +560,28 @@ func rolesDetachPermissionHandler(deps Deps) func(context.Context, RolePermissio
 		if err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
-		var held bool
+		var held *permission.Permission
 		for _, g := range grants {
 			if g.Name == in.PermissionName && g.NamespacePath == in.PermissionNamespacePath {
-				held = true
+				held = g
 				break
 			}
 		}
-		if !held {
+		if held == nil {
 			return AckResponse{}, &dashcontract.Error{
 				Code:    dashcontract.CodeNotFound,
 				Message: r.Name + " does not grant " + in.PermissionName,
 			}
 		}
 		ref := permission.Ref{NamespacePath: in.PermissionNamespacePath, Name: in.PermissionName}
+		ctx = withActor(ctx, p)
 		if err := s.DetachPermission(ctx, tenantID, r.ID, ref); err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitPermissionDetached(ctx, r.ID, held.ID)
+		}
+		emitAudit(ctx, deps, p, "permission.detached", tenantID, r.ID.String(), grantEntity(r.ID, ref), nil)
 		return AckResponse{ID: r.ID.String()}, nil
 	}
 }
@@ -541,16 +603,43 @@ func rolesSetPermissionsHandler(deps Deps) func(context.Context, RoleSetPermissi
 		// nothing: silently dropping an unknown name would leave the role
 		// with a set the operator did not choose.
 		refs := make([]permission.Ref, 0, len(in.Permissions))
+		ids := make(map[permission.Ref]id.PermissionID, len(in.Permissions))
 		for _, ref := range in.Permissions {
-			resolved, err := resolvePermissionRef(ctx, deps, tenantID, ref)
+			resolved, permID, err := resolvePermissionRef(ctx, deps, tenantID, ref)
 			if err != nil {
 				return AckResponse{}, err
 			}
 			refs = append(refs, resolved)
+			ids[resolved] = permID
 		}
+		// The previous set feeds the audit event's Before and decides which
+		// typed attach and detach hooks to fire.
+		previous, err := deps.Engine.Store().ListRolePermissions(ctx, tenantID, r.ID)
+		if err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		ctx = withActor(ctx, p)
 		if err := deps.Engine.Store().SetRolePermissions(ctx, tenantID, r.ID, refs); err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
+		if pl := deps.Engine.Plugins(); pl != nil {
+			had := make(map[permission.Ref]struct{}, len(previous))
+			for _, g := range previous {
+				ref := permission.Ref{NamespacePath: g.NamespacePath, Name: g.Name}
+				had[ref] = struct{}{}
+				if _, keep := ids[ref]; !keep {
+					pl.EmitPermissionDetached(ctx, r.ID, g.ID)
+				}
+			}
+			for ref, permID := range ids {
+				if _, was := had[ref]; !was {
+					pl.EmitPermissionAttached(ctx, r.ID, permID)
+				}
+			}
+		}
+		emitAudit(ctx, deps, p, "role.permissions_set", tenantID, r.ID.String(),
+			map[string]any{"role_id": r.ID.String(), "permissions": refsForAudit(refs)},
+			map[string]any{"role_id": r.ID.String(), "permissions": grantsForAudit(previous)})
 		return AckResponse{ID: r.ID.String()}, nil
 	}
 }
@@ -578,9 +667,14 @@ func rolesDeleteHandler(deps Deps) func(context.Context, RoleDeleteInput, dashco
 		if err := guardSystemRole(r); err != nil {
 			return AckResponse{}, err
 		}
+		ctx = withActor(ctx, p)
 		if err := s.DeleteRole(ctx, tenantID, rid); err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitRoleDeleted(ctx, rid)
+		}
+		emitAudit(ctx, deps, p, "role.deleted", tenantID, rid.String(), nil, r)
 		return AckResponse{}, nil
 	}
 }

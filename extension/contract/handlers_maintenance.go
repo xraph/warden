@@ -38,22 +38,31 @@ type CacheInvalidateResult struct {
 	Scope string `json:"scope"` // "tenant" or "subject"
 }
 
+// maintenanceRunHandler runs one maintenance pass.
+//
+// maintenance.run is engine-wide, not tenant-scoped. RunMaintenance purges
+// expired assignments across every tenant and purges check log entries
+// past the configured retention across every tenant. The caller's tenant
+// decides nothing about what is removed; it only names the scope the
+// authorization decision and the audit event are recorded under. That is
+// why the intent sits behind its own warden:maintenance:manage permission
+// rather than a role or assignment grant, and why every run is audited with
+// the resulting counts.
 func maintenanceRunHandler(deps Deps) func(context.Context, struct{}, dashcontract.Principal) (MaintenanceResult, error) {
 	return func(ctx context.Context, _ struct{}, p dashcontract.Principal) (MaintenanceResult, error) {
 		if err := requireEngine(deps); err != nil {
 			return MaintenanceResult{}, err
 		}
-		if _, err := tenantFrom(p, deps); err != nil {
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
 			return MaintenanceResult{}, err
 		}
-		// RunMaintenance is engine-wide rather than per-tenant: expired
-		// assignments are purged across every tenant and the check log
-		// purge uses the configured retention. The tenant check above is
-		// an authorization gate on who may trigger it, not a scope.
+		ctx = withActor(ctx, p)
 		rep, err := deps.Engine.RunMaintenance(ctx)
 		if err != nil {
 			return MaintenanceResult{}, mapWardenError(err)
 		}
+		emitAudit(ctx, deps, p, "maintenance.run", tenantID, "", rep, nil)
 		return MaintenanceResult{
 			AssignmentsPurged: rep.AssignmentsPurged,
 			CheckLogsPurged:   rep.CheckLogsPurged,
@@ -70,6 +79,7 @@ func cacheInvalidateHandler(deps Deps) func(context.Context, CacheInvalidateInpu
 		if err != nil {
 			return CacheInvalidateResult{}, err
 		}
+		ctx = withActor(ctx, p)
 
 		hasKind, hasID := in.SubjectKind != "", in.SubjectID != ""
 		switch {
@@ -80,9 +90,15 @@ func cacheInvalidateHandler(deps Deps) func(context.Context, CacheInvalidateInpu
 			}
 		case hasKind:
 			deps.Engine.InvalidateSubject(ctx, tenantID, warden.SubjectKind(in.SubjectKind), in.SubjectID)
+			emitAudit(ctx, deps, p, "maintenance.cache_invalidated", tenantID, in.SubjectID, map[string]string{
+				"scope": "subject", "subject_kind": in.SubjectKind, "subject_id": in.SubjectID,
+			}, nil)
 			return CacheInvalidateResult{Scope: "subject"}, nil
 		default:
 			deps.Engine.InvalidateTenant(ctx, tenantID)
+			emitAudit(ctx, deps, p, "maintenance.cache_invalidated", tenantID, "", map[string]string{
+				"scope": "tenant",
+			}, nil)
 			return CacheInvalidateResult{Scope: "tenant"}, nil
 		}
 	}

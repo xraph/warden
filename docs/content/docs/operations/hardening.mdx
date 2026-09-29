@@ -49,6 +49,8 @@ Warden gates it the same way it gates REST. Every dashboard intent, reads includ
 
 Three of those resources exist only on the dashboard: `warden:overview`, `warden:config` and `warden:maintenance`. `BootstrapAdmin` grants them along with the rest, so run it again on any tenant you bootstrapped before this change (it's idempotent, and only the missing grants are added). Give `warden:maintenance:manage` on purpose and sparingly: `maintenance.run` is engine-wide, so it purges expired assignments and old check log entries across every tenant, whichever tenant the caller is in.
 
+Dashboard writes are audited like REST ones. Each emits the same typed hook and an `Audit` event with the actor set to `{Kind: "user", ID: <dashboard subject>, Via: "dashboard"}`, and a cached decision for the tenant is flushed straight away. `maintenance.run` and `maintenance.cacheInvalidate` emit `maintenance.run` and `maintenance.cache_invalidated`.
+
 If your dashboard has auth turned off, nobody can sign in, so every intent is refused. That's the safe outcome. Turn dashboard auth on before you set `dashboard.tenant_id`.
 
 ## SDK-only deployments: disable_routes

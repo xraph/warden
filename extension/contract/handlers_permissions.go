@@ -11,6 +11,7 @@ package contract
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
@@ -217,6 +218,8 @@ func permissionsCreateHandler(deps Deps) func(context.Context, PermissionCreateI
 				"name " + name + " disagrees with " + want +
 					": checks match on resource and action, so this permission would be unreachable by name")
 		}
+		ctx = withActor(ctx, p)
+		actor := actorFor(p)
 		pm := &permission.Permission{
 			TenantID:      tenantID,
 			NamespacePath: in.NamespacePath,
@@ -224,10 +227,16 @@ func permissionsCreateHandler(deps Deps) func(context.Context, PermissionCreateI
 			Resource:      in.Resource,
 			Action:        in.Action,
 			Description:   in.Description,
+			CreatedBy:     actor.ID,
+			UpdatedBy:     actor.ID,
 		}
 		if err := deps.Engine.Store().CreatePermission(ctx, pm); err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitPermissionCreated(ctx, pm)
+		}
+		emitAudit(ctx, deps, p, "permission.created", tenantID, pm.ID.String(), pm, nil)
 		return AckResponse{ID: pm.ID.String()}, nil
 	}
 }
@@ -253,12 +262,20 @@ func permissionsUpdateHandler(deps Deps) func(context.Context, PermissionUpdateI
 		if err := guardSystemPermission(pm); err != nil {
 			return AckResponse{}, err
 		}
+		ctx = withActor(ctx, p)
+		before := *pm
 		if in.Description != nil {
 			pm.Description = *in.Description
 		}
+		pm.UpdatedBy = actorFor(p).ID
+		pm.UpdatedAt = time.Now()
 		if err := s.UpdatePermission(ctx, pm); err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
+		// There is no typed OnPermissionUpdated hook, so the audit event
+		// is the only signal, and it is enough: the cache invalidator
+		// flushes the tenant on any audit event.
+		emitAudit(ctx, deps, p, "permission.updated", tenantID, pm.ID.String(), pm, &before)
 		return AckResponse{ID: pm.ID.String()}, nil
 	}
 }
@@ -302,9 +319,14 @@ func permissionsDeleteHandler(deps Deps) func(context.Context, PermissionDeleteI
 					". Detach it from those roles first.",
 			}
 		}
+		ctx = withActor(ctx, p)
 		if err := s.DeletePermission(ctx, tenantID, pid); err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitPermissionDeleted(ctx, pid)
+		}
+		emitAudit(ctx, deps, p, "permission.deleted", tenantID, pid.String(), nil, pm)
 		return AckResponse{}, nil
 	}
 }

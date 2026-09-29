@@ -640,3 +640,22 @@ func TestJunctionCommandsRefuseASystemRole(t *testing.T) {
 		t.Error("setPermissions on a system role must be refused")
 	}
 }
+
+func TestRolesCreateRefusesAParentThatDoesNotExist(t *testing.T) {
+	s := memory.New()
+	seedRoles(t, s, "", "real")
+	h := rolesCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(context.Background(), RoleCreateInput{Name: "Kid", Slug: "kid", ParentSlug: "ghost"}, principalFor("t1"))
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
+		t.Fatalf("a create naming a missing parent: want BAD_REQUEST, got %v", err)
+	}
+	if _, gerr := s.GetRoleBySlug(context.Background(), "t1", "", "kid"); gerr == nil {
+		t.Fatal("the role was written with a dangling parent")
+	}
+
+	if _, err := h(context.Background(), RoleCreateInput{Name: "Kid", Slug: "kid", ParentSlug: "real"}, principalFor("t1")); err != nil {
+		t.Fatalf("a create naming an existing parent: %v", err)
+	}
+}

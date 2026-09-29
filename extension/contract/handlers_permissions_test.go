@@ -11,11 +11,11 @@ import (
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
 
-func seedPermission(t *testing.T, s *memory.Store, namespace, name, resource, action string) *permission.Permission {
+func seedPermission(t *testing.T, s *memory.Store, name, resource, action string) *permission.Permission {
 	t.Helper()
 	pm := &permission.Permission{
-		TenantID: "t1", NamespacePath: namespace,
-		Name: name, Resource: resource, Action: action,
+		TenantID: "t1",
+		Name:     name, Resource: resource, Action: action,
 	}
 	if err := s.CreatePermission(context.Background(), pm); err != nil {
 		t.Fatalf("create permission %q: %v", name, err)
@@ -25,9 +25,9 @@ func seedPermission(t *testing.T, s *memory.Store, namespace, name, resource, ac
 
 func TestPermissionsListPagesFiltersAndCounts(t *testing.T) {
 	s := memory.New()
-	seedPermission(t, s, "", "document:read", "document", "read")
-	seedPermission(t, s, "", "document:write", "document", "write")
-	seedPermission(t, s, "", "folder:read", "folder", "read")
+	seedPermission(t, s, "document:read", "document", "read")
+	seedPermission(t, s, "document:write", "document", "write")
+	seedPermission(t, s, "folder:read", "folder", "read")
 	h := permissionsListHandler(Deps{Engine: engineOver(t, s)})
 
 	all, err := h(context.Background(), PermissionsListInput{}, principalFor("t1"))
@@ -112,7 +112,7 @@ func TestPermissionsCreateRequiresResourceAndAction(t *testing.T) {
 func TestPermissionsUpdateLeavesOmittedFieldsAlone(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	pm := seedPermission(t, s, "", "document:read", "document", "read")
+	pm := seedPermission(t, s, "document:read", "document", "read")
 	pm.Description = "original"
 	if err := s.UpdatePermission(ctx, pm); err != nil {
 		t.Fatalf("seed description: %v", err)
@@ -157,7 +157,7 @@ func TestPermissionsDeleteRefusesOneThatARoleStillGrants(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
 	r := seedRoles(t, s, "", "reader")[0]
-	pm := seedPermission(t, s, "", "document:read", "document", "read")
+	pm := seedPermission(t, s, "document:read", "document", "read")
 	if err := s.AttachPermission(ctx, "t1", r.ID, permission.Ref{Name: pm.Name}); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestPermissionsDeleteRefusesOneThatARoleStillGrants(t *testing.T) {
 func TestPermissionsDeleteRemovesAnUngrantedPermission(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	pm := seedPermission(t, s, "", "document:read", "document", "read")
+	pm := seedPermission(t, s, "document:read", "document", "read")
 	h := permissionsDeleteHandler(Deps{Engine: engineOver(t, s)})
 
 	if _, err := h(ctx, PermissionDeleteInput{ID: pm.ID.String()}, principalFor("t1")); err != nil {
@@ -198,7 +198,7 @@ func TestPermissionsDetailReturnsTheRolesThatGrantIt(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
 	r := seedRoles(t, s, "", "reader")[0]
-	pm := seedPermission(t, s, "", "document:read", "document", "read")
+	pm := seedPermission(t, s, "document:read", "document", "read")
 	if err := s.AttachPermission(ctx, "t1", r.ID, permission.Ref{Name: pm.Name}); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
