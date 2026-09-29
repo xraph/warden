@@ -288,6 +288,14 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 
 	// 5. Merge: explicit deny > allow > default deny.
 	result := e.mergeDecisions(req, rbacResult, rebacResult, abacResult)
+	if !result.Allowed && rebacResult != nil && rebacResult.truncated {
+		// The graph walk hit its depth or budget limit before it could
+		// answer, so this denial does not mean "no relation exists". Say
+		// so in the reason, which is what the check log records, so an
+		// auditor can tell the two apart. The decision itself stays a
+		// deny: an unfinished walk never grants.
+		result.Reason = truncatedWalkNote + joinReason(result.Reason)
+	}
 	result.EvalTimeNs = time.Since(start).Nanoseconds()
 
 	e.metrics.CheckEvaluated(result.Decision, decisionSource(result), time.Since(start), false)
@@ -326,7 +334,11 @@ func (e *Engine) emitAfterCheck(ctx context.Context, req *CheckRequest, result *
 // path still leaves an audit trail. A dry run leaves none, the same as its
 // success path.
 func (e *Engine) failCheck(ctx context.Context, scope tenantScope, req *CheckRequest, err error, dryRun bool) (*CheckResult, error) {
-	e.metrics.StoreError("check")
+	// No StoreError here. Every store call that fails is already counted
+	// at its call site under its own op label, and a failure that did not
+	// come from the store (a policy condition, say) is not a store error.
+	// A blanket count in this function counted store failures twice and
+	// everything else wrongly.
 	if !dryRun {
 		e.writeCheckLog(ctx, scope, req, nil, false, err.Error())
 	}
@@ -350,7 +362,7 @@ func (e *Engine) Enforce(ctx context.Context, req *CheckRequest, opts ...CallOpt
 		return fmt.Errorf("warden check: %w", err)
 	}
 	if !result.Allowed {
-		return fmt.Errorf("%w: %s — %s", ErrAccessDenied, result.Decision, result.Reason)
+		return fmt.Errorf("%w: %s: %s", ErrAccessDenied, result.Decision, result.Reason)
 	}
 	return nil
 }
@@ -627,12 +639,13 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 	}
 
 	// Walk graph for transitive permissions.
+	truncated := false
 	if e.graphWalker != nil {
 		allowed, path, err := e.graphWalker.Walk(ctx, e.store, scope.tenantID, scope.namespacePath, req)
 		if err != nil {
 			switch {
-			case errors.Is(err, ErrGraphDepthExceeded):
-			case errors.Is(err, ErrGraphBudgetExceeded):
+			case errors.Is(err, ErrGraphDepthExceeded), errors.Is(err, ErrGraphBudgetExceeded):
+				truncated = true
 			default:
 				e.metrics.StoreError("graph_walk")
 				return nil, err
@@ -647,7 +660,11 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 		}
 	}
 
-	return &CheckResult{Decision: DecisionDenyRelation, Reason: fmt.Sprintf("no relation grants %s:%s %s access to %s:%s", req.Subject.Kind, req.Subject.ID, req.Action.Name, req.Resource.Type, req.Resource.ID)}, nil
+	return &CheckResult{
+		Decision:  DecisionDenyRelation,
+		Reason:    fmt.Sprintf("no relation grants %s:%s %s access to %s:%s", req.Subject.Kind, req.Subject.ID, req.Action.Name, req.Resource.Type, req.Resource.ID),
+		truncated: truncated,
+	}, nil
 }
 
 func (e *Engine) evaluateABAC(ctx context.Context, scope tenantScope, req *CheckRequest, roleSlugs []string) (*CheckResult, error) {
@@ -655,12 +672,16 @@ func (e *Engine) evaluateABAC(ctx context.Context, scope tenantScope, req *Check
 		// RBAC didn't already resolve roles for us, so resolve them here.
 		// This keeps role-scoped policies (policy.SubjectMatch.Role)
 		// working even when RBAC evaluation itself is disabled.
+		//
+		// A failed lookup fails the check. Carrying on with an empty role
+		// list would make every role-scoped deny policy stop matching, so
+		// an outage in the role tables would quietly open exactly the
+		// access those policies exist to close.
 		roles, err := e.resolveAssignedRoles(ctx, scope, req)
 		if err != nil {
-			e.logger.Warn("warden: abac role slug resolution failed", log.Error(err))
-		} else {
-			roleSlugs = rolesToSlugs(roles)
+			return nil, fmt.Errorf("resolve roles for role-scoped policies: %w", err)
 		}
+		roleSlugs = rolesToSlugs(roles)
 	}
 
 	// Policies cascade: include policies at the request's namespace and every ancestor.
@@ -694,7 +715,7 @@ func (e *Engine) mergeDecisions(req *CheckRequest, rbac, rebac, abac *CheckResul
 		}
 	}
 
-	// Default deny — pick most informative reason.
+	// Default deny: pick the most informative reason.
 	for _, r := range []*CheckResult{rbac, rebac, abac} {
 		if r != nil && r.Reason != "" {
 			out := *r
@@ -735,4 +756,15 @@ func policyIDFromMatched(matchedBy []MatchInfo) id.PolicyID {
 		}
 	}
 	return id.PolicyID{}
+}
+
+// truncatedWalkNote prefixes the reason of a denial that followed a graph
+// walk stopped by MaxGraphDepth, MaxGraphVisited or MaxGraphFanout.
+const truncatedWalkNote = "graph traversal budget exceeded (relation walk truncated, a relation may exist beyond the limit); "
+
+func joinReason(r string) string {
+	if r == "" {
+		return "no rule allows the request"
+	}
+	return r
 }

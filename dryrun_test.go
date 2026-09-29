@@ -62,7 +62,7 @@ func readReq() *CheckRequest {
 }
 
 // countCheckLogs drains the writer and returns how many entries landed.
-func countCheckLogs(t *testing.T, eng *Engine, s *memory.Store) int {
+func countCheckLogs(t *testing.T, _ *Engine, s *memory.Store) int {
 	t.Helper()
 	// The writer batches on a 250ms interval; give it room to flush.
 	time.Sleep(400 * time.Millisecond)
@@ -102,16 +102,21 @@ func TestDryRunWritesNoCheckLog(t *testing.T) {
 func TestDryRunNeitherReadsNorWritesCache(t *testing.T) {
 	s := memory.New()
 	seedAllow(t, s)
-	eng, err := NewEngine(WithStore(s), WithConfig(Config{CacheTTL: time.Minute}))
+	cache := NewMemoryCache()
+	eng, err := NewEngine(WithStore(s), WithCache(cache))
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
 	}
 	ctx := context.Background()
 
 	// A dry run must not populate the cache, so a following normal check
-	// still evaluates rather than being served a cached copy.
+	// still evaluates rather than being served a cached copy. Ask the cache
+	// itself: on a cold key it has to miss straight after the dry run.
 	if _, err := eng.Check(ctx, readReq(), WithCallDryRun()); err != nil {
 		t.Fatalf("dry run: %v", err)
+	}
+	if _, hit := cache.Get(ctx, "t1", "", readReq()); hit {
+		t.Fatal("a dry run wrote its result to the cache")
 	}
 
 	// Warm the cache with a real check, then revoke the grant in the store.

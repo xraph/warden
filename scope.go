@@ -23,7 +23,7 @@ type tenantScope struct {
 // ensureWardenScope) can override the tenant derived from forge scope when
 // OrgID is empty (app-scoped sessions where roles are stored under appID).
 func scopeFromContext(ctx context.Context) tenantScope {
-	// 1. Check for explicit WithTenant values first — these take priority.
+	// 1. Check for explicit WithTenant values first, since these take priority.
 	if tid := tenantIDFromContext(ctx); tid != "" {
 		return tenantScope{
 			appID:         appIDFromContext(ctx),

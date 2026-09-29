@@ -77,6 +77,11 @@ type CheckResult struct {
 	MatchedBy   []MatchInfo `json:"matched_by,omitempty"`
 	Obligations []string    `json:"obligations,omitempty"`
 	EvalTimeNs  int64       `json:"eval_time_ns"`
+
+	// truncated is set by the ReBAC evaluator when its graph walk stopped
+	// at a depth or budget limit. Check folds it into the reason of a
+	// denial. Unexported, so it never reaches the wire or the cache.
+	truncated bool
 }
 
 // Decision is the authorization outcome.
