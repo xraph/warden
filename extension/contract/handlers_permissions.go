@@ -10,6 +10,7 @@ package contract
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -151,43 +152,67 @@ func permissionsDetailHandler(deps Deps) func(context.Context, PermissionDetailI
 	}
 }
 
-// rolesGranting finds every role in the tenant whose grants include pm.
+// rolesGranting finds every role in the tenant whose grants include pm,
+// sorted by slug (then namespace) so the page and its tests are stable.
 //
-// There is no store method for this direction, so it scans the tenant's
-// roles and checks each one's grants. Bounded by maxPageLimit rather than
-// unbounded: a tenant with more roles than that has a bigger problem than
-// this page, and an unbounded scan here would be a denial of service on
-// the dashboard.
+// There is no store method for this direction, so it walks the tenant's
+// roles a page at a time and checks each page's grants. It reads every
+// page and never stops at a limit: permissions.delete refuses when this
+// returns anyone, so a scan that gave up early would let a delete succeed
+// and silently strip the grant from a role nobody warned the operator
+// about. A guard against data loss cannot be bounded by a page size.
 func rolesGranting(ctx context.Context, deps Deps, tenantID string, pm *permission.Permission) ([]RoleSummary, error) {
 	s := deps.Engine.Store()
-	roles, err := s.ListRoles(ctx, &role.ListFilter{TenantID: tenantID, Limit: maxPageLimit})
-	if err != nil {
-		return nil, mapWardenError(err)
-	}
-	ids := make([]id.RoleID, 0, len(roles))
-	byID := make(map[id.RoleID]*role.Role, len(roles))
-	for _, r := range roles {
-		ids = append(ids, r.ID)
-		byID[r.ID] = r
-	}
-	grants, err := s.ListRolePermissionsForRoles(ctx, tenantID, ids)
-	if err != nil {
-		return nil, mapWardenError(err)
-	}
 	out := []RoleSummary{}
-	for rid, held := range grants {
-		for _, g := range held {
-			if g == nil {
-				continue
-			}
-			if g.Name == pm.Name && g.NamespacePath == pm.NamespacePath {
-				if r, ok := byID[rid]; ok {
-					out = append(out, projectRole(r))
+	for offset := 0; ; offset += maxPageLimit {
+		roles, err := s.ListRoles(ctx, &role.ListFilter{
+			TenantID: tenantID,
+			Limit:    maxPageLimit,
+			Offset:   offset,
+		})
+		if err != nil {
+			return nil, mapWardenError(err)
+		}
+		if len(roles) == 0 {
+			break
+		}
+		ids := make([]id.RoleID, 0, len(roles))
+		byID := make(map[id.RoleID]*role.Role, len(roles))
+		for _, r := range roles {
+			ids = append(ids, r.ID)
+			byID[r.ID] = r
+		}
+		grants, err := s.ListRolePermissionsForRoles(ctx, tenantID, ids)
+		if err != nil {
+			return nil, mapWardenError(err)
+		}
+		for rid, held := range grants {
+			for _, g := range held {
+				if g == nil {
+					continue
 				}
-				break
+				if g.Name == pm.Name && g.NamespacePath == pm.NamespacePath {
+					if r, ok := byID[rid]; ok {
+						out = append(out, projectRole(r))
+					}
+					break
+				}
 			}
 		}
+		if len(roles) < maxPageLimit {
+			break
+		}
 	}
+	// Ranging over the grants map is unordered, so sort before returning.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Slug != out[j].Slug {
+			return out[i].Slug < out[j].Slug
+		}
+		if out[i].NamespacePath != out[j].NamespacePath {
+			return out[i].NamespacePath < out[j].NamespacePath
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }
 

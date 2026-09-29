@@ -2,10 +2,14 @@ package contract
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
+	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store/memory"
 
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
@@ -210,5 +214,154 @@ func TestPermissionsDetailReturnsTheRolesThatGrantIt(t *testing.T) {
 	}
 	if len(got.GrantedBy) != 1 || got.GrantedBy[0].Slug != "reader" {
 		t.Errorf("grantedBy = %+v, want the reader role", got.GrantedBy)
+	}
+}
+
+// seedManyRoles creates n roles in t1 and returns the one the store lists
+// last, so a test can put a grant past the first page without depending on
+// how ids happen to order.
+func seedManyRoles(t *testing.T, s *memory.Store, n int) *role.Role {
+	t.Helper()
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		slug := fmt.Sprintf("bulk-%03d", i)
+		if err := s.CreateRole(ctx, &role.Role{TenantID: "t1", Name: slug, Slug: slug}); err != nil {
+			t.Fatalf("create %s: %v", slug, err)
+		}
+	}
+	all, err := s.ListRoles(ctx, &role.ListFilter{TenantID: "t1"})
+	if err != nil {
+		t.Fatalf("list roles: %v", err)
+	}
+	if len(all) != n {
+		t.Fatalf("seeded %d roles, store lists %d", n, len(all))
+	}
+	return all[len(all)-1]
+}
+
+func TestPermissionsDeleteSeesAGrantPastTheFirstPageOfRoles(t *testing.T) {
+	// The holder guard must not be bounded by a page size. With more roles
+	// than one page holds, a permission granted only by the last role used
+	// to look ungranted, so the delete went through and silently stripped
+	// the grant from a role nobody was warned about.
+	s := memory.New()
+	ctx := context.Background()
+	last := seedManyRoles(t, s, maxPageLimit+5)
+	pm := seedPermission(t, s, "document:read", "document", "read")
+	if err := s.AttachPermission(ctx, "t1", last.ID, permission.Ref{Name: pm.Name}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	h := permissionsDeleteHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(ctx, PermissionDeleteInput{ID: pm.ID.String()}, principalFor("t1"))
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeConflict {
+		t.Fatalf("want CodeConflict from a holder on page two, got %v", err)
+	}
+	if !containsText(ce.Message, last.Slug) {
+		t.Errorf("message %q does not name %s", ce.Message, last.Slug)
+	}
+	if _, getErr := s.GetPermission(ctx, "t1", pm.ID); getErr != nil {
+		t.Errorf("the refusal did not prevent the delete: %v", getErr)
+	}
+}
+
+func TestPermissionsDetailGrantedByCoversEveryPageAndIsSorted(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	last := seedManyRoles(t, s, maxPageLimit+5)
+	first, err := s.ListRoles(ctx, &role.ListFilter{TenantID: "t1", Limit: 1})
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first role: %v %d", err, len(first))
+	}
+	pm := seedPermission(t, s, "document:read", "document", "read")
+	// Attach in reverse of the expected order so a map-range order would
+	// have to be lucky to pass.
+	for _, r := range []*role.Role{last, first[0]} {
+		if err := s.AttachPermission(ctx, "t1", r.ID, permission.Ref{Name: pm.Name}); err != nil {
+			t.Fatalf("attach %s: %v", r.Slug, err)
+		}
+	}
+	h := permissionsDetailHandler(Deps{Engine: engineOver(t, s)})
+
+	got, err := h(ctx, PermissionDetailInput{ID: pm.ID.String()}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("permissions.detail: %v", err)
+	}
+	var slugs []string
+	for _, r := range got.GrantedBy {
+		slugs = append(slugs, r.Slug)
+	}
+	want := []string{first[0].Slug, last.Slug}
+	sort.Strings(want)
+	if !reflect.DeepEqual(slugs, want) {
+		t.Errorf("grantedBy = %v, want %v (both pages, sorted by slug)", slugs, want)
+	}
+}
+
+func TestPermissionsListIsScopedToItsOwnTenant(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	seedPermission(t, s, "mine:read", "mine", "read")
+	if err := s.CreatePermission(ctx, &permission.Permission{
+		TenantID: "t2", Name: "theirs:read", Resource: "theirs", Action: "read",
+	}); err != nil {
+		t.Fatalf("create other tenant's permission: %v", err)
+	}
+	h := permissionsListHandler(Deps{Engine: engineOver(t, s)})
+
+	got, err := h(ctx, PermissionsListInput{}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("permissions.list: %v", err)
+	}
+	// Identity, not count: a count assertion passes when the wrong rows
+	// arrive in the right quantity.
+	var names []string
+	for _, it := range got.Items {
+		names = append(names, it.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"mine:read"}) {
+		t.Fatalf("t1 sees %v, want only mine:read (tenant scoping is not applied)", names)
+	}
+	if got.Total != 1 {
+		t.Errorf("total = %d, want 1", got.Total)
+	}
+}
+
+func TestPermissionsDetailGrantedByExcludesAnotherTenantsRoles(t *testing.T) {
+	// t2 has a role granting a permission with the same name. It must not
+	// appear as a holder of t1's permission, and must not block t1 deleting
+	// it either.
+	s := memory.New()
+	ctx := context.Background()
+	mine := seedRoles(t, s, "", "mine-role")[0]
+	pm := seedPermission(t, s, "document:read", "document", "read")
+	if err := s.AttachPermission(ctx, "t1", mine.ID, permission.Ref{Name: pm.Name}); err != nil {
+		t.Fatalf("attach t1: %v", err)
+	}
+	theirs := &role.Role{TenantID: "t2", Name: "theirs-role", Slug: "theirs-role"}
+	if err := s.CreateRole(ctx, theirs); err != nil {
+		t.Fatalf("create t2 role: %v", err)
+	}
+	if err := s.CreatePermission(ctx, &permission.Permission{
+		TenantID: "t2", Name: "document:read", Resource: "document", Action: "read",
+	}); err != nil {
+		t.Fatalf("create t2 permission: %v", err)
+	}
+	if err := s.AttachPermission(ctx, "t2", theirs.ID, permission.Ref{Name: "document:read"}); err != nil {
+		t.Fatalf("attach t2: %v", err)
+	}
+	h := permissionsDetailHandler(Deps{Engine: engineOver(t, s)})
+
+	got, err := h(ctx, PermissionDetailInput{ID: pm.ID.String()}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("permissions.detail: %v", err)
+	}
+	var slugs []string
+	for _, r := range got.GrantedBy {
+		slugs = append(slugs, r.Slug)
+	}
+	if !reflect.DeepEqual(slugs, []string{"mine-role"}) {
+		t.Errorf("grantedBy = %v, want only mine-role (a t2 role leaked in)", slugs)
 	}
 }
