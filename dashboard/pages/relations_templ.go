@@ -745,7 +745,7 @@ func RelationsPage(tuples []*relation.Tuple, objectType, rel, subjectType string
 											Title:        "Delete Relation",
 											Description:  "Delete relation tuple " + formatTuple(t) + "?",
 											ConfirmLabel: "Delete",
-											HxEndpoint:   "/v1/relations/delete",
+											HxEndpoint:   basePath + "/v1/relations/delete",
 											HxMethod:     "post",
 										}).Render(ctx, templ_7745c5c3_Buffer)
 										if templ_7745c5c3_Err != nil {

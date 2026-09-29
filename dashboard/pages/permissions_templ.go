@@ -724,7 +724,7 @@ func PermissionsPage(perms []*permission.Permission, search, resource, action st
 												Title:        "Delete Permission",
 												Description:  "Are you sure you want to delete permission \"" + p.Name + "\"?",
 												ConfirmLabel: "Delete",
-												HxEndpoint:   "/v1/permissions/" + p.ID.String(),
+												HxEndpoint:   basePath + "/v1/permissions/" + p.ID.String(),
 												HxMethod:     "delete",
 											}).Render(ctx, templ_7745c5c3_Buffer)
 											if templ_7745c5c3_Err != nil {

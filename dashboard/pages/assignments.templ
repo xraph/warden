@@ -149,7 +149,7 @@ templ AssignmentsPage(assignments []*assignment.Assignment, subjectKind, subject
 											Title:        "Revoke Assignment",
 											Description:  fmt.Sprintf("Revoke role from %s:%s?", a.SubjectKind, a.SubjectID),
 											ConfirmLabel: "Revoke",
-											HxEndpoint:   "/v1/assignments/" + a.ID.String(),
+											HxEndpoint:   basePath + "/v1/assignments/" + a.ID.String(),
 											HxMethod:     "delete",
 										})
 									}

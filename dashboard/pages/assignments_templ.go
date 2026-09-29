@@ -836,7 +836,7 @@ func AssignmentsPage(assignments []*assignment.Assignment, subjectKind, subjectI
 											Title:        "Revoke Assignment",
 											Description:  fmt.Sprintf("Revoke role from %s:%s?", a.SubjectKind, a.SubjectID),
 											ConfirmLabel: "Revoke",
-											HxEndpoint:   "/v1/assignments/" + a.ID.String(),
+											HxEndpoint:   basePath + "/v1/assignments/" + a.ID.String(),
 											HxMethod:     "delete",
 										}).Render(ctx, templ_7745c5c3_Buffer)
 										if templ_7745c5c3_Err != nil {

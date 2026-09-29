@@ -170,7 +170,7 @@ templ RolesPage(rows []RoleRow, search string, pg components.PaginationMeta, bas
 												Title:        "Delete Role",
 												Description:  "Are you sure you want to delete role \"" + row.Role.Name + "\"? This action cannot be undone.",
 												ConfirmLabel: "Delete",
-												HxEndpoint:   "/v1/roles/" + row.Role.ID.String(),
+												HxEndpoint:   basePath + "/v1/roles/" + row.Role.ID.String(),
 												HxMethod:     "delete",
 											})
 										}

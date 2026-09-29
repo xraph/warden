@@ -139,7 +139,7 @@ templ PermissionsPage(perms []*permission.Permission, search, resource, action s
 												Title:        "Delete Permission",
 												Description:  "Are you sure you want to delete permission \"" + p.Name + "\"?",
 												ConfirmLabel: "Delete",
-												HxEndpoint:   "/v1/permissions/" + p.ID.String(),
+												HxEndpoint:   basePath + "/v1/permissions/" + p.ID.String(),
 												HxMethod:     "delete",
 											})
 										}

@@ -1011,7 +1011,7 @@ func RolesPage(rows []RoleRow, search string, pg components.PaginationMeta, base
 												Title:        "Delete Role",
 												Description:  "Are you sure you want to delete role \"" + row.Role.Name + "\"? This action cannot be undone.",
 												ConfirmLabel: "Delete",
-												HxEndpoint:   "/v1/roles/" + row.Role.ID.String(),
+												HxEndpoint:   basePath + "/v1/roles/" + row.Role.ID.String(),
 												HxMethod:     "delete",
 											}).Render(ctx, templ_7745c5c3_Buffer)
 											if templ_7745c5c3_Err != nil {

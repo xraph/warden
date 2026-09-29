@@ -139,7 +139,7 @@ templ RelationsPage(tuples []*relation.Tuple, objectType, rel, subjectType strin
 											Title:        "Delete Relation",
 											Description:  "Delete relation tuple " + formatTuple(t) + "?",
 											ConfirmLabel: "Delete",
-											HxEndpoint:   "/v1/relations/delete",
+											HxEndpoint:   basePath + "/v1/relations/delete",
 											HxMethod:     "post",
 										})
 									}
