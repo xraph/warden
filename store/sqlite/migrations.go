@@ -138,22 +138,22 @@ func foreignKeysEnabled(ctx context.Context, exec migrate.Executor) (bool, error
 	return v != 0, nil
 }
 
-// countIfExists returns the row count of table, and false when the table
+// countIfExists returns the row count of table, and ok=false when the table
 // does not exist. table is always a package constant, never caller input.
-func countIfExists(ctx context.Context, exec migrate.Executor, table string) (int64, bool, error) {
+func countIfExists(ctx context.Context, exec migrate.Executor, table string) (n int64, ok bool, err error) {
 	rows, err := exec.Query(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '"+table+"'")
 	if err != nil {
 		return 0, false, err
 	}
-	var exists int
+	var present int
 	if rows.Next() {
-		if err := rows.Scan(&exists); err != nil {
+		if err := rows.Scan(&present); err != nil {
 			_ = rows.Close()
 			return 0, false, err
 		}
 	}
 	_ = rows.Close()
-	if exists == 0 {
+	if present == 0 {
 		return 0, false, nil
 	}
 
@@ -162,7 +162,6 @@ func countIfExists(ctx context.Context, exec migrate.Executor, table string) (in
 		return 0, false, err
 	}
 	defer func() { _ = rows.Close() }()
-	var n int64
 	if !rows.Next() {
 		return 0, false, errors.New("count returned no row")
 	}

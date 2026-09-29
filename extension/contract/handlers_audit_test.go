@@ -70,16 +70,6 @@ func (a *auditProbe) OnPermissionDetached(context.Context, id.RoleID, id.Permiss
 	return nil
 }
 
-func (a *auditProbe) actions() []string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := make([]string, 0, len(a.events))
-	for _, e := range a.events {
-		out = append(out, e.Action)
-	}
-	return out
-}
-
 func (a *auditProbe) event(t *testing.T, action string) plugin.Event {
 	t.Helper()
 	a.mu.Lock()
@@ -112,10 +102,10 @@ func (a *auditProbe) hasTyped(s string) bool {
 	return false
 }
 
-func probedEngine(t *testing.T, s *memory.Store, cfg warden.Config) (*warden.Engine, *auditProbe) {
+func probedEngine(t *testing.T, s *memory.Store) (*warden.Engine, *auditProbe) {
 	t.Helper()
 	probe := &auditProbe{}
-	eng, err := warden.NewEngine(warden.WithStore(s), warden.WithConfig(cfg), warden.WithPlugin(probe))
+	eng, err := warden.NewEngine(warden.WithStore(s), warden.WithPlugin(probe))
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
 	}
@@ -127,7 +117,7 @@ var wantActor = warden.Actor{Kind: "user", ID: "tester", Via: "dashboard"}
 
 func TestRolesCreateEmitsAuditAndTheTypedHook(t *testing.T) {
 	s := memory.New()
-	eng, probe := probedEngine(t, s, warden.Config{})
+	eng, probe := probedEngine(t, s)
 	h := rolesCreateHandler(Deps{Engine: eng})
 
 	ack, err := h(context.Background(), RoleCreateInput{Name: "Ops", Slug: "ops"}, principalFor("t1"))
@@ -161,7 +151,7 @@ func TestRolesCreateEmitsAuditAndTheTypedHook(t *testing.T) {
 func TestRolesUpdateAndDeleteEmitAuditWithBefore(t *testing.T) {
 	s := memory.New()
 	seeded := seedRoles(t, s, "", "ops")
-	eng, probe := probedEngine(t, s, warden.Config{})
+	eng, probe := probedEngine(t, s)
 	deps := Deps{Engine: eng}
 	newName := "Operations"
 
@@ -197,7 +187,7 @@ func TestRolePermissionCommandsEmitAudit(t *testing.T) {
 	seeded := seedRoles(t, s, "", "ops")
 	seedPermission(t, s, "document:read", "document", "read")
 	seedPermission(t, s, "document:write", "document", "write")
-	eng, probe := probedEngine(t, s, warden.Config{})
+	eng, probe := probedEngine(t, s)
 	deps := Deps{Engine: eng}
 	rid := seeded[0].ID.String()
 
@@ -240,7 +230,7 @@ func TestRolePermissionCommandsEmitAudit(t *testing.T) {
 
 func TestPermissionCommandsEmitAudit(t *testing.T) {
 	s := memory.New()
-	eng, probe := probedEngine(t, s, warden.Config{})
+	eng, probe := probedEngine(t, s)
 	deps := Deps{Engine: eng}
 
 	ack, err := permissionsCreateHandler(deps)(context.Background(), PermissionCreateInput{Resource: "document", Action: "read"}, principalFor("t1"))
@@ -269,7 +259,7 @@ func TestPermissionCommandsEmitAudit(t *testing.T) {
 		t.Errorf("update event = %+v", up)
 	}
 
-	if _, err := permissionsDeleteHandler(deps)(context.Background(), PermissionDeleteInput{ID: ack.ID}, principalFor("t1")); err != nil {
+	if _, err := permissionsDeleteHandler(deps)(context.Background(), PermissionDeleteInput(ack), principalFor("t1")); err != nil {
 		t.Fatalf("permissions.delete: %v", err)
 	}
 	del := probe.event(t, "permission.deleted")
@@ -352,7 +342,7 @@ func TestADashboardSetPermissionsInvalidatesACachedAllow(t *testing.T) {
 
 func TestMaintenanceRunIsAudited(t *testing.T) {
 	s := memory.New()
-	eng, probe := probedEngine(t, s, warden.Config{})
+	eng, probe := probedEngine(t, s)
 
 	if _, err := maintenanceRunHandler(Deps{Engine: eng})(context.Background(), struct{}{}, principalFor("t1")); err != nil {
 		t.Fatalf("maintenance.run: %v", err)
@@ -368,7 +358,7 @@ func TestMaintenanceRunIsAudited(t *testing.T) {
 
 func TestCacheInvalidateIsAudited(t *testing.T) {
 	s := memory.New()
-	eng, probe := probedEngine(t, s, warden.Config{})
+	eng, probe := probedEngine(t, s)
 	h := cacheInvalidateHandler(Deps{Engine: eng})
 
 	if _, err := h(context.Background(), CacheInvalidateInput{}, principalFor("t1")); err != nil {
