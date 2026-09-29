@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -29,12 +30,25 @@ var Migrations = migrate.NewGroup("warden")
 // PRAGMA foreign_keys is a no-op while a transaction is open, so it has to
 // be issued before BEGIN and after COMMIT, never inside. Grove's
 // migrate.Executor here doesn't expose a single pinned connection (it wraps
-// the driver's pool), so this relies on migrations running sequentially on
-// one goroutine, which is how the orchestrator always calls them: with no
-// concurrent access, Go's database/sql connection pool reuses the same idle
-// connection for each subsequent call, so PRAGMA, BEGIN, the DDL, the check
-// and COMMIT land on the same physical connection in practice.
-func recreateTable(ctx context.Context, exec migrate.Executor, sqlStmts string) error {
+// the driver's pool), so the PRAGMA, BEGIN and the DDL are separate Exec
+// calls that only land on one physical connection when nothing else is
+// using the pool. Migrations must therefore not run concurrently with
+// traffic on the same database (see the upgrades guide).
+//
+// Because that can't be guaranteed here, recreateTable checks instead of
+// trusting. It aborts (ROLLBACK) if PRAGMA foreign_keys still reads 1 once
+// the transaction is open, which means enforcement is on for the
+// connection that will run the DDL. And it counts the rows of every table
+// named in guarded before and after the DDL, aborting if any count changed.
+// The second check exists because PRAGMA foreign_key_check cannot catch the
+// failure: if DROP TABLE cascaded, the referencing rows are already gone
+// and there is nothing left to find dangling.
+//
+// guarded lists the tables that reference the recreated one and must come
+// through with every row. A table the caller is itself rebuilding from a
+// join that may legitimately drop orphans must not be listed. Tables that
+// don't exist yet are skipped.
+func recreateTable(ctx context.Context, exec migrate.Executor, sqlStmts string, guarded ...string) error {
 	if _, err := exec.Exec(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
 		return fmt.Errorf("sqlite recreate: disable foreign keys: %w", err)
 	}
@@ -44,22 +58,60 @@ func recreateTable(ctx context.Context, exec migrate.Executor, sqlStmts string) 
 	if _, err := exec.Exec(ctx, "BEGIN"); err != nil {
 		return fmt.Errorf("sqlite recreate: begin: %w", err)
 	}
+	rollback := func() {
+		_, _ = exec.Exec(ctx, "ROLLBACK") //nolint:errcheck // best-effort rollback on the error path
+	}
+
+	on, err := foreignKeysEnabled(ctx, exec)
+	if err != nil {
+		rollback()
+		return fmt.Errorf("sqlite recreate: read foreign_keys: %w", err)
+	}
+	if on {
+		rollback()
+		return errors.New("sqlite recreate: foreign keys are still enforced after PRAGMA foreign_keys=OFF " +
+			"(the PRAGMA and the transaction did not share a connection); refusing to run the DDL")
+	}
+
+	before := make(map[string]int64, len(guarded))
+	for _, table := range guarded {
+		n, ok, err := countIfExists(ctx, exec, table)
+		if err != nil {
+			rollback()
+			return fmt.Errorf("sqlite recreate: count %s: %w", table, err)
+		}
+		if ok {
+			before[table] = n
+		}
+	}
 
 	if _, err := exec.Exec(ctx, sqlStmts); err != nil {
-		_, _ = exec.Exec(ctx, "ROLLBACK") //nolint:errcheck // best-effort rollback on the error path
+		rollback()
 		return fmt.Errorf("sqlite recreate: exec: %w", err)
+	}
+
+	for table, was := range before {
+		now, _, err := countIfExists(ctx, exec, table)
+		if err != nil {
+			rollback()
+			return fmt.Errorf("sqlite recreate: recount %s: %w", table, err)
+		}
+		if now != was {
+			rollback()
+			return fmt.Errorf("sqlite recreate: %s had %d rows before the recreate and %d after; rolled back", table, was, now)
+		}
 	}
 
 	rows, err := exec.Query(ctx, "PRAGMA foreign_key_check")
 	if err != nil {
-		_, _ = exec.Exec(ctx, "ROLLBACK") //nolint:errcheck // best-effort rollback on the error path
+		rollback()
 		return fmt.Errorf("sqlite recreate: foreign key check: %w", err)
 	}
 	hasViolation := rows.Next()
 	_ = rows.Close()
 	if hasViolation {
-		_, _ = exec.Exec(ctx, "ROLLBACK") //nolint:errcheck // best-effort rollback on the error path
-		return fmt.Errorf("sqlite recreate: foreign key violations found after recreate")
+		rollback()
+		return errors.New("sqlite recreate: foreign key violations found after recreate")
 	}
 
 	if _, err := exec.Exec(ctx, "COMMIT"); err != nil {
@@ -67,6 +119,63 @@ func recreateTable(ctx context.Context, exec migrate.Executor, sqlStmts string) 
 	}
 	return nil
 }
+
+// foreignKeysEnabled reports whether PRAGMA foreign_keys reads 1 on the
+// connection that served the query.
+func foreignKeysEnabled(ctx context.Context, exec migrate.Executor) (bool, error) {
+	rows, err := exec.Query(ctx, "PRAGMA foreign_keys")
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return false, errors.New("PRAGMA foreign_keys returned no row")
+	}
+	var v int
+	if err := rows.Scan(&v); err != nil {
+		return false, err
+	}
+	return v != 0, nil
+}
+
+// countIfExists returns the row count of table, and false when the table
+// does not exist. table is always a package constant, never caller input.
+func countIfExists(ctx context.Context, exec migrate.Executor, table string) (int64, bool, error) {
+	rows, err := exec.Query(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '"+table+"'")
+	if err != nil {
+		return 0, false, err
+	}
+	var exists int
+	if rows.Next() {
+		if err := rows.Scan(&exists); err != nil {
+			_ = rows.Close()
+			return 0, false, err
+		}
+	}
+	_ = rows.Close()
+	if exists == 0 {
+		return 0, false, nil
+	}
+
+	rows, err = exec.Query(ctx, "SELECT COUNT(*) FROM "+table)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	var n int64
+	if !rows.Next() {
+		return 0, false, errors.New("count returned no row")
+	}
+	if err := rows.Scan(&n); err != nil {
+		return 0, false, err
+	}
+	return n, true, nil
+}
+
+// guardReferrers names the tables that reference warden_roles. Any migration
+// that drops or rebuilds warden_roles passes them to recreateTable, so a
+// cascade through either one aborts the migration instead of committing.
+var guardReferrers = []string{"warden_assignments", "warden_role_permissions"}
 
 func init() {
 	Migrations.MustRegister(
@@ -315,7 +424,7 @@ ALTER TABLE warden_role_permissions_new RENAME TO warden_role_permissions;
 
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_role ON warden_role_permissions (role_id);
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_perm ON warden_role_permissions (perm_namespace_path, perm_name);
-`)
+`, "warden_assignments")
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
 				return recreateTable(ctx, exec, `
@@ -341,7 +450,7 @@ ALTER TABLE warden_role_permissions_old RENAME TO warden_role_permissions;
 
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_role ON warden_role_permissions (role_id);
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_perm ON warden_role_permissions (permission_id);
-`)
+`, "warden_assignments")
 			},
 		},
 		&migrate.Migration{
@@ -425,7 +534,7 @@ ALTER TABLE warden_roles_new RENAME TO warden_roles;
 CREATE INDEX IF NOT EXISTS idx_warden_roles_tenant ON warden_roles (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_parent_slug ON warden_roles (tenant_id, parent_slug) WHERE parent_slug IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_warden_roles_system ON warden_roles (tenant_id, is_system);
-`)
+`, guardReferrers...)
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
 				return recreateTable(ctx, exec, `
@@ -466,7 +575,7 @@ ALTER TABLE warden_roles_old RENAME TO warden_roles;
 CREATE INDEX IF NOT EXISTS idx_warden_roles_tenant ON warden_roles (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_parent ON warden_roles (parent_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_system ON warden_roles (tenant_id, is_system);
-`)
+`, guardReferrers...)
 			},
 		},
 		&migrate.Migration{
@@ -744,7 +853,7 @@ CREATE INDEX IF NOT EXISTS idx_warden_assign_role     ON warden_assignments (rol
 CREATE INDEX IF NOT EXISTS idx_warden_assign_resource ON warden_assignments (tenant_id, subject_kind, subject_id, resource_type, resource_id);
 CREATE INDEX IF NOT EXISTS idx_warden_assign_expires  ON warden_assignments (expires_at);
 CREATE INDEX IF NOT EXISTS idx_warden_assign_ns       ON warden_assignments (tenant_id, namespace_path, subject_kind, subject_id);
-`)
+`, guardReferrers...)
 			},
 			Down: func(_ context.Context, _ migrate.Executor) error {
 				// SQLite down for table-recreate migrations is intentionally
