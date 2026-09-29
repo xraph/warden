@@ -49,6 +49,11 @@ var wantPolicies = map[string]struct{ action, resource string }{
 	"relations.list":              {"read", "warden:relation"},
 	"relations.create":            {"manage", "warden:relation"},
 	"relations.delete":            {"manage", "warden:relation"},
+	"resourceTypes.list":          {"read", "warden:resourcetype"},
+	"resourceTypes.detail":        {"read", "warden:resourcetype"},
+	"resourceTypes.create":        {"manage", "warden:resourcetype"},
+	"resourceTypes.update":        {"manage", "warden:resourcetype"},
+	"resourceTypes.delete":        {"manage", "warden:resourcetype"},
 	"maintenance.run":             {"manage", "warden:maintenance"},
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
 }

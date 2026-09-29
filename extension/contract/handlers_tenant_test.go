@@ -137,6 +137,26 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := relationsDeleteHandler(deps)(context.Background(), RelationDeleteInput{}, p)
 		return err
 	}},
+	{"resourceTypes.list", func(deps Deps, p dashcontract.Principal) error {
+		_, err := resourceTypesListHandler(deps)(context.Background(), ResourceTypesListInput{}, p)
+		return err
+	}},
+	{"resourceTypes.detail", func(deps Deps, p dashcontract.Principal) error {
+		_, err := resourceTypesDetailHandler(deps)(context.Background(), ResourceTypeDetailInput{}, p)
+		return err
+	}},
+	{"resourceTypes.create", func(deps Deps, p dashcontract.Principal) error {
+		_, err := resourceTypesCreateHandler(deps)(context.Background(), ResourceTypeCreateInput{}, p)
+		return err
+	}},
+	{"resourceTypes.update", func(deps Deps, p dashcontract.Principal) error {
+		_, err := resourceTypesUpdateHandler(deps)(context.Background(), ResourceTypeUpdateInput{}, p)
+		return err
+	}},
+	{"resourceTypes.delete", func(deps Deps, p dashcontract.Principal) error {
+		_, err := resourceTypesDeleteHandler(deps)(context.Background(), ResourceTypeDeleteInput{}, p)
+		return err
+	}},
 	{"maintenance.run", func(deps Deps, p dashcontract.Principal) error {
 		_, err := maintenanceRunHandler(deps)(context.Background(), struct{}{}, p)
 		return err

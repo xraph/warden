@@ -84,6 +84,14 @@ var intentPolicies = map[string]intentPolicy{
 	"relations.create": {"manage", "warden:relation"},
 	"relations.delete": {"manage", "warden:relation"},
 
+	// Same resource the REST resource type routes use
+	// (api/resourcetype_handler.go), so one grant covers both surfaces.
+	"resourceTypes.list":   {"read", "warden:resourcetype"},
+	"resourceTypes.detail": {"read", "warden:resourcetype"},
+	"resourceTypes.create": {"manage", "warden:resourcetype"},
+	"resourceTypes.update": {"manage", "warden:resourcetype"},
+	"resourceTypes.delete": {"manage", "warden:resourcetype"},
+
 	"maintenance.run":             {"manage", "warden:maintenance"},
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
 }

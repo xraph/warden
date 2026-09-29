@@ -71,6 +71,11 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"relations.list":              dashcontract.IntentKindQuery,
 		"relations.create":            dashcontract.IntentKindCommand,
 		"relations.delete":            dashcontract.IntentKindCommand,
+		"resourceTypes.list":          dashcontract.IntentKindQuery,
+		"resourceTypes.detail":        dashcontract.IntentKindQuery,
+		"resourceTypes.create":        dashcontract.IntentKindCommand,
+		"resourceTypes.update":        dashcontract.IntentKindCommand,
+		"resourceTypes.delete":        dashcontract.IntentKindCommand,
 		"maintenance.run":             dashcontract.IntentKindCommand,
 		"maintenance.cacheInvalidate": dashcontract.IntentKindCommand,
 	}
@@ -276,6 +281,10 @@ func TestManifest_EveryCommandThatFeedsTheNamespaceListRefreshesIt(t *testing.T)
 		"permissions.create", "permissions.delete",
 		"assignments.create", "assignments.delete",
 		"relations.create", "relations.delete",
+		"resourceTypes.create", "resourceTypes.delete",
+		// maintenance.run deletes assignment rows, so it can drop a namespace
+		// whose only rows were expired assignments.
+		"maintenance.run",
 	} {
 		found := false
 		for _, v := range byName[intent] {
@@ -285,6 +294,80 @@ func TestManifest_EveryCommandThatFeedsTheNamespaceListRefreshesIt(t *testing.T)
 		}
 		if !found {
 			t.Errorf("%s does not invalidate namespaces.list", intent)
+		}
+	}
+}
+
+func TestManifest_MaintenanceRunInvalidatesEverythingItPurges(t *testing.T) {
+	// handlers_maintenance.go returns AssignmentsPurged, so the command
+	// deletes assignment rows. It used to invalidate only the overview
+	// views, which left the assignment list and the expiring feed showing
+	// rows that no longer exist. Check logs are its other purge, and the only
+	// view of them is overview.recentChecks.
+	m := loadManifest(t)
+	var got []string
+	for _, in := range m.Intents {
+		if in.Name == "maintenance.run" {
+			got = in.Invalidates
+		}
+	}
+	for _, target := range []string{
+		"overview.stats", "overview.recentChecks",
+		"assignments.list", "assignments.expiring", "roles.detail", "namespaces.list",
+	} {
+		found := false
+		for _, v := range got {
+			if v == target {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("maintenance.run does not invalidate %s", target)
+		}
+	}
+}
+
+func TestManifest_ResourceTypeCommandsInvalidateWhatTheyChange(t *testing.T) {
+	m := loadManifest(t)
+	byName := map[string][]string{}
+	for _, in := range m.Intents {
+		byName[in.Name] = in.Invalidates
+	}
+	has := func(intent, target string) bool {
+		for _, v := range byName[intent] {
+			if v == target {
+				return true
+			}
+		}
+		return false
+	}
+	want := map[string][]string{
+		"resourceTypes.create": {"resourceTypes.list", "overview.stats", "namespaces.list"},
+		"resourceTypes.update": {"resourceTypes.list", "resourceTypes.detail"},
+		"resourceTypes.delete": {"resourceTypes.list", "resourceTypes.detail", "overview.stats", "namespaces.list"},
+	}
+	for intent, targets := range want {
+		for _, target := range targets {
+			if !has(intent, target) {
+				t.Errorf("%s does not invalidate %s", intent, target)
+			}
+		}
+	}
+}
+
+func TestManifest_ResourceTypeQueriesAreDeclared(t *testing.T) {
+	m := loadManifest(t)
+	for name, intent := range map[string]string{
+		"resourceTypeList":   "resourceTypes.list",
+		"resourceTypeDetail": "resourceTypes.detail",
+	} {
+		q, ok := m.Queries[name]
+		if !ok {
+			t.Errorf("manifest declares no %s query", name)
+			continue
+		}
+		if q.Intent != intent {
+			t.Errorf("%s points at %q, want %s", name, q.Intent, intent)
 		}
 	}
 }

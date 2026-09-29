@@ -141,6 +141,21 @@ func Register(
 	if err := dispatcher.RegisterCommand(d, contributorName, "relations.delete", 1, relationsDeleteHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register relations.delete: %w", err)
 	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "resourceTypes.list", 1, resourceTypesListHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register resourceTypes.list: %w", err)
+	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "resourceTypes.detail", 1, resourceTypesDetailHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register resourceTypes.detail: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "resourceTypes.create", 1, resourceTypesCreateHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register resourceTypes.create: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "resourceTypes.update", 1, resourceTypesUpdateHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register resourceTypes.update: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "resourceTypes.delete", 1, resourceTypesDeleteHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register resourceTypes.delete: %w", err)
+	}
 	if err := dispatcher.RegisterCommand(d, contributorName, "maintenance.run", 1, maintenanceRunHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register maintenance.run: %w", err)
 	}
