@@ -155,3 +155,36 @@ type denyAll struct{}
 func (denyAll) Authorize(context.Context, dashcontract.Principal, dashcontract.Action) (dashcontract.Decision, error) {
 	return dashcontract.Decision{}, nil
 }
+
+func TestManifest_GrantChangesInvalidateThePermissionDetail(t *testing.T) {
+	// permissions.detail carries grantedBy, so anything that changes who
+	// holds a permission (or how a holder is named) leaves an open
+	// permission page stale unless the command says so. The deletes also
+	// change the namespace list, which the creates already invalidate.
+	m := loadManifest(t)
+	byName := map[string][]string{}
+	for _, in := range m.Intents {
+		byName[in.Name] = in.Invalidates
+	}
+	has := func(intent, target string) bool {
+		for _, v := range byName[intent] {
+			if v == target {
+				return true
+			}
+		}
+		return false
+	}
+	for _, intent := range []string{
+		"roles.attachPermission", "roles.detachPermission", "roles.setPermissions",
+		"roles.update", "roles.delete",
+	} {
+		if !has(intent, "permissions.detail") {
+			t.Errorf("%s does not invalidate permissions.detail", intent)
+		}
+	}
+	for _, intent := range []string{"roles.delete", "permissions.delete"} {
+		if !has(intent, "namespaces.list") {
+			t.Errorf("%s does not invalidate namespaces.list", intent)
+		}
+	}
+}

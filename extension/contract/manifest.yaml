@@ -31,20 +31,20 @@ intents:
   # An update can change the name shown in the list, the parent (which moves
   # this role between two other roles' children), and nothing else.
   - { name: roles.update, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.list, roles.detail] }
+      invalidates: [roles.list, roles.detail, permissions.detail] }
   # A delete cascades: DeleteAssignmentsByRole removes every assignment of
   # this role, so the assignments list and the counters change too.
   - { name: roles.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.list, roles.detail, overview.stats] }
+      invalidates: [roles.list, roles.detail, permissions.detail, overview.stats, namespaces.list] }
   # A grant change alters the role's detail page. It does NOT change the
   # roles list, which shows no grant information, and it does not change
   # any counter.
   - { name: roles.attachPermission, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.detail] }
+      invalidates: [roles.detail, permissions.detail] }
   - { name: roles.detachPermission, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.detail] }
+      invalidates: [roles.detail, permissions.detail] }
   - { name: roles.setPermissions, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.detail] }
+      invalidates: [roles.detail, permissions.detail] }
   - { name: permissions.list,   kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: permissions.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # A new permission can appear in a role's attach picker, and creates a
@@ -55,7 +55,7 @@ intents:
       invalidates: [permissions.list, permissions.detail] }
   # A delete removes junction rows, so any role's detail page can change.
   - { name: permissions.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [permissions.list, permissions.detail, roles.detail, overview.stats] }
+      invalidates: [permissions.list, permissions.detail, roles.detail, overview.stats, namespaces.list] }
   - { name: maintenance.run, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [overview.stats, overview.recentChecks] }
   - { name: maintenance.cacheInvalidate, kind: command, version: 1, requires: { warden: warden.engine }, capability: write }
