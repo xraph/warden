@@ -32,14 +32,16 @@ defaults:
 # -------------------------------------------------------------------
 # Job: detect
 # Normalises inputs from both tag-push and workflow_dispatch triggers
-# into a single set of outputs consumed by downstream jobs.
+# into a single set of outputs consumed by downstream jobs. Read-only:
+# the release tag for a manual dispatch is created in release-cli, after
+# the tests have passed.
 # -------------------------------------------------------------------
 jobs:
   detect:
     name: Detect release parameters
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
@@ -117,21 +119,6 @@ jobs:
             echo "| Dry run | $DRY_RUN |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # For manual dispatch, create & push the tag if it doesn't exist
-      - name: Create tag (manual dispatch)
-        if: github.event_name == 'workflow_dispatch' && steps.resolve.outputs.dry_run == 'false'
-        run: |
-          TAG="${{ steps.resolve.outputs.tag }}"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists, skipping creation"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag -a "$TAG" -m "Release $TAG"
-            git push origin "$TAG"
-            echo "Created and pushed tag $TAG"
-          fi
-
   # -------------------------------------------------------------------
   # Job: test
   # Runs the full test matrix against the module being released.
@@ -195,6 +182,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      # For manual dispatch, create and push the tag here, not in detect. This
+      # job only runs after the tests pass and the run is not a dry run, so a
+      # failing test can never leave a release tag behind, and the detect job
+      # keeps read-only access to the repository.
+      - name: Create tag (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ needs.detect.outputs.tag }}
+        run: |
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping creation"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+            echo "Created and pushed tag $TAG"
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
