@@ -125,6 +125,18 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := assignmentsDeleteHandler(deps)(context.Background(), AssignmentDeleteInput{}, p)
 		return err
 	}},
+	{"relations.list", func(deps Deps, p dashcontract.Principal) error {
+		_, err := relationsListHandler(deps)(context.Background(), RelationsListInput{}, p)
+		return err
+	}},
+	{"relations.create", func(deps Deps, p dashcontract.Principal) error {
+		_, err := relationsCreateHandler(deps)(context.Background(), RelationCreateInput{}, p)
+		return err
+	}},
+	{"relations.delete", func(deps Deps, p dashcontract.Principal) error {
+		_, err := relationsDeleteHandler(deps)(context.Background(), RelationDeleteInput{}, p)
+		return err
+	}},
 	{"maintenance.run", func(deps Deps, p dashcontract.Principal) error {
 		_, err := maintenanceRunHandler(deps)(context.Background(), struct{}{}, p)
 		return err

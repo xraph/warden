@@ -79,6 +79,11 @@ var intentPolicies = map[string]intentPolicy{
 	"assignments.create":   {"manage", "warden:assignment"},
 	"assignments.delete":   {"manage", "warden:assignment"},
 
+	// Same resource the REST relation routes use (api/relation_handler.go).
+	"relations.list":   {"read", "warden:relation"},
+	"relations.create": {"manage", "warden:relation"},
+	"relations.delete": {"manage", "warden:relation"},
+
 	"maintenance.run":             {"manage", "warden:maintenance"},
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
 }

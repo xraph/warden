@@ -132,6 +132,15 @@ func Register(
 	if err := dispatcher.RegisterCommand(d, contributorName, "assignments.delete", 1, assignmentsDeleteHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register assignments.delete: %w", err)
 	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "relations.list", 1, relationsListHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register relations.list: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "relations.create", 1, relationsCreateHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register relations.create: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "relations.delete", 1, relationsDeleteHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register relations.delete: %w", err)
+	}
 	if err := dispatcher.RegisterCommand(d, contributorName, "maintenance.run", 1, maintenanceRunHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register maintenance.run: %w", err)
 	}

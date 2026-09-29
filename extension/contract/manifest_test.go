@@ -68,6 +68,9 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"assignments.expiring":        dashcontract.IntentKindQuery,
 		"assignments.create":          dashcontract.IntentKindCommand,
 		"assignments.delete":          dashcontract.IntentKindCommand,
+		"relations.list":              dashcontract.IntentKindQuery,
+		"relations.create":            dashcontract.IntentKindCommand,
+		"relations.delete":            dashcontract.IntentKindCommand,
 		"maintenance.run":             dashcontract.IntentKindCommand,
 		"maintenance.cacheInvalidate": dashcontract.IntentKindCommand,
 	}
@@ -216,5 +219,43 @@ func TestManifest_RoleChangesInvalidateTheAssignmentViews(t *testing.T) {
 				t.Errorf("%s does not invalidate %s", intent, target)
 			}
 		}
+	}
+}
+
+func TestManifest_RelationCommandsInvalidateWhatTheyChange(t *testing.T) {
+	// A tuple change alters the relation list and the overview counters.
+	// namespaces.list is built partly from tuple namespaces (see
+	// handlers_namespaces.go), so a create can introduce a namespace and a
+	// delete of its last tuple can remove one.
+	m := loadManifest(t)
+	byName := map[string][]string{}
+	for _, in := range m.Intents {
+		byName[in.Name] = in.Invalidates
+	}
+	has := func(intent, target string) bool {
+		for _, v := range byName[intent] {
+			if v == target {
+				return true
+			}
+		}
+		return false
+	}
+	for _, intent := range []string{"relations.create", "relations.delete"} {
+		for _, target := range []string{"relations.list", "overview.stats", "namespaces.list"} {
+			if !has(intent, target) {
+				t.Errorf("%s does not invalidate %s", intent, target)
+			}
+		}
+	}
+}
+
+func TestManifest_RelationListQueryIsDeclared(t *testing.T) {
+	m := loadManifest(t)
+	q, ok := m.Queries["relationList"]
+	if !ok {
+		t.Fatal("manifest declares no relationList query")
+	}
+	if q.Intent != "relations.list" {
+		t.Errorf("relationList points at %q, want relations.list", q.Intent)
 	}
 }
