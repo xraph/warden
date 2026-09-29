@@ -30,8 +30,14 @@ jobs:
 
   # ─── Coverage gate ──────────────────────────────────────────────────
   # Runs after the shared workflow's test job so coverage.out reflects
-  # the same code it just tested. Fails the build below the thresholds
-  # in `make coverage-check`.
+  # the same code it just tested. `make coverage-check` depends on the
+  # `test-coverage` Makefile target and runs it first, so this job invokes
+  # `make coverage-check` alone rather than both targets separately.
+  # test-coverage now runs with -tags=integration, so this job's postgres
+  # and mongo coverage comes from testcontainers-managed containers, not a
+  # service container: a plain ubuntu-latest runner already has Docker, so
+  # no `services:` block is needed here (contrast the `integration` job
+  # below, which uses a service container instead of testcontainers).
   coverage-check:
     name: Coverage check
     runs-on: ubuntu-latest
@@ -49,6 +55,9 @@ jobs:
           check-latest: true
           cache: true
           cache-dependency-path: go.sum
+
+      - name: Download modules
+        run: go mod download
 
       - name: Run coverage check
         run: make coverage-check
