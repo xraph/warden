@@ -197,12 +197,19 @@ func rolesDetailHandler(deps Deps) func(context.Context, RoleDetailInput, dashco
 			out.Permissions = append(out.Permissions, projectPermission(g))
 		}
 		// Children are found by parent SLUG, not by id, because slugs are
-		// what inheritance is declared with.
+		// what inheritance is declared with. ListChildRoles takes no
+		// namespace, but the engine resolves a parent only within the
+		// child's own namespace (and the foreign key is tenant, namespace,
+		// parent slug), so a same-slug role in another namespace is a
+		// child of a different parent. Keep only this role's namespace.
 		children, err := s.ListChildRoles(ctx, tenantID, r.Slug)
 		if err != nil {
 			return RoleDetail{}, mapWardenError(err)
 		}
 		for _, c := range children {
+			if c.NamespacePath != r.NamespacePath {
+				continue
+			}
 			out.Children = append(out.Children, projectRole(c))
 		}
 		return out, nil

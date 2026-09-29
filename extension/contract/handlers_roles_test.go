@@ -659,3 +659,36 @@ func TestRolesCreateRefusesAParentThatDoesNotExist(t *testing.T) {
 		t.Fatalf("a create naming an existing parent: %v", err)
 	}
 }
+
+func TestRolesDetailListsOnlyChildrenFromItsOwnNamespace(t *testing.T) {
+	// Slugs are unique per (tenant, namespace), so a/admin and b/admin can
+	// both exist. The engine resolves a parent only inside the child's own
+	// namespace, so b/kid inherits from b/admin and must not show up under
+	// a/admin just because the slug matches.
+	s := memory.New()
+	ctx := context.Background()
+	adminA := seedRoles(t, s, "a", "admin")[0]
+	adminB := seedRoles(t, s, "b", "admin")[0]
+	for _, c := range []*role.Role{
+		{TenantID: "t1", NamespacePath: "a", Name: "kid-a", Slug: "kid-a", ParentSlug: "admin"},
+		{TenantID: "t1", NamespacePath: "b", Name: "kid-b", Slug: "kid-b", ParentSlug: "admin"},
+	} {
+		if err := s.CreateRole(ctx, c); err != nil {
+			t.Fatalf("create %s: %v", c.Slug, err)
+		}
+	}
+	h := rolesDetailHandler(Deps{Engine: engineOver(t, s)})
+
+	for _, tc := range []struct {
+		parent *role.Role
+		want   string
+	}{{adminA, "kid-a"}, {adminB, "kid-b"}} {
+		got, err := h(ctx, RoleDetailInput{ID: tc.parent.ID.String()}, principalFor("t1"))
+		if err != nil {
+			t.Fatalf("roles.detail %s/admin: %v", tc.parent.NamespacePath, err)
+		}
+		if len(got.Children) != 1 || got.Children[0].Slug != tc.want {
+			t.Errorf("%s/admin children = %+v, want only %s", tc.parent.NamespacePath, got.Children, tc.want)
+		}
+	}
+}
