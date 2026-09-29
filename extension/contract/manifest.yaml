@@ -35,7 +35,7 @@ intents:
   # A delete cascades: DeleteAssignmentsByRole removes every assignment of
   # this role, so the assignments list and the counters change too.
   - { name: roles.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.list, roles.detail, permissions.detail, overview.stats, namespaces.list] }
+      invalidates: [roles.list, roles.detail, permissions.detail, overview.stats, namespaces.list, assignments.list] }
   # A grant change alters the role's detail page. It does NOT change the
   # roles list, which shows no grant information, and it does not change
   # any counter.
@@ -56,6 +56,15 @@ intents:
   # A delete removes junction rows, so any role's detail page can change.
   - { name: permissions.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [permissions.list, permissions.detail, roles.detail, overview.stats, namespaces.list] }
+  - { name: assignments.list,     kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: assignments.expiring, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  # A new binding changes the list, the expiring feed if it carries an
+  # expiry, the counters, and the role's own detail page, which is where an
+  # operator reads how many hold it.
+  - { name: assignments.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
+      invalidates: [assignments.list, assignments.expiring, roles.detail, overview.stats] }
+  - { name: assignments.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
+      invalidates: [assignments.list, assignments.expiring, roles.detail, overview.stats] }
   - { name: maintenance.run, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [overview.stats, overview.recentChecks] }
   - { name: maintenance.cacheInvalidate, kind: command, version: 1, requires: { warden: warden.engine }, capability: write }
@@ -85,5 +94,11 @@ queries:
   permissionDetail:
     intent: permissions.detail
     cache: { staleTime: 30s }
+  assignmentList:
+    intent: assignments.list
+    cache: { staleTime: 30s }
+  expiringAssignments:
+    intent: assignments.expiring
+    cache: { staleTime: 60s }
 
 graph: []

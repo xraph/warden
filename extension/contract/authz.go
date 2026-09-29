@@ -72,6 +72,13 @@ var intentPolicies = map[string]intentPolicy{
 	"permissions.update": {"manage", "warden:permission"},
 	"permissions.delete": {"manage", "warden:permission"},
 
+	// Same resource the REST assignment routes use (api/assignment_handler.go),
+	// so one grant covers both surfaces. The expiring feed is a read.
+	"assignments.list":     {"read", "warden:assignment"},
+	"assignments.expiring": {"read", "warden:assignment"},
+	"assignments.create":   {"manage", "warden:assignment"},
+	"assignments.delete":   {"manage", "warden:assignment"},
+
 	"maintenance.run":             {"manage", "warden:maintenance"},
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
 }

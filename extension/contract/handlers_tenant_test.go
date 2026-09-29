@@ -109,6 +109,22 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := permissionsDeleteHandler(deps)(context.Background(), PermissionDeleteInput{}, p)
 		return err
 	}},
+	{"assignments.list", func(deps Deps, p dashcontract.Principal) error {
+		_, err := assignmentsListHandler(deps)(context.Background(), AssignmentsListInput{}, p)
+		return err
+	}},
+	{"assignments.expiring", func(deps Deps, p dashcontract.Principal) error {
+		_, err := assignmentsExpiringHandler(deps)(context.Background(), ExpiringInput{}, p)
+		return err
+	}},
+	{"assignments.create", func(deps Deps, p dashcontract.Principal) error {
+		_, err := assignmentsCreateHandler(deps)(context.Background(), AssignmentCreateInput{}, p)
+		return err
+	}},
+	{"assignments.delete", func(deps Deps, p dashcontract.Principal) error {
+		_, err := assignmentsDeleteHandler(deps)(context.Background(), AssignmentDeleteInput{}, p)
+		return err
+	}},
 	{"maintenance.run", func(deps Deps, p dashcontract.Principal) error {
 		_, err := maintenanceRunHandler(deps)(context.Background(), struct{}{}, p)
 		return err

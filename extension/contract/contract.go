@@ -120,6 +120,18 @@ func Register(
 	if err := dispatcher.RegisterCommand(d, contributorName, "permissions.delete", 1, permissionsDeleteHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register permissions.delete: %w", err)
 	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "assignments.list", 1, assignmentsListHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register assignments.list: %w", err)
+	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "assignments.expiring", 1, assignmentsExpiringHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register assignments.expiring: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "assignments.create", 1, assignmentsCreateHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register assignments.create: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "assignments.delete", 1, assignmentsDeleteHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register assignments.delete: %w", err)
+	}
 	if err := dispatcher.RegisterCommand(d, contributorName, "maintenance.run", 1, maintenanceRunHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register maintenance.run: %w", err)
 	}

@@ -64,6 +64,10 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"permissions.create":          dashcontract.IntentKindCommand,
 		"permissions.update":          dashcontract.IntentKindCommand,
 		"permissions.delete":          dashcontract.IntentKindCommand,
+		"assignments.list":            dashcontract.IntentKindQuery,
+		"assignments.expiring":        dashcontract.IntentKindQuery,
+		"assignments.create":          dashcontract.IntentKindCommand,
+		"assignments.delete":          dashcontract.IntentKindCommand,
 		"maintenance.run":             dashcontract.IntentKindCommand,
 		"maintenance.cacheInvalidate": dashcontract.IntentKindCommand,
 	}

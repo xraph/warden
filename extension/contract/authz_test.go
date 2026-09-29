@@ -42,6 +42,10 @@ var wantPolicies = map[string]struct{ action, resource string }{
 	"permissions.create":          {"manage", "warden:permission"},
 	"permissions.update":          {"manage", "warden:permission"},
 	"permissions.delete":          {"manage", "warden:permission"},
+	"assignments.list":            {"read", "warden:assignment"},
+	"assignments.expiring":        {"read", "warden:assignment"},
+	"assignments.create":          {"manage", "warden:assignment"},
+	"assignments.delete":          {"manage", "warden:assignment"},
 	"maintenance.run":             {"manage", "warden:maintenance"},
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
 }
