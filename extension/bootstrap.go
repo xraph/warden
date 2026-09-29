@@ -42,6 +42,13 @@ var bootstrapPermissions = []bootstrapPermission{
 	{"warden:relation", "read"},
 	{"warden:policy", "read"},
 	{"warden:resourcetype", "read"},
+
+	// The dashboard contract gates every intent through the same engine
+	// decision (see extension/contract/authz.go). These three resources
+	// exist only on that surface.
+	{"warden:maintenance", "manage"},
+	{"warden:config", "read"},
+	{"warden:overview", "read"},
 }
 
 func (p bootstrapPermission) name() string { return p.resource + ":" + p.action }

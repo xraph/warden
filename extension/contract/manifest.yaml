@@ -12,48 +12,53 @@ contributor:
     priority: 20
     home: /
 
+# Every intent, queries included, delegates to the `warden.engine` authorizer
+# registered in contract.go (see authz.go). A Forge intent with an empty
+# `requires` is served to anyone, including a request with no signed-in user,
+# so an intent added here without the line is a hole. manifest_test.go and
+# authz_test.go fail if one is missing.
 intents:
-  - { name: config.detail,          kind: query, version: 1, capability: read }
-  - { name: overview.stats,         kind: query, version: 1, capability: read }
-  - { name: overview.recentChecks,  kind: query, version: 1, capability: read }
-  - { name: namespaces.list,        kind: query, version: 1, capability: read }
-  - { name: roles.list,   kind: query, version: 1, capability: read }
-  - { name: roles.detail, kind: query, version: 1, capability: read }
+  - { name: config.detail,          kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: overview.stats,         kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: overview.recentChecks,  kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: namespaces.list,        kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: roles.list,   kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: roles.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # A create changes the list and the counters, and can change another
   # role's children if it names a parent.
-  - { name: roles.create, kind: command, version: 1, capability: write,
+  - { name: roles.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [roles.list, roles.detail, overview.stats, namespaces.list] }
   # An update can change the name shown in the list, the parent (which moves
   # this role between two other roles' children), and nothing else.
-  - { name: roles.update, kind: command, version: 1, capability: write,
+  - { name: roles.update, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [roles.list, roles.detail] }
   # A delete cascades: DeleteAssignmentsByRole removes every assignment of
   # this role, so the assignments list and the counters change too.
-  - { name: roles.delete, kind: command, version: 1, capability: write,
+  - { name: roles.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [roles.list, roles.detail, overview.stats] }
   # A grant change alters the role's detail page. It does NOT change the
   # roles list, which shows no grant information, and it does not change
   # any counter.
-  - { name: roles.attachPermission, kind: command, version: 1, capability: write,
+  - { name: roles.attachPermission, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [roles.detail] }
-  - { name: roles.detachPermission, kind: command, version: 1, capability: write,
+  - { name: roles.detachPermission, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [roles.detail] }
-  - { name: roles.setPermissions, kind: command, version: 1, capability: write,
+  - { name: roles.setPermissions, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [roles.detail] }
-  - { name: permissions.list,   kind: query, version: 1, capability: read }
-  - { name: permissions.detail, kind: query, version: 1, capability: read }
+  - { name: permissions.list,   kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: permissions.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # A new permission can appear in a role's attach picker, and creates a
   # namespace entry if it is the first thing in that namespace.
-  - { name: permissions.create, kind: command, version: 1, capability: write,
+  - { name: permissions.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [permissions.list, overview.stats, namespaces.list] }
-  - { name: permissions.update, kind: command, version: 1, capability: write,
+  - { name: permissions.update, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [permissions.list, permissions.detail] }
   # A delete removes junction rows, so any role's detail page can change.
-  - { name: permissions.delete, kind: command, version: 1, capability: write,
+  - { name: permissions.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [permissions.list, permissions.detail, roles.detail, overview.stats] }
-  - { name: maintenance.run, kind: command, version: 1, capability: write,
+  - { name: maintenance.run, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [overview.stats, overview.recentChecks] }
-  - { name: maintenance.cacheInvalidate, kind: command, version: 1, capability: write }
+  - { name: maintenance.cacheInvalidate, kind: command, version: 1, requires: { warden: warden.engine }, capability: write }
 
 queries:
   config:

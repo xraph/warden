@@ -30,6 +30,27 @@ That option exists for local development and test harnesses, not production: wit
 
 Because authentication is on by default, a freshly registered extension has no role holder: nobody can call the management API until something grants a role. Call `Extension.BootstrapAdmin(ctx, tenantID, subject)` once per tenant, right after `Start`, to create the idempotent `warden-admin` system role and assign it to a known subject (see [Forge Extension](/docs/integration/forge-extension#granting-yourself-access-bootstrapadmin)). Do this from a deploy step or an init container you control, not from an open route.
 
+## The dashboard is a second door
+
+The Forge dashboard talks to Warden through a contract path, separate from the REST routes under `base_path`. Its commands can create, edit and delete roles and permissions, replace a role's grants, run maintenance and flush the cache. `auth.require_identity` and `disable_routes` don't touch it.
+
+Warden gates it the same way it gates REST. Every dashboard intent, reads included, needs a signed-in dashboard user and an engine decision for that user in the configured tenant. A request with no user is refused, even when `dashboard.tenant_id` is set. Here's what each intent asks the engine:
+
+| Intents | Action | Resource |
+| --- | --- | --- |
+| `roles.list`, `roles.detail` | `read` | `warden:role` |
+| `roles.create`, `roles.update`, `roles.delete`, `roles.attachPermission`, `roles.detachPermission`, `roles.setPermissions` | `manage` | `warden:role` |
+| `permissions.list`, `permissions.detail` | `read` | `warden:permission` |
+| `permissions.create`, `permissions.update`, `permissions.delete` | `manage` | `warden:permission` |
+| `overview.recentChecks` | `read_audit` | `warden:check_log` |
+| `overview.stats`, `namespaces.list` | `read` | `warden:overview` |
+| `config.detail` | `read` | `warden:config` |
+| `maintenance.run`, `maintenance.cacheInvalidate` | `manage` | `warden:maintenance` |
+
+Three of those resources exist only on the dashboard: `warden:overview`, `warden:config` and `warden:maintenance`. `BootstrapAdmin` grants them along with the rest, so run it again on any tenant you bootstrapped before this change (it's idempotent, and only the missing grants are added). Give `warden:maintenance:manage` on purpose and sparingly: `maintenance.run` is engine-wide, so it purges expired assignments and old check log entries across every tenant, whichever tenant the caller is in.
+
+If your dashboard has auth turned off, nobody can sign in, so every intent is refused. That's the safe outcome. Turn dashboard auth on before you set `dashboard.tenant_id`.
+
 ## SDK-only deployments: disable_routes
 
 If your application only ever calls the engine in-process (`eng.Check`, middleware) and never needs the HTTP management API, set `disable_routes: true`. That removes the entire attack surface of the management API: there's nothing to authenticate against because nothing is mounted:
@@ -80,7 +101,8 @@ The store backends (`store/postgres`, `store/sqlite`, `store/mongo`) connect dir
 
 - TLS terminated in front of the app, never plaintext `base_path` outside a trusted network.
 - `auth.require_identity: true` (the default); reach for `WithInsecureAllowUnauthenticatedRoutes()` only in development.
-- `BootstrapAdmin` called from a controlled deploy step, not an open route.
+- `BootstrapAdmin` called from a controlled deploy step, not an open route, and re-run after an upgrade that adds permissions.
+- Dashboard auth on, and `warden:maintenance:manage` held by as few subjects as you can manage.
 - `disable_routes: true` if you never need the HTTP management API.
 - `declarative_strict: true` if you use declarative apply in production.
 - `disable_migrate: true` plus a separate `warden apply`/migrate step, for multi-replica deployments.

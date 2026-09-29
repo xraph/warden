@@ -11,8 +11,8 @@
 //
 // The dispatcher exposes no way to list registered handlers, so this test
 // enumerates them itself in tenantEnforcedHandlers and invokes each handler
-// func directly with a bare dashcontract.Principal{} and an empty
-// Deps.DefaultTenantID. That table's size is checked against
+// func directly, once as a signed-in user with no tenant and no
+// Deps.DefaultTenantID, once as an anonymous caller with one. That table's size is checked against
 // handlerIntentsFromSource (shared with manifest_test.go, which already
 // parses contract.go's real dispatcher.Register* calls), so a new handler
 // added to contract.go without a matching table entry here fails the count
@@ -26,6 +26,7 @@ import (
 
 	"github.com/xraph/warden"
 
+	dashauth "github.com/xraph/forge/extensions/dashboard/auth"
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
 
@@ -40,80 +41,80 @@ const tenantExemptIntent = "config.detail"
 // returns whatever error it produced (nil if it did not refuse).
 type tenantEnforcementCase struct {
 	intent string
-	call   func(deps Deps) error
+	call   func(deps Deps, p dashcontract.Principal) error
 }
 
 var tenantEnforcedHandlers = []tenantEnforcementCase{
-	{"overview.stats", func(deps Deps) error {
-		_, err := overviewStatsHandler(deps)(context.Background(), struct{}{}, dashcontract.Principal{})
+	{"overview.stats", func(deps Deps, p dashcontract.Principal) error {
+		_, err := overviewStatsHandler(deps)(context.Background(), struct{}{}, p)
 		return err
 	}},
-	{"overview.recentChecks", func(deps Deps) error {
-		_, err := overviewRecentChecksHandler(deps)(context.Background(), RecentChecksInput{}, dashcontract.Principal{})
+	{"overview.recentChecks", func(deps Deps, p dashcontract.Principal) error {
+		_, err := overviewRecentChecksHandler(deps)(context.Background(), RecentChecksInput{}, p)
 		return err
 	}},
-	{"namespaces.list", func(deps Deps) error {
-		_, err := namespacesListHandler(deps)(context.Background(), struct{}{}, dashcontract.Principal{})
+	{"namespaces.list", func(deps Deps, p dashcontract.Principal) error {
+		_, err := namespacesListHandler(deps)(context.Background(), struct{}{}, p)
 		return err
 	}},
-	{"roles.list", func(deps Deps) error {
-		_, err := rolesListHandler(deps)(context.Background(), RolesListInput{}, dashcontract.Principal{})
+	{"roles.list", func(deps Deps, p dashcontract.Principal) error {
+		_, err := rolesListHandler(deps)(context.Background(), RolesListInput{}, p)
 		return err
 	}},
-	{"roles.detail", func(deps Deps) error {
-		_, err := rolesDetailHandler(deps)(context.Background(), RoleDetailInput{}, dashcontract.Principal{})
+	{"roles.detail", func(deps Deps, p dashcontract.Principal) error {
+		_, err := rolesDetailHandler(deps)(context.Background(), RoleDetailInput{}, p)
 		return err
 	}},
-	{"roles.create", func(deps Deps) error {
-		_, err := rolesCreateHandler(deps)(context.Background(), RoleCreateInput{}, dashcontract.Principal{})
+	{"roles.create", func(deps Deps, p dashcontract.Principal) error {
+		_, err := rolesCreateHandler(deps)(context.Background(), RoleCreateInput{}, p)
 		return err
 	}},
-	{"roles.update", func(deps Deps) error {
-		_, err := rolesUpdateHandler(deps)(context.Background(), RoleUpdateInput{}, dashcontract.Principal{})
+	{"roles.update", func(deps Deps, p dashcontract.Principal) error {
+		_, err := rolesUpdateHandler(deps)(context.Background(), RoleUpdateInput{}, p)
 		return err
 	}},
-	{"roles.delete", func(deps Deps) error {
-		_, err := rolesDeleteHandler(deps)(context.Background(), RoleDeleteInput{}, dashcontract.Principal{})
+	{"roles.delete", func(deps Deps, p dashcontract.Principal) error {
+		_, err := rolesDeleteHandler(deps)(context.Background(), RoleDeleteInput{}, p)
 		return err
 	}},
-	{"roles.attachPermission", func(deps Deps) error {
-		_, err := rolesAttachPermissionHandler(deps)(context.Background(), RolePermissionInput{}, dashcontract.Principal{})
+	{"roles.attachPermission", func(deps Deps, p dashcontract.Principal) error {
+		_, err := rolesAttachPermissionHandler(deps)(context.Background(), RolePermissionInput{}, p)
 		return err
 	}},
-	{"roles.detachPermission", func(deps Deps) error {
-		_, err := rolesDetachPermissionHandler(deps)(context.Background(), RolePermissionInput{}, dashcontract.Principal{})
+	{"roles.detachPermission", func(deps Deps, p dashcontract.Principal) error {
+		_, err := rolesDetachPermissionHandler(deps)(context.Background(), RolePermissionInput{}, p)
 		return err
 	}},
-	{"roles.setPermissions", func(deps Deps) error {
-		_, err := rolesSetPermissionsHandler(deps)(context.Background(), RoleSetPermissionsInput{}, dashcontract.Principal{})
+	{"roles.setPermissions", func(deps Deps, p dashcontract.Principal) error {
+		_, err := rolesSetPermissionsHandler(deps)(context.Background(), RoleSetPermissionsInput{}, p)
 		return err
 	}},
-	{"permissions.list", func(deps Deps) error {
-		_, err := permissionsListHandler(deps)(context.Background(), PermissionsListInput{}, dashcontract.Principal{})
+	{"permissions.list", func(deps Deps, p dashcontract.Principal) error {
+		_, err := permissionsListHandler(deps)(context.Background(), PermissionsListInput{}, p)
 		return err
 	}},
-	{"permissions.detail", func(deps Deps) error {
-		_, err := permissionsDetailHandler(deps)(context.Background(), PermissionDetailInput{}, dashcontract.Principal{})
+	{"permissions.detail", func(deps Deps, p dashcontract.Principal) error {
+		_, err := permissionsDetailHandler(deps)(context.Background(), PermissionDetailInput{}, p)
 		return err
 	}},
-	{"permissions.create", func(deps Deps) error {
-		_, err := permissionsCreateHandler(deps)(context.Background(), PermissionCreateInput{}, dashcontract.Principal{})
+	{"permissions.create", func(deps Deps, p dashcontract.Principal) error {
+		_, err := permissionsCreateHandler(deps)(context.Background(), PermissionCreateInput{}, p)
 		return err
 	}},
-	{"permissions.update", func(deps Deps) error {
-		_, err := permissionsUpdateHandler(deps)(context.Background(), PermissionUpdateInput{}, dashcontract.Principal{})
+	{"permissions.update", func(deps Deps, p dashcontract.Principal) error {
+		_, err := permissionsUpdateHandler(deps)(context.Background(), PermissionUpdateInput{}, p)
 		return err
 	}},
-	{"permissions.delete", func(deps Deps) error {
-		_, err := permissionsDeleteHandler(deps)(context.Background(), PermissionDeleteInput{}, dashcontract.Principal{})
+	{"permissions.delete", func(deps Deps, p dashcontract.Principal) error {
+		_, err := permissionsDeleteHandler(deps)(context.Background(), PermissionDeleteInput{}, p)
 		return err
 	}},
-	{"maintenance.run", func(deps Deps) error {
-		_, err := maintenanceRunHandler(deps)(context.Background(), struct{}{}, dashcontract.Principal{})
+	{"maintenance.run", func(deps Deps, p dashcontract.Principal) error {
+		_, err := maintenanceRunHandler(deps)(context.Background(), struct{}{}, p)
 		return err
 	}},
-	{"maintenance.cacheInvalidate", func(deps Deps) error {
-		_, err := cacheInvalidateHandler(deps)(context.Background(), CacheInvalidateInput{}, dashcontract.Principal{})
+	{"maintenance.cacheInvalidate", func(deps Deps, p dashcontract.Principal) error {
+		_, err := cacheInvalidateHandler(deps)(context.Background(), CacheInvalidateInput{}, p)
 		return err
 	}},
 }
@@ -148,9 +149,9 @@ func TestHandlers_RefuseWithoutTenant(t *testing.T) {
 				t.Fatalf("exempt intent %q must not also appear in tenantEnforcedHandlers", tc.intent)
 			}
 
-			err := tc.call(deps)
+			err := tc.call(deps, signedInNoTenant())
 			if err == nil {
-				t.Fatalf("%s: a bare Principal{} with no DefaultTenantID was not refused; a handler that reaches "+
+				t.Fatalf("%s: a signed-in principal with no tenant claim and no DefaultTenantID was not refused; a handler that reaches "+
 					"the store with an empty tenant ID matches every tenant's rows instead of none", tc.intent)
 			}
 			var ce *dashcontract.Error
@@ -158,5 +159,38 @@ func TestHandlers_RefuseWithoutTenant(t *testing.T) {
 				t.Fatalf("%s: want a CodePermissionDenied refusal from tenantFrom, got %v", tc.intent, err)
 			}
 		})
+	}
+}
+
+// TestHandlers_RefuseAnAnonymousCallerEvenWithADefaultTenant is the C1
+// regression. Deps.DefaultTenantID is a convenience for single-tenant
+// deployments, and it used to make a bare Principal{} (no user at all)
+// resolve to a real tenant, so a caller the dashboard never authenticated
+// could read and write that tenant's catalog. Every handler except the
+// tenant-free config.detail must refuse before it touches the store.
+func TestHandlers_RefuseAnAnonymousCallerEvenWithADefaultTenant(t *testing.T) {
+	eng := testEngine(t, warden.Config{})
+	deps := Deps{Engine: eng, DefaultTenantID: "t1"}
+
+	for _, tc := range tenantEnforcedHandlers {
+		tc := tc
+		t.Run(tc.intent, func(t *testing.T) {
+			err := tc.call(deps, dashcontract.Principal{})
+			if err == nil {
+				t.Fatalf("%s: an anonymous principal was served under DefaultTenantID", tc.intent)
+			}
+			var ce *dashcontract.Error
+			if !errors.As(err, &ce) || ce.Code != dashcontract.CodeUnauthenticated {
+				t.Fatalf("%s: want CodeUnauthenticated, got %v", tc.intent, err)
+			}
+		})
+	}
+}
+
+func TestTenantFromRefusesAUserWithNoSubject(t *testing.T) {
+	deps := Deps{DefaultTenantID: "t1"}
+	p := dashcontract.Principal{User: &dashauth.UserInfo{}}
+	if _, err := tenantFrom(p, deps); err == nil {
+		t.Fatal("a user with an empty subject must not resolve a tenant")
 	}
 }

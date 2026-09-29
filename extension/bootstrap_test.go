@@ -45,11 +45,12 @@ func TestBootstrapAdmin_CreatesRoleAndPermissions(t *testing.T) {
 		t.Errorf("role.CreatedBy = %q, want %q", r.CreatedBy, warden.SystemActor.ID)
 	}
 
-	// bootstrapPermissions lists 14 entries: 6 manage + read_audit + check
-	// (8, matching the brief's named list) plus the 6 "read" companions
-	// the brief's amendment adds ("grant read to the admin role too").
-	if len(bootstrapPermissions) != 14 {
-		t.Fatalf("bootstrapPermissions has %d entries, want 14 (8 manage/check/read_audit + 6 read companions); test assertions below assume this", len(bootstrapPermissions))
+	// bootstrapPermissions lists 17 entries: 6 manage + read_audit + check
+	// (8, matching the REST API's named list), the 6 "read" companions, and
+	// the three the dashboard contract's gate adds: warden:maintenance:manage,
+	// warden:config:read and warden:overview:read.
+	if len(bootstrapPermissions) != 17 {
+		t.Fatalf("bootstrapPermissions has %d entries, want 17 (8 manage/check/read_audit + 6 read companions + 3 dashboard); test assertions below assume this", len(bootstrapPermissions))
 	}
 
 	perms, err := st.ListRolePermissions(ctx, bootstrapTenant, r.ID)
@@ -183,5 +184,35 @@ func TestBootstrapAdmin_EnablesEnforceAfterBootstrap(t *testing.T) {
 	}
 	if err := ext.Engine().Enforce(ctx, req); err != nil {
 		t.Fatalf("Enforce(alice, manage, warden:role) failed after bootstrap: %v", err)
+	}
+}
+
+func TestBootstrapAdmin_GrantsTheDashboardContractPermissions(t *testing.T) {
+	ext := newBootstrappedExtension(t, "bootstrap-dashboard")
+	ctx := context.Background()
+	subject := warden.Subject{Kind: warden.SubjectUser, ID: "alice"}
+	if err := ext.BootstrapAdmin(ctx, bootstrapTenant, subject); err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+
+	// Every (action, resource) pair the contract's intent table requires.
+	for _, c := range []struct{ action, resource string }{
+		{"manage", "warden:maintenance"},
+		{"read", "warden:config"},
+		{"read", "warden:overview"},
+		{"read_audit", "warden:check_log"},
+		{"read", "warden:role"},
+		{"read", "warden:permission"},
+		{"manage", "warden:permission"},
+	} {
+		req := &warden.CheckRequest{
+			Subject:  subject,
+			Action:   warden.Action{Name: c.action},
+			Resource: warden.Resource{Type: c.resource},
+			TenantID: bootstrapTenant,
+		}
+		if err := ext.Engine().Enforce(ctx, req); err != nil {
+			t.Errorf("bootstrap admin lacks %s on %s: %v", c.action, c.resource, err)
+		}
 	}
 }

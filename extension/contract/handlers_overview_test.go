@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store/memory"
 
+	dashauth "github.com/xraph/forge/extensions/dashboard/auth"
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
 
@@ -21,8 +22,20 @@ import (
 // handler resolves its tenant from the principal and from Deps, never from
 // ctx. A test that seeded the context would pass against a handler that
 // refuses every real request.
+//
+// It also carries a signed-in user, because tenantFrom refuses a principal
+// with no identity. Tests that want the anonymous case build their own.
 func principalFor(tenantID string) dashcontract.Principal {
-	return dashcontract.Principal{Claims: map[string]any{"tenant_id": tenantID}}
+	return dashcontract.Principal{
+		User:   &dashauth.UserInfo{Subject: "tester"},
+		Claims: map[string]any{"tenant_id": tenantID},
+	}
+}
+
+// signedInNoTenant is a signed-in user whose principal carries no tenant
+// claim: identity is settled, so a refusal can only be about the tenant.
+func signedInNoTenant() dashcontract.Principal {
+	return dashcontract.Principal{User: &dashauth.UserInfo{Subject: "tester"}}
 }
 
 // seedAllow creates a tenant where user:alice may read document. This
@@ -56,7 +69,7 @@ func TestOverviewStatsWithoutATenantRefuses(t *testing.T) {
 	eng := testEngine(t, warden.Config{})
 	h := overviewStatsHandler(Deps{Engine: eng})
 
-	_, err := h(context.Background(), struct{}{}, dashcontract.Principal{})
+	_, err := h(context.Background(), struct{}{}, signedInNoTenant())
 	if err == nil {
 		t.Fatal("want an error when no tenant can be resolved")
 	}
@@ -77,7 +90,7 @@ func TestOverviewStatsIgnoresAContextScope(t *testing.T) {
 	h := overviewStatsHandler(Deps{Engine: eng})
 
 	ctx := warden.WithTenant(context.Background(), "", "t1")
-	if _, err := h(ctx, struct{}{}, dashcontract.Principal{}); err == nil {
+	if _, err := h(ctx, struct{}{}, signedInNoTenant()); err == nil {
 		t.Fatal("a context scope must not satisfy tenant resolution on the contract path")
 	}
 }
@@ -137,7 +150,7 @@ func TestDefaultTenantIDIsUsedWhenTheClaimIsAbsent(t *testing.T) {
 	}
 	h := overviewStatsHandler(Deps{Engine: eng, DefaultTenantID: "t1"})
 
-	got, err := h(context.Background(), struct{}{}, dashcontract.Principal{})
+	got, err := h(context.Background(), struct{}{}, signedInNoTenant())
 	if err != nil {
 		t.Fatalf("with DefaultTenantID: %v", err)
 	}
@@ -204,7 +217,7 @@ func TestABrokenTenantClaimRefusesRatherThanFallingBack(t *testing.T) {
 		"nil":          nil,
 	} {
 		t.Run(name, func(t *testing.T) {
-			p := dashcontract.Principal{Claims: map[string]any{"tenant_id": claim}}
+			p := dashcontract.Principal{User: &dashauth.UserInfo{Subject: "tester"}, Claims: map[string]any{"tenant_id": claim}}
 			_, err := h(context.Background(), struct{}{}, p)
 			if err == nil {
 				t.Fatalf("a %s tenant claim must refuse, not fall back to DefaultTenantID", name)

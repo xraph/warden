@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"context"
 	"os"
 	"regexp"
 	"strconv"
@@ -29,7 +30,11 @@ func TestManifest_Loads(t *testing.T) {
 
 func TestManifest_Validates(t *testing.T) {
 	m := loadManifest(t)
-	if err := loader.Validate(m, dashcontract.NewWardenRegistry()); err != nil {
+	wreg := dashcontract.NewWardenRegistry()
+	if err := wreg.Register(wardenDelegateName, denyAll{}); err != nil {
+		t.Fatalf("register delegate: %v", err)
+	}
+	if err := loader.Validate(m, wreg); err != nil {
 		t.Errorf("validate: %v", err)
 	}
 }
@@ -141,4 +146,12 @@ func TestManifest_IntentsMatchDispatcherRegistrations(t *testing.T) {
 			t.Errorf("contract.go registers a handler for intent %q but the manifest does not declare it", name)
 		}
 	}
+}
+
+// denyAll is a stand-in delegate for tests that only need the manifest to
+// validate.
+type denyAll struct{}
+
+func (denyAll) Authorize(context.Context, dashcontract.Principal, dashcontract.Action) (dashcontract.Decision, error) {
+	return dashcontract.Decision{}, nil
 }

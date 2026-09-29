@@ -51,7 +51,7 @@ With authentication on by default, a freshly registered extension has no role ho
 func (e *Extension) BootstrapAdmin(ctx context.Context, tenantID string, subject warden.Subject) error
 ```
 
-It creates (idempotently, by slug `warden-admin`) a system role in `tenantID` with `manage` and `read` on every entity plus `warden:authz:check` and `warden:check_log:read_audit`, and assigns it to `subject`. Call it once per tenant, typically right after `Start`:
+It creates (idempotently, by slug `warden-admin`) a system role in `tenantID` with `manage` and `read` on every entity plus `warden:authz:check`, `warden:check_log:read_audit` and the three dashboard-only grants (`warden:maintenance:manage`, `warden:config:read`, `warden:overview:read`), and assigns it to `subject`. Call it once per tenant, typically right after `Start`:
 
 ```go
 ext := wardenext.New(wardenext.WithStore(store))

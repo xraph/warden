@@ -82,6 +82,7 @@ func requireEngine(deps Deps) error {
 // So this never defaults to empty. An unresolvable tenant refuses.
 //
 // Resolution order:
+//  0. A signed-in user, or refuse with UNAUTHENTICATED.
 //  1. The principal's claims, the canonical per-request surface.
 //  2. Deps.DefaultTenantID, for single-tenant deployments that configure it.
 //  3. Refuse with PERMISSION_DENIED.
@@ -95,6 +96,14 @@ func requireEngine(deps Deps) error {
 // refusals, which is the right behaviour for a dashboard that cannot tell
 // which tenant it is looking at.
 func tenantFrom(p dashcontract.Principal, deps Deps) (string, error) {
+	// Identity comes first. Deps.DefaultTenantID exists so a single-tenant
+	// deployment can answer without a tenant claim, not so a request with
+	// no user at all can be served under that tenant. Without this line a
+	// bare Principal{} resolved to the default and read or wrote the whole
+	// catalog.
+	if _, err := requireUser(p); err != nil {
+		return "", err
+	}
 	// A claim that is PRESENT but unusable is not the same as no claim, and
 	// the difference decides whether the fallback is safe.
 	//

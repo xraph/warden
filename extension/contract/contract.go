@@ -51,6 +51,13 @@ func Register(
 		return fmt.Errorf("warden/contract: Engine is required")
 	}
 
+	// The delegate must be registered before Validate: a manifest whose
+	// `requires.warden` names an unknown delegate fails validation, which
+	// is what keeps an ungated intent from loading silently.
+	if err := wreg.Register(wardenDelegateName, newEngineAuthorizer(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register %s: %w", wardenDelegateName, err)
+	}
+
 	m, err := loader.Load(bytes.NewReader(manifestYAML), "warden/extension/contract/manifest.yaml")
 	if err != nil {
 		return fmt.Errorf("warden/contract: load manifest: %w", err)
