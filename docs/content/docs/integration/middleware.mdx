@@ -63,13 +63,13 @@ By default, an unresolved subject gets `401 Unauthorized` before the engine is e
 
 ### AllowAnonymous
 
-Pass `middleware.AllowAnonymous()` to let a request with no resolvable identity through as an explicit `{Kind: warden.SubjectUser, ID: "anonymous"}` subject instead of the default 401:
+Pass `middleware.AllowAnonymous()` to let a request with no resolvable identity through as an explicit `{Kind: warden.SubjectUser, ID: "anonymous"}` subject (without it, the default is a 401):
 
 ```go
 middleware.Require(eng, "read", "document", middleware.AllowAnonymous())
 ```
 
-Because `"anonymous"` is a fixed, well-known subject ID rather than whatever a caller happened to send, it can only ever match roles an operator explicitly assigned to it. There's no way for a request to spoof its way into a different anonymous identity.
+Because `"anonymous"` is a fixed, well-known subject ID that a caller can't choose, it can only ever match roles an operator explicitly assigned to it. There's no way for a request to spoof its way into a different anonymous identity.
 
 ## Resource ID Extraction
 
@@ -96,4 +96,4 @@ Every middleware call (`Require`, `RequireAny`, `RequireAll`) also captures the 
 
 ## Denied and error logging
 
-A denied check logs `warden: access denied` at `Info` through `forge.LoggerFromContext`, with the subject, action, resource type, and decision: this is normal traffic, not an incident. A store or evaluator error logs `warden: authorization store error` at `Warn` instead, so an operator notices an outage rather than mistaking a wave of 503s for a wave of legitimate denials.
+A denied check logs `warden: access denied` at `Info` through `forge.LoggerFromContext`, with the subject, action, resource type, and decision: this is normal traffic, not an incident. A store or evaluator error logs `warden: authorization store error` at `Warn`, so an operator notices an outage and doesn't read a wave of 503s as a wave of legitimate denials.

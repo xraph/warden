@@ -51,7 +51,7 @@ extensions:
     declarative_strict: true
 ```
 
-With `declarative_strict: false` (the default), a bad `.warden` source logs a warning and the extension starts anyway. That's convenient in development, but it means a broken or malicious config change can silently fail to apply while the app keeps running on stale state. `declarative_strict: true` turns that into a startup failure instead, so a bad apply is caught by your deploy pipeline rather than discovered later as "why doesn't this permission exist."
+With `declarative_strict: false` (the default), a bad `.warden` source logs a warning and the extension starts anyway. That's convenient in development, but it means a broken or malicious config change can silently fail to apply while the app keeps running on stale state. `declarative_strict: true` turns that into a startup failure, so your deploy pipeline catches a bad apply before anyone has to ask why a permission doesn't exist.
 
 ## Separate migrations from application startup
 

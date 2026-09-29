@@ -15,7 +15,7 @@ Every `assignment.Assignment` carries `GrantedBy` (column `granted_by`), the act
 
 For a review of "who currently has access," page through `GET /v1/assignments` (permission: `read` on `warden:assignment`), which returns `[]*assignment.Assignment` filtered by `ListAssignmentsRequest` (`subject_kind`, `subject_id`, `role_id`, `limit`, `offset`) and scoped to whatever tenant the request resolves to. There's no `tenant_id` query parameter. Tenant scope comes from how your deployment resolves it per request (a header, subdomain, or whatever your Forge app's tenant-resolution middleware does), the same as every other route.
 
-If you're reviewing programmatically instead of through the API (e.g. from a scheduled job with direct store access), page through `assignment.Store.ListAssignments` with an explicit tenant filter:
+If you're reviewing programmatically (e.g. from a scheduled job with direct store access), skip the API and page through `assignment.Store.ListAssignments` with an explicit tenant filter:
 
 ```go
 filter := &assignment.ListFilter{
@@ -44,7 +44,7 @@ For the narrower "what's about to expire, and should it be renewed or left to la
 ListExpiringAssignments(ctx context.Context, tenantID string, before time.Time, limit int) ([]*Assignment, error)
 ```
 
-It returns the tenant's assignments expiring before `before`, oldest expiry first; `limit == 0` uses the backend default of 1000. This isn't wired to a REST endpoint today, so call it from Go (a scheduled job, a one-off script, or a CLI you write against `eng.Store()`) rather than expecting an HTTP route for it:
+It returns the tenant's assignments expiring before `before`, oldest expiry first; `limit == 0` uses the backend default of 1000. This isn't wired to a REST endpoint today, so call it from Go (a scheduled job, a one-off script, or a CLI you write against `eng.Store()`):
 
 ```go
 cutoff := time.Now().Add(30 * 24 * time.Hour) // expiring in the next 30 days

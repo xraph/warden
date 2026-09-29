@@ -110,7 +110,7 @@ type PolicyObligationFired interface {
 
 ### Audit Hook
 
-`Audit` fires for every mutation, in addition to whichever typed hook above also fires for it. Implement just this one interface if you want a single, complete audit stream instead of wiring up every typed hook individually:
+`Audit` fires for every mutation, in addition to whichever typed hook above also fires for it. Implement just this one interface if you want a single, complete audit stream without wiring up every typed hook individually:
 
 ```go
 type Event struct {
@@ -167,7 +167,7 @@ func (p *MyPlugin) OnAfterCheck(ctx context.Context, req, result any) error {
 }
 ```
 
-If a plugin implements none of the known hook interfaces, `Registry.Register` logs a warning: that's almost always a wiring mistake (wrong signature, typo'd method name) rather than something you meant to do. `Registry.Validate(p)` returns the list of hook names a plugin implements, so you can assert on it in a test.
+If a plugin implements none of the known hook interfaces, `Registry.Register` logs a warning. That's almost always a wiring mistake, such as a wrong signature or a typo'd method name. `Registry.Validate(p)` returns the list of hook names a plugin implements, so you can assert on it in a test.
 
 ## Error handling
 
@@ -190,4 +190,4 @@ eng, _ := warden.NewEngine(
 
 The Forge extension registers this plugin automatically. It's what `auth.audit_log: true` (the default) turns on. See [Forge Extension](/docs/integration/forge-extension) and [Monitoring](/docs/operations/monitoring) for the fields on each log line.
 
-There's no separate `audit_hook`/Chronicle package and no `observability`/Prometheus plugin package. Metrics are wired through `warden.WithMetrics` (or, under the Forge extension, automatically from `Extension.Metrics()`) instead of a plugin. See [Monitoring](/docs/operations/monitoring) for the full metric list.
+There's no separate `audit_hook`/Chronicle package and no `observability`/Prometheus plugin package. Metrics are wired through `warden.WithMetrics` (or, under the Forge extension, automatically from `Extension.Metrics()`), not through a plugin. See [Monitoring](/docs/operations/monitoring) for the full metric list.

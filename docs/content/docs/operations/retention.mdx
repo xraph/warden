@@ -25,7 +25,7 @@ A run that purges anything increments `warden_assignments_purged_total` and/or `
 
 ## Per-subject and per-tenant erasure
 
-Retention-window purging is time-based and blind to *who* the rows belong to. For a "delete this specific person's data" request (a GDPR/CCPA-style erasure request, or offboarding a subject), call the targeted deletes directly instead of waiting for the retention window:
+Retention-window purging is time-based and blind to *who* the rows belong to. For a "delete this specific person's data" request (a GDPR/CCPA-style erasure request, or offboarding a subject), call the targeted deletes directly. You don't need to wait for the retention window:
 
 ```go
 // Erase one subject's check-log history within a tenant.

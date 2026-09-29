@@ -16,7 +16,7 @@ Two places call `Migrate`:
 
 If you're upgrading across the migrations added for this hardening pass, three are worth reading before you deploy:
 
-- **`check_logs_v2`** adds `matched_by`, `obligations`, `request_id`, `trace_id`, `cached`, and `error` columns to `warden_check_logs`, plus an index on `(tenant_id, created_at DESC)`. These let an auditor reconstruct a decision from the row alone instead of replaying the check.
+- **`check_logs_v2`** adds `matched_by`, `obligations`, `request_id`, `trace_id`, `cached`, and `error` columns to `warden_check_logs`, plus an index on `(tenant_id, created_at DESC)`. These let an auditor reconstruct a decision from the row alone, with no need to replay the check.
 - **`actor_columns`** adds `created_by`/`updated_by` to `warden_roles`, `warden_permissions`, `warden_policies`, and `warden_resource_types`, and `created_by` to `warden_relations` (relations have no update path, so there's no `updated_by`). Existing rows backfill to an empty string; new mutations populate it from the caller's `warden.Actor`.
 - **`check_logs_indexes`** installs the append-only trigger on `warden_check_logs` (see [Retention](/docs/operations/retention)) and drops a now-redundant index. After this migration, any `UPDATE` against that table fails. Make sure nothing in your own tooling tries to edit a check-log row in place before you roll this out.
 
@@ -31,7 +31,9 @@ Every migration has a `Down`, so each is individually reversible, but treat `Dow
 
 ## SQLite and MongoDB
 
-SQLite (`store/sqlite`) and MongoDB (`store/mongo`) each implement their own `Migrate`. SQLite is single-writer: a second connection attempting a write while another holds the lock fails immediately unless a `busy_timeout` is configured. Set it in the DSN (`file:warden.db?_pragma=busy_timeout(5000)`) rather than through the `WithBusyTimeout` store option, since the DSN form reaches every connection Grove's pool ever opens, not just whichever one the option happened to land on. MongoDB's `Migrate` (and `AttachPermission`/`SetRolePermissions`, which touch more than one document) uses a session transaction only when the deployment supports one; see the [Backup and restore](/docs/operations/backup-restore) page and `store/mongo/doc.go` for the standalone-vs-replica-set distinction; a migration against a standalone `mongod` runs its writes sequentially without atomicity instead of failing outright.
+SQLite (`store/sqlite`) and MongoDB (`store/mongo`) each implement their own `Migrate`. SQLite is single-writer: a second connection attempting a write while another holds the lock fails immediately unless a `busy_timeout` is configured. Set it in the DSN (`file:warden.db?_pragma=busy_timeout(5000)`). The DSN form reaches every connection Grove's pool ever opens, while the `WithBusyTimeout` store option only reaches whichever connection the call happens to land on.
+
+MongoDB's `Migrate` runs Grove's migration orchestrator, which applies each migration step through a plain executor with no session transaction, on any topology (standalone, replica set, or sharded). Only `AttachPermission` and `SetRolePermissions` use a session transaction, and only when the deployment supports one (see `store/mongo/doc.go`). Operationally, a migration step that fails partway can leave a partially applied migration behind. Take a backup before you migrate a MongoDB store (see [Backup and restore](/docs/operations/backup-restore)) so you can restore if a step fails.
 
 ## Application version and schema version
 

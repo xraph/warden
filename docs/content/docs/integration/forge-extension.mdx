@@ -162,7 +162,7 @@ The extension resolves its store in this order:
 2. **Grove database** -- if `WithGroveDatabase(name)` was called, or a `grove.DB` is auto-discovered in the DI container, the matching store backend (`postgres`, `sqlite`, or `mongo`) is built from it.
 3. **DI-registered store** -- if a `store.Store` is already provided in the DI container, that's used.
 
-There's no in-memory fallback: if none of the above resolves a store, `Register` fails with `warden: create engine: warden: store is required` rather than starting on a store nothing else can see.
+There's no in-memory fallback: if none of the above resolves a store, `Register` fails with `warden: create engine: warden: store is required`.
 
 ## File-based configuration (YAML)
 
@@ -203,7 +203,7 @@ All defaults below come from `extension.DefaultConfig()`, which itself mirrors `
 | `declarative_paths` | `[]string` | `nil` | Additional paths to load alongside `declarative_path` |
 | `declarative_on_start` | `bool` | `false` | Auto-apply the declarative config at Start, after migrations |
 | `declarative_prune` | `bool` | `false` | Delete tenant entries not present in the config (kubectl-apply style) |
-| `declarative_strict` | `bool` | `false` | Fail startup when the apply produces diagnostics, instead of logging and continuing |
+| `declarative_strict` | `bool` | `false` | Fail startup when the apply produces diagnostics (when `false`, errors are logged and startup continues) |
 | `declarative_tenant_id` | `string` | `""` | Overrides any `tenant <id>` declared in source |
 | `auth.require_identity` | `bool` | `true` | Require a resolved identity on every route |
 | `auth.allow_anonymous_checks` | `bool` | `false` | Open the three check endpoints to unauthenticated callers |
