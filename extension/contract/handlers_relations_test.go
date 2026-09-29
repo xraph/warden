@@ -308,3 +308,174 @@ func TestRelationsListDoesNotIncludeDescendantNamespaces(t *testing.T) {
 		t.Errorf("namespace eng returned %+v, want only eng-doc and no descendant row", got.Items)
 	}
 }
+
+func TestRelationsListReturnsRealPages(t *testing.T) {
+	// Five rows, pages of two. Total is the full filtered count on every
+	// page, the pages are disjoint, and together they cover every row.
+	s := memory.New()
+	for _, oid := range []string{"a", "b", "c", "d", "e"} {
+		seedTuple(t, s, "", "document", oid, "viewer", "user", "alice")
+	}
+	h := relationsListHandler(Deps{Engine: engineOver(t, s)})
+	ctx := context.Background()
+
+	seen := map[string]struct{}{}
+	for _, page := range []struct{ offset, wantLen int }{{0, 2}, {2, 2}, {4, 1}} {
+		got, err := h(ctx, RelationsListInput{PageRequest: PageRequest{Limit: 2, Offset: page.offset}}, principalFor("t1"))
+		if err != nil {
+			t.Fatalf("offset %d: %v", page.offset, err)
+		}
+		if len(got.Items) != page.wantLen {
+			t.Errorf("offset %d: %d items, want %d", page.offset, len(got.Items), page.wantLen)
+		}
+		if got.Total != 5 {
+			t.Errorf("offset %d: total = %d, want 5 on every page", page.offset, got.Total)
+		}
+		if got.Limit != 2 || got.Offset != page.offset {
+			t.Errorf("offset %d: echoed limit/offset = %d/%d", page.offset, got.Limit, got.Offset)
+		}
+		for _, r := range got.Items {
+			if _, dup := seen[r.ObjectID]; dup {
+				t.Errorf("offset %d: %q appeared on an earlier page", page.offset, r.ObjectID)
+			}
+			seen[r.ObjectID] = struct{}{}
+		}
+	}
+	if len(seen) != 5 {
+		t.Errorf("pages covered %d distinct rows, want 5", len(seen))
+	}
+
+	past, err := h(ctx, RelationsListInput{PageRequest: PageRequest{Limit: 2, Offset: 10}}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("past the end: %v", err)
+	}
+	if len(past.Items) != 0 || past.Total != 5 {
+		t.Errorf("past the end: %d items, total %d, want 0 and 5", len(past.Items), past.Total)
+	}
+}
+
+func TestRelationsListFiltersOnEveryField(t *testing.T) {
+	// Each filter must narrow both the items and Total. A Total computed
+	// from a different filter than the items would make every pager wrong.
+	s := memory.New()
+	seedTuple(t, s, "", "document", "readme", "viewer", "user", "alice")  // 1
+	seedTuple(t, s, "", "document", "readme", "editor", "user", "bob")    // 2
+	seedTuple(t, s, "", "document", "spec", "viewer", "user", "alice")    // 3
+	seedTuple(t, s, "", "folder", "root", "parent", "document", "readme") // 4
+	seedTuple(t, s, "", "group", "eng", "member", "user", "alice")        // 5
+	// seedTuple has no subject-relation parameter, so row 6 is written directly.
+	userset := &relation.Tuple{
+		TenantID: "t1", ObjectType: "group", ObjectID: "eng", Relation: "member",
+		SubjectType: "group", SubjectID: "ops", SubjectRelation: "member",
+	}
+	if err := s.CreateRelation(context.Background(), userset); err != nil { // 6
+		t.Fatalf("create the userset tuple: %v", err)
+	}
+	h := relationsListHandler(Deps{Engine: engineOver(t, s)})
+
+	cases := []struct {
+		name  string
+		in    RelationsListInput
+		total int64
+		match func(RelationSummary) bool
+	}{
+		{"objectType", RelationsListInput{ObjectType: "document"}, 3, func(r RelationSummary) bool { return r.ObjectType == "document" }},
+		{"objectId", RelationsListInput{ObjectID: "readme"}, 2, func(r RelationSummary) bool { return r.ObjectID == "readme" }},
+		{"relation", RelationsListInput{Relation: "viewer"}, 2, func(r RelationSummary) bool { return r.Relation == "viewer" }},
+		{"subjectType", RelationsListInput{SubjectType: "user"}, 4, func(r RelationSummary) bool { return r.SubjectType == "user" }},
+		{"subjectId", RelationsListInput{SubjectID: "alice"}, 3, func(r RelationSummary) bool { return r.SubjectID == "alice" }},
+		{"subjectRelation", RelationsListInput{SubjectRelation: "member"}, 1, func(r RelationSummary) bool { return r.SubjectRelation == "member" }},
+		{"objectType and subjectId", RelationsListInput{ObjectType: "document", SubjectID: "alice"}, 2, func(r RelationSummary) bool {
+			return r.ObjectType == "document" && r.SubjectID == "alice"
+		}},
+	}
+	for _, tc := range cases {
+		got, err := h(context.Background(), tc.in, principalFor("t1"))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got.Total != tc.total || int64(len(got.Items)) != tc.total {
+			t.Errorf("%s: total %d with %d items, want %d of each", tc.name, got.Total, len(got.Items), tc.total)
+		}
+		for _, r := range got.Items {
+			if !tc.match(r) {
+				t.Errorf("%s: filter leaked %+v", tc.name, r)
+			}
+		}
+	}
+
+	// A filter and a page together: Total is the filtered count, not the
+	// size of the page.
+	paged, err := h(context.Background(), RelationsListInput{
+		PageRequest: PageRequest{Limit: 1}, ObjectType: "document", SubjectID: "alice",
+	}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("filter with paging: %v", err)
+	}
+	if len(paged.Items) != 1 || paged.Total != 2 {
+		t.Errorf("filter with paging: %d items, total %d, want 1 and 2", len(paged.Items), paged.Total)
+	}
+}
+
+func TestRelationsCreateStoresEveryFieldItWasGiven(t *testing.T) {
+	// Read the row back. An ack with an id proves nothing about what landed.
+	// Task 3's resource type delete guard finds tuples by namespace, so a
+	// namespace silently dropped here would surface far from its cause.
+	s := memory.New()
+	ctx := context.Background()
+	h := relationsCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	ack, err := h(ctx, RelationCreateInput{
+		NamespacePath: "eng/platform",
+		ObjectType:    "document", ObjectID: "readme",
+		Relation: "viewer", SubjectType: "group", SubjectID: "ops", SubjectRelation: "member",
+	}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("relations.create: %v", err)
+	}
+	rows, err := s.ListRelations(ctx, &relation.ListFilter{TenantID: "t1"})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("stored rows = %v, err %v", rows, err)
+	}
+	got := rows[0]
+	want := relation.Tuple{
+		TenantID: "t1", NamespacePath: "eng/platform",
+		ObjectType: "document", ObjectID: "readme", Relation: "viewer",
+		SubjectType: "group", SubjectID: "ops", SubjectRelation: "member",
+		CreatedBy: "tester",
+	}
+	if got.ID.String() != ack.ID || got.TenantID != want.TenantID || got.NamespacePath != want.NamespacePath ||
+		got.ObjectType != want.ObjectType || got.ObjectID != want.ObjectID || got.Relation != want.Relation ||
+		got.SubjectType != want.SubjectType || got.SubjectID != want.SubjectID ||
+		got.SubjectRelation != want.SubjectRelation || got.CreatedBy != want.CreatedBy {
+		t.Errorf("stored %+v (ack %q), want %+v", got, ack.ID, want)
+	}
+
+	// The same tuple in the tenant root is a different tuple, not a duplicate.
+	if _, err := h(ctx, RelationCreateInput{
+		ObjectType: "document", ObjectID: "readme",
+		Relation: "viewer", SubjectType: "group", SubjectID: "ops", SubjectRelation: "member",
+	}, principalFor("t1")); err != nil {
+		t.Errorf("same triple at the tenant root should be allowed: %v", err)
+	}
+}
+
+func TestRelationsCreateRefusesAnInvalidNamespace(t *testing.T) {
+	s := memory.New()
+	h := relationsCreateHandler(Deps{Engine: engineOver(t, s)})
+	for _, ns := range []string{"/eng", "eng/", "eng//platform", "Eng Platform"} {
+		_, err := h(context.Background(), RelationCreateInput{
+			NamespacePath: ns,
+			ObjectType:    "document", ObjectID: "readme",
+			Relation: "viewer", SubjectType: "user", SubjectID: "alice",
+		}, principalFor("t1"))
+		var ce *dashcontract.Error
+		if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
+			t.Errorf("namespace %q: want CodeBadRequest, got %v", ns, err)
+		}
+	}
+	rows, _ := s.ListRelations(context.Background(), &relation.ListFilter{TenantID: "t1"})
+	if len(rows) != 0 {
+		t.Errorf("a refused create stored %d rows", len(rows))
+	}
+}

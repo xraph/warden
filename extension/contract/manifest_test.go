@@ -259,3 +259,32 @@ func TestManifest_RelationListQueryIsDeclared(t *testing.T) {
 		t.Errorf("relationList points at %q, want relations.list", q.Intent)
 	}
 }
+
+func TestManifest_EveryCommandThatFeedsTheNamespaceListRefreshesIt(t *testing.T) {
+	// namespaces.list scans roles, permissions, policies, resource types,
+	// assignments and relations (handlers_namespaces.go). A command that
+	// creates or deletes one of those can add or drop a namespace, so it must
+	// invalidate the list. Assignments were missed once; this pins them and
+	// the other writers together so the gap cannot reopen.
+	m := loadManifest(t)
+	byName := map[string][]string{}
+	for _, in := range m.Intents {
+		byName[in.Name] = in.Invalidates
+	}
+	for _, intent := range []string{
+		"roles.create", "roles.delete",
+		"permissions.create", "permissions.delete",
+		"assignments.create", "assignments.delete",
+		"relations.create", "relations.delete",
+	} {
+		found := false
+		for _, v := range byName[intent] {
+			if v == "namespaces.list" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s does not invalidate namespaces.list", intent)
+		}
+	}
+}

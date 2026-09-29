@@ -62,10 +62,12 @@ intents:
   # A new binding changes the list, the expiring feed if it carries an
   # expiry, the counters, and the role's own detail page, which is where an
   # operator reads how many hold it.
+  # namespaces.list scans assignments too, so a binding in a new namespace
+  # adds one and deleting the last binding in a namespace can remove it.
   - { name: assignments.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [assignments.list, assignments.expiring, roles.detail, overview.stats] }
+      invalidates: [assignments.list, assignments.expiring, roles.detail, overview.stats, namespaces.list] }
   - { name: assignments.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [assignments.list, assignments.expiring, roles.detail, overview.stats] }
+      invalidates: [assignments.list, assignments.expiring, roles.detail, overview.stats, namespaces.list] }
   - { name: relations.list, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # A tuple change alters the list and the counters. It does NOT change any
   # role or permission surface: tuples are ReBAC and grant through the graph
