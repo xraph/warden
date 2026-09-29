@@ -257,9 +257,6 @@ func assignmentsCreateHandler(deps Deps) func(context.Context, AssignmentCreateI
 		// break first-run bootstrap from the dashboard. Assigning is a
 		// membership change, not an edit of the role.
 		now := time.Now()
-		if err := guardMemberCap(ctx, s, tenantID, r, now); err != nil {
-			return AckResponse{}, err
-		}
 		ctx = withActor(ctx, p)
 		a := &assignment.Assignment{
 			TenantID:      tenantID,
@@ -280,6 +277,14 @@ func assignmentsCreateHandler(deps Deps) func(context.Context, AssignmentCreateI
 				return AckResponse{}, badRequest("expiresAt is already in the past, so this assignment would grant nothing")
 			}
 			a.ExpiresAt = &when
+		}
+		// The cap goes LAST, after every input check, so a malformed request
+		// against a full role reports what is actually wrong with it rather
+		// than the cap. A subject who already holds the role is never
+		// refused by the cap, so a duplicate binding reaches the store and
+		// reports the duplicate.
+		if err := guardMemberCap(ctx, s, tenantID, r, in.SubjectKind, in.SubjectID, now); err != nil {
+			return AckResponse{}, err
 		}
 		if err := s.CreateAssignment(ctx, a); err != nil {
 			return AckResponse{}, mapWardenError(err)
@@ -344,9 +349,17 @@ func assignmentsExpiringHandler(deps Deps) func(context.Context, ExpiringInput, 
 		if hours <= 0 {
 			hours = defaultExpiringWindowHours
 		}
+		// Clamp like PageRequest.Clamp, do not fall back to the default. The
+		// store sorts ascending by expiry and includes rows that lapsed long
+		// ago, so a small page can be filled entirely by old lapsed grants and
+		// push every upcoming expiry off it. An oversized request gets the
+		// most the contract allows, not less than it would have got at the cap.
 		limit := in.Limit
-		if limit <= 0 || limit > maxPageLimit {
+		if limit <= 0 {
 			limit = defaultPageLimit
+		}
+		if limit > maxPageLimit {
+			limit = maxPageLimit
 		}
 		now := time.Now()
 		before := now.Add(time.Duration(hours) * time.Hour)

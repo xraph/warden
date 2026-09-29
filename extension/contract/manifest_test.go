@@ -192,3 +192,29 @@ func TestManifest_GrantChangesInvalidateThePermissionDetail(t *testing.T) {
 		}
 	}
 }
+
+func TestManifest_RoleChangesInvalidateTheAssignmentViews(t *testing.T) {
+	// AssignmentSummary denormalises roleSlug and roleName, so a rename
+	// leaves open assignment pages stale, and a role delete cascades through
+	// DeleteAssignmentsByRole into both the list and the expiring feed.
+	m := loadManifest(t)
+	byName := map[string][]string{}
+	for _, in := range m.Intents {
+		byName[in.Name] = in.Invalidates
+	}
+	has := func(intent, target string) bool {
+		for _, v := range byName[intent] {
+			if v == target {
+				return true
+			}
+		}
+		return false
+	}
+	for _, intent := range []string{"roles.update", "roles.delete"} {
+		for _, target := range []string{"assignments.list", "assignments.expiring"} {
+			if !has(intent, target) {
+				t.Errorf("%s does not invalidate %s", intent, target)
+			}
+		}
+	}
+}

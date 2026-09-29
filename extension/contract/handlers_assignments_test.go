@@ -2,6 +2,7 @@ package contract
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -498,6 +499,339 @@ func TestAssignmentsCreateRejectsAPastOrMalformedExpiry(t *testing.T) {
 		if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
 			t.Errorf("%s expiry: want CodeBadRequest, got %v", name, err)
 		}
+	}
+}
+
+// seedBinding binds a subject to a role at a namespace and resource.
+func seedBinding(t *testing.T, s *memory.Store, r *role.Role, subjectID, ns, resType, resID string) {
+	t.Helper()
+	a := &assignment.Assignment{
+		TenantID: "t1", NamespacePath: ns, RoleID: r.ID, SubjectKind: "user", SubjectID: subjectID,
+		ResourceType: resType, ResourceID: resID,
+	}
+	if err := s.CreateAssignment(context.Background(), a); err != nil {
+		t.Fatalf("seed binding %q at %q %s:%s: %v", subjectID, ns, resType, resID, err)
+	}
+}
+
+func subjectsOf(items []AssignmentSummary) map[string]bool {
+	out := map[string]bool{}
+	for _, a := range items {
+		out[a.SubjectID] = true
+	}
+	return out
+}
+
+func TestAssignmentsCapCountsDistinctSubjectsNotRows(t *testing.T) {
+	// Assignment uniqueness includes namespace, resource type and resource id,
+	// so one subject can hold several rows for one role. Alice on two
+	// documents is ONE member. Counting rows would fill a cap of 2 with her
+	// alone and refuse bob.
+	s := memory.New()
+	ctx := context.Background()
+	r := &role.Role{TenantID: "t1", Name: "Small", Slug: "small", MaxMembers: 2}
+	if err := s.CreateRole(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	h := assignmentsCreateHandler(Deps{Engine: engineOver(t, s)})
+	bind := func(who, resID string) error {
+		_, err := h(ctx, AssignmentCreateInput{
+			RoleID: r.ID.String(), SubjectKind: "user", SubjectID: who,
+			ResourceType: "doc", ResourceID: resID,
+		}, principalFor("t1"))
+		return err
+	}
+
+	if err := bind("alice", "1"); err != nil {
+		t.Fatalf("alice on doc 1: %v", err)
+	}
+	if err := bind("alice", "2"); err != nil {
+		t.Fatalf("alice on doc 2 is the same member and must be allowed: %v", err)
+	}
+	if err := bind("bob", "1"); err != nil {
+		t.Fatalf("bob is the second member of a cap of 2, but was refused: %v", err)
+	}
+	// The role is now full. A further binding for an EXISTING member adds
+	// nobody, so it must still succeed.
+	if err := bind("alice", "3"); err != nil {
+		t.Fatalf("a third binding for a subject who is already a member adds no member, got %v", err)
+	}
+	// A genuinely new subject is the one that must be refused.
+	err := bind("carol", "1")
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeConflict {
+		t.Fatalf("a third distinct member must be refused with CodeConflict, got %v", err)
+	}
+}
+
+func TestAssignmentsCapDoesNotConfuseSubjectKinds(t *testing.T) {
+	// user:alice and service:alice are different members.
+	s := memory.New()
+	ctx := context.Background()
+	r := &role.Role{TenantID: "t1", Name: "Small", Slug: "small", MaxMembers: 1}
+	if err := s.CreateRole(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	h := assignmentsCreateHandler(Deps{Engine: engineOver(t, s)})
+	if _, err := h(ctx, AssignmentCreateInput{RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "alice"}, principalFor("t1")); err != nil {
+		t.Fatalf("user alice: %v", err)
+	}
+	_, err := h(ctx, AssignmentCreateInput{RoleID: r.ID.String(), SubjectKind: "service", SubjectID: "alice"}, principalFor("t1"))
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeConflict {
+		t.Fatalf("service:alice is a different member and must hit the cap, got %v", err)
+	}
+}
+
+func TestAssignmentsCreateReportsTheRealErrorBeforeTheCap(t *testing.T) {
+	// The cap is checked last. A malformed request against a full role must
+	// say what is wrong with the request, and a duplicate binding by an
+	// existing member must say it is a duplicate, not that the role is full.
+	s := memory.New()
+	ctx := context.Background()
+	r := &role.Role{TenantID: "t1", Name: "Small", Slug: "small", MaxMembers: 1}
+	if err := s.CreateRole(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	seedBinding(t, s, r, "alice", "", "", "")
+	h := assignmentsCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	_, err := h(ctx, AssignmentCreateInput{
+		RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "bob", ExpiresAt: "tomorrow",
+	}, principalFor("t1"))
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
+		t.Errorf("malformed expiry on a full role: want CodeBadRequest, got %v", err)
+	}
+
+	_, err = h(ctx, AssignmentCreateInput{
+		RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "alice",
+	}, principalFor("t1"))
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeConflict {
+		t.Fatalf("duplicate on a full role: want CodeConflict, got %v", err)
+	}
+	if containsText(ce.Message, "capped") {
+		t.Errorf("a duplicate binding reported the cap instead of the duplicate: %q", ce.Message)
+	}
+}
+
+func TestAssignmentsCreateStoresWhatItWasGiven(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	r := seedRoles(t, s, "", "reader")[0]
+	h := assignmentsCreateHandler(Deps{Engine: engineOver(t, s)})
+	when := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
+
+	ack, err := h(ctx, AssignmentCreateInput{
+		RoleID: r.ID.String(), SubjectKind: "service", SubjectID: "svc-1",
+		NamespacePath: "eng/platform", ResourceType: "doc", ResourceID: "42",
+		ExpiresAt: when.Format(time.RFC3339),
+	}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("assignments.create: %v", err)
+	}
+	aid, _ := id.ParseAssignmentID(ack.ID)
+	got, err := s.GetAssignment(ctx, "t1", aid)
+	if err != nil {
+		t.Fatalf("stored assignment: %v", err)
+	}
+	if got.RoleID != r.ID {
+		t.Errorf("roleId = %s, want %s", got.RoleID, r.ID)
+	}
+	if got.TenantID != "t1" {
+		t.Errorf("tenant = %q, want t1", got.TenantID)
+	}
+	if got.SubjectKind != "service" || got.SubjectID != "svc-1" {
+		t.Errorf("subject = %s:%s, want service:svc-1", got.SubjectKind, got.SubjectID)
+	}
+	if got.NamespacePath != "eng/platform" {
+		t.Errorf("namespace = %q, want eng/platform", got.NamespacePath)
+	}
+	if got.ResourceType != "doc" || got.ResourceID != "42" {
+		t.Errorf("resource = %s:%s, want doc:42", got.ResourceType, got.ResourceID)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(when) {
+		t.Errorf("expiresAt = %v, want %v", got.ExpiresAt, when)
+	}
+}
+
+func TestAssignmentsCreateRejectsAnEmptySubjectIDAndABadNamespace(t *testing.T) {
+	s := memory.New()
+	r := seedRoles(t, s, "", "reader")[0]
+	h := assignmentsCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	cases := map[string]AssignmentCreateInput{
+		"empty subject id":  {RoleID: r.ID.String(), SubjectKind: "user"},
+		"leading slash":     {RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "alice", NamespacePath: "/eng"},
+		"reserved segment":  {RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "alice", NamespacePath: "system"},
+		"empty segment":     {RoleID: r.ID.String(), SubjectKind: "user", SubjectID: "alice", NamespacePath: "eng//x"},
+		"malformed role id": {RoleID: "nope", SubjectKind: "user", SubjectID: "alice"},
+	}
+	for name, in := range cases {
+		_, err := h(context.Background(), in, principalFor("t1"))
+		var ce *dashcontract.Error
+		if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
+			t.Errorf("%s: want CodeBadRequest, got %v", name, err)
+		}
+	}
+	if n, _ := s.CountAssignments(context.Background(), &assignment.ListFilter{TenantID: "t1"}); n != 0 {
+		t.Errorf("a refused create still stored %d rows", n)
+	}
+}
+
+func TestAssignmentsListFiltersByNamespaceWithPointerSemantics(t *testing.T) {
+	// nil means every namespace, a pointer to "" means the tenant root only,
+	// and a pointer to a path means exactly that namespace.
+	s := memory.New()
+	r := seedRoles(t, s, "", "reader")[0]
+	seedBinding(t, s, r, "root", "", "", "")
+	seedBinding(t, s, r, "eng", "eng", "", "")
+	seedBinding(t, s, r, "ops", "ops", "", "")
+	h := assignmentsListHandler(Deps{Engine: engineOver(t, s)})
+	ctx := context.Background()
+	str := func(v string) *string { return &v }
+
+	all, err := h(ctx, AssignmentsListInput{}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("nil namespace: %v", err)
+	}
+	if len(all.Items) != 3 || all.Total != 3 {
+		t.Errorf("nil namespace: %d items, total %d, want every namespace (3, 3)", len(all.Items), all.Total)
+	}
+
+	root, err := h(ctx, AssignmentsListInput{NamespacePath: str("")}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("root namespace: %v", err)
+	}
+	if got := subjectsOf(root.Items); len(got) != 1 || !got["root"] || root.Total != 1 {
+		t.Errorf("\"\" namespace: got %v total %d, want only the tenant root row", got, root.Total)
+	}
+
+	eng, err := h(ctx, AssignmentsListInput{NamespacePath: str("eng")}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("eng namespace: %v", err)
+	}
+	if got := subjectsOf(eng.Items); len(got) != 1 || !got["eng"] || eng.Total != 1 {
+		t.Errorf("eng namespace: got %v total %d, want only the eng row", got, eng.Total)
+	}
+}
+
+func TestAssignmentsListFiltersByRoleSubjectAndResourceAndCountsTheSame(t *testing.T) {
+	s := memory.New()
+	rs := seedRoles(t, s, "", "reader", "writer")
+	reader, writer := rs[0], rs[1]
+	seedBinding(t, s, reader, "alice", "", "", "")
+	seedBinding(t, s, reader, "bob", "", "", "")
+	seedBinding(t, s, writer, "alice", "", "", "")
+	seedBinding(t, s, writer, "alice", "", "doc", "7")
+	h := assignmentsListHandler(Deps{Engine: engineOver(t, s)})
+	ctx := context.Background()
+
+	byRole, err := h(ctx, AssignmentsListInput{RoleID: reader.ID.String()}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("by role: %v", err)
+	}
+	if len(byRole.Items) != 2 || byRole.Total != 2 {
+		t.Errorf("roleId filter: %d items, total %d, want 2, 2", len(byRole.Items), byRole.Total)
+	}
+	for _, a := range byRole.Items {
+		if a.RoleID != reader.ID.String() {
+			t.Errorf("roleId filter leaked a row for role %s", a.RoleID)
+		}
+	}
+
+	bySubject, err := h(ctx, AssignmentsListInput{SubjectID: "alice"}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("by subject: %v", err)
+	}
+	if len(bySubject.Items) != 3 || bySubject.Total != 3 {
+		t.Errorf("subjectId filter: %d items, total %d, want 3, 3", len(bySubject.Items), bySubject.Total)
+	}
+	if got := subjectsOf(bySubject.Items); len(got) != 1 || !got["alice"] {
+		t.Errorf("subjectId filter returned %v, want only alice", got)
+	}
+
+	byKind, err := h(ctx, AssignmentsListInput{SubjectKind: "service"}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("by kind: %v", err)
+	}
+	if len(byKind.Items) != 0 || byKind.Total != 0 {
+		t.Errorf("subjectKind filter: %d items, total %d, want 0, 0", len(byKind.Items), byKind.Total)
+	}
+
+	byRes, err := h(ctx, AssignmentsListInput{ResourceType: "doc", ResourceID: "7"}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("by resource: %v", err)
+	}
+	if len(byRes.Items) != 1 || byRes.Total != 1 || byRes.Items[0].ResourceID != "7" {
+		t.Errorf("resource filter: %+v total %d, want the one doc:7 row", byRes.Items, byRes.Total)
+	}
+
+	combined, err := h(ctx, AssignmentsListInput{
+		RoleID: writer.ID.String(), SubjectID: "alice", PageRequest: PageRequest{Limit: 1},
+	}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("combined: %v", err)
+	}
+	if len(combined.Items) != 1 || combined.Total != 2 {
+		t.Errorf("combined filter with limit 1: %d items, total %d, want 1 item of a total of 2", len(combined.Items), combined.Total)
+	}
+}
+
+func TestAssignmentsListRejectsAMalformedRoleID(t *testing.T) {
+	h := assignmentsListHandler(Deps{Engine: engineOver(t, memory.New())})
+	_, err := h(context.Background(), AssignmentsListInput{RoleID: "nope"}, principalFor("t1"))
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
+		t.Fatalf("want CodeBadRequest, got %v", err)
+	}
+}
+
+func TestAssignmentsExpiringClampsAnOversizedLimitToTheMaximum(t *testing.T) {
+	// The store sorts ascending by expiry and returns rows that lapsed long
+	// ago. Enough of them fill a default-sized page and push every upcoming
+	// expiry off it. An oversized limit must clamp to the maximum, not fall
+	// back to the default, or asking for more would get less.
+	s := memory.New()
+	r := seedRoles(t, s, "", "reader")[0]
+	for i := 0; i < defaultPageLimit+5; i++ {
+		lapsed := time.Now().Add(-time.Duration(i+2) * time.Hour)
+		seedAssignment(t, s, r.ID.String(), fmt.Sprintf("old-%d", i), &lapsed)
+	}
+	soon := time.Now().Add(2 * time.Hour)
+	seedAssignment(t, s, r.ID.String(), "upcoming", &soon)
+	h := assignmentsExpiringHandler(Deps{Engine: engineOver(t, s)})
+
+	got, err := h(context.Background(), ExpiringInput{WithinHours: 24, Limit: maxPageLimit * 10}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("assignments.expiring: %v", err)
+	}
+	if !subjectsOf(got.Items)["upcoming"] {
+		t.Errorf("an oversized limit returned %d rows and lost the upcoming expiry: it fell back to the default page instead of clamping to the max", len(got.Items))
+	}
+	if len(got.Items) != defaultPageLimit+6 {
+		t.Errorf("returned %d items, want all %d", len(got.Items), defaultPageLimit+6)
+	}
+}
+
+func TestAssignmentsExpiringHonoursASmallLimit(t *testing.T) {
+	s := memory.New()
+	r := seedRoles(t, s, "", "reader")[0]
+	for i := 0; i < 4; i++ {
+		when := time.Now().Add(time.Duration(i+1) * time.Hour)
+		seedAssignment(t, s, r.ID.String(), fmt.Sprintf("s-%d", i), &when)
+	}
+	h := assignmentsExpiringHandler(Deps{Engine: engineOver(t, s)})
+
+	got, err := h(context.Background(), ExpiringInput{WithinHours: 24, Limit: 2}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("assignments.expiring: %v", err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("returned %d items, want 2", len(got.Items))
+	}
+	if got.Items[0].SubjectID != "s-0" || got.Items[1].SubjectID != "s-1" {
+		t.Errorf("want the soonest two in ascending order, got %s then %s", got.Items[0].SubjectID, got.Items[1].SubjectID)
 	}
 }
 

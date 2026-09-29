@@ -29,13 +29,14 @@ intents:
   - { name: roles.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [roles.list, roles.detail, overview.stats, namespaces.list] }
   # An update can change the name shown in the list, the parent (which moves
-  # this role between two other roles' children), and nothing else.
+  # this role between two other roles' children), and the roleSlug/roleName
+  # that assignment rows denormalise. Nothing else.
   - { name: roles.update, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.list, roles.detail, permissions.detail] }
+      invalidates: [roles.list, roles.detail, permissions.detail, assignments.list, assignments.expiring] }
   # A delete cascades: DeleteAssignmentsByRole removes every assignment of
   # this role, so the assignments list and the counters change too.
   - { name: roles.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.list, roles.detail, permissions.detail, overview.stats, namespaces.list, assignments.list] }
+      invalidates: [roles.list, roles.detail, permissions.detail, overview.stats, namespaces.list, assignments.list, assignments.expiring] }
   # A grant change alters the role's detail page. It does NOT change the
   # roles list, which shows no grant information, and it does not change
   # any counter.

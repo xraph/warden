@@ -27,7 +27,7 @@ import (
 
 // guardMemberCap refuses an assignment that would take a role past its cap.
 //
-// Two rules that are easy to get backwards:
+// Three rules that are easy to get backwards:
 //
 // MaxMembers 0 means UNLIMITED. There is no field comment saying so, so the
 // evidence is the `omitempty` tag on role.Role.MaxMembers and the templ
@@ -39,7 +39,19 @@ import (
 // Only LIVE members occupy a seat. An expired assignment grants nothing
 // (ListRolesForSubject filters it), so counting it would let old grants pile
 // up until a role could never be assigned again.
-func guardMemberCap(ctx context.Context, s store.Store, tenantID string, r *role.Role, now time.Time) error {
+//
+// A member is a distinct (subject kind, subject id), not a row. Assignment
+// uniqueness includes namespace, resource type and resource id, so one
+// subject can hold several rows for one role. Counting rows would let one
+// person fill a role capped at two, and would refuse a third binding for a
+// subject who is already a member and so adds nobody. A subject who already
+// holds the role live is therefore never refused.
+//
+// This is check-then-insert and it is NOT atomic. No store offers a
+// conditional insert, so two concurrent creates can both pass the check and
+// take a role one past its cap. The cap is best-effort under concurrency,
+// not a guarantee; do not build anything that relies on it being exact.
+func guardMemberCap(ctx context.Context, s store.Store, tenantID string, r *role.Role, subjectKind, subjectID string, now time.Time) error {
 	if r.MaxMembers <= 0 {
 		return nil
 	}
@@ -47,19 +59,23 @@ func guardMemberCap(ctx context.Context, s store.Store, tenantID string, r *role
 	if err != nil {
 		return mapWardenError(err)
 	}
-	live := 0
+	type member struct{ kind, id string }
+	members := map[member]struct{}{}
 	for _, a := range held {
 		if isLive(a, now) {
-			live++
+			members[member{a.SubjectKind, a.SubjectID}] = struct{}{}
 		}
 	}
-	if live < r.MaxMembers {
+	if _, already := members[member{subjectKind, subjectID}]; already {
+		return nil
+	}
+	if len(members) < r.MaxMembers {
 		return nil
 	}
 	return &dashcontract.Error{
 		Code: dashcontract.CodeConflict,
 		Message: fmt.Sprintf("%q is capped at %d members and already has %d",
-			r.Name, r.MaxMembers, live),
+			r.Name, r.MaxMembers, len(members)),
 	}
 }
 
