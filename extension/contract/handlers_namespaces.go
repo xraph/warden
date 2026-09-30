@@ -2,7 +2,9 @@
 //
 // There is no namespace entity in warden. No table, no CRUD, no create. A
 // namespace exists only as a string on rows, so this scans the entity tables
-// for distinct values. The tenant root ("") is always present, because it is
+// for distinct values. Check log rows count too, because a leaf namespace
+// where checks run may hold no role, grant or assignment of its own. The
+// tenant root ("") is always present, because it is
 // a real place where things live and the filter needs it as an option
 // distinct from "all namespaces".
 package contract
@@ -12,6 +14,7 @@ import (
 	"sort"
 
 	"github.com/xraph/warden/assignment"
+	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/policy"
 	"github.com/xraph/warden/relation"
@@ -29,7 +32,9 @@ type NamespacesResponse struct {
 }
 
 // namespaceScanLimit caps how many rows of each kind are scanned for
-// distinct namespace values. A tenant with more entities than this in one
+// distinct namespace values. Stores list check logs newest first, so the scan
+// reads the newest rows and a namespace seen only on older rows is not
+// listed. A tenant with more entities than this in one
 // namespace still reports that namespace; a tenant whose namespaces are all
 // beyond the cap is pathological and would need a store-level DISTINCT,
 // which no backend exposes today.
@@ -93,6 +98,14 @@ func namespacesListHandler(deps Deps) func(context.Context, struct{}, dashcontra
 		}
 		for _, tp := range tuples {
 			seen[tp.NamespacePath] = struct{}{}
+		}
+
+		logs, err := s.ListCheckLogs(ctx, &checklog.QueryFilter{TenantID: tenantID, Limit: namespaceScanLimit})
+		if err != nil {
+			return NamespacesResponse{}, mapWardenError(err)
+		}
+		for _, l := range logs {
+			seen[l.NamespacePath] = struct{}{}
 		}
 
 		out := make([]string, 0, len(seen))

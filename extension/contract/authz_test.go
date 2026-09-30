@@ -66,6 +66,7 @@ var wantPolicies = map[string]struct{ action, resource string }{
 	"maintenance.run":             {"manage", "warden:maintenance"},
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
 	"playground.explain":          {"check", "warden:authz"},
+	"playground.batchCheck":       {"check", "warden:authz"},
 	"subjects.detail":             {"read", "warden:assignment"},
 }
 

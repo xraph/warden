@@ -206,6 +206,10 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := playgroundExplainHandler(deps)(context.Background(), PlaygroundExplainInput{}, p)
 		return err
 	}},
+	{"playground.batchCheck", func(deps Deps, p dashcontract.Principal) error {
+		_, err := playgroundBatchHandler(deps)(context.Background(), PlaygroundBatchInput{}, p)
+		return err
+	}},
 	{"subjects.detail", func(deps Deps, p dashcontract.Principal) error {
 		_, err := subjectsDetailHandler(deps)(context.Background(), SubjectDetailInput{}, p)
 		return err

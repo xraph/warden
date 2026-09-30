@@ -1,5 +1,8 @@
 // handlers_playground.go: the policy playground's explain intent.
 //
+// playground.batchCheck runs several checks as dry runs at one namespace and
+// reports each outcome.
+//
 // playground.explain runs one authorization check as a dry run and reports
 // what each model did. The check it builds writes no check log row, fires no
 // hooks and reads no cache, so it is a query: a viewer who may run checks may
@@ -8,6 +11,7 @@ package contract
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/xraph/warden"
@@ -175,4 +179,117 @@ func projectMatches(in []warden.MatchInfo) []CheckLogMatch {
 		out = append(out, CheckLogMatch{Source: m.Source, RuleID: m.RuleID, Detail: m.Detail})
 	}
 	return out
+}
+
+// PlaygroundBatchInput is the playground.batchCheck request.
+//
+// There is no tenant field, on purpose. The tenant is the caller's, resolved
+// by tenantFrom.
+type PlaygroundBatchInput struct {
+	// NamespacePath applies to every item. "" is the root.
+	NamespacePath string                `json:"namespacePath"`
+	Items         []PlaygroundBatchItem `json:"items"`
+}
+
+// PlaygroundBatchItem is one check of a batch.
+type PlaygroundBatchItem struct {
+	SubjectKind  string `json:"subjectKind"`
+	SubjectID    string `json:"subjectId"`
+	Action       string `json:"action"`
+	ResourceType string `json:"resourceType"`
+	ResourceID   string `json:"resourceId,omitempty"`
+}
+
+// PlaygroundBatchResult is the outcome of one item.
+type PlaygroundBatchResult struct {
+	// Decision is "error" when the item's check failed, with Error set.
+	Decision string `json:"decision"`
+	Allowed  bool   `json:"allowed"`
+	Reason   string `json:"reason,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// PlaygroundBatchResponse is the playground.batchCheck reply.
+type PlaygroundBatchResponse struct {
+	// Results is in item order, one per item.
+	Results []PlaygroundBatchResult `json:"results"`
+}
+
+// defaultMaxBatchChecks is the cap a Config with MaxBatchChecks of 0 gets,
+// which is what warden.Config documents ("Defaults to 100"). The extension
+// fills the field in, but an engine built by hand with a bare Config keeps 0.
+const defaultMaxBatchChecks = 100
+
+// maxBatchChecks is the number of checks one playground batch may hold.
+func maxBatchChecks(deps Deps) int {
+	if n := deps.Engine.Config().MaxBatchChecks; n > 0 {
+		return n
+	}
+	return defaultMaxBatchChecks
+}
+
+// playgroundBatchHandler runs a batch of dry-run checks at one namespace.
+//
+// Everything is validated before the first item runs, so a refused batch ran
+// nothing. Each item then goes through Check, the same dry run
+// playground.explain builds: no check log row, no hooks, no cache. One item
+// failing does not stop the rest: its result carries decision "error" and
+// the engine's own message.
+func playgroundBatchHandler(deps Deps) func(context.Context, PlaygroundBatchInput, dashcontract.Principal) (PlaygroundBatchResponse, error) {
+	return func(ctx context.Context, in PlaygroundBatchInput, p dashcontract.Principal) (PlaygroundBatchResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return PlaygroundBatchResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return PlaygroundBatchResponse{}, err
+		}
+		if len(in.Items) == 0 {
+			return PlaygroundBatchResponse{}, badRequest("items is required")
+		}
+		if limit := maxBatchChecks(deps); len(in.Items) > limit {
+			return PlaygroundBatchResponse{}, badRequest(fmt.Sprintf("a batch holds at most %d checks", limit))
+		}
+		// The subject kind is not validated, for the reason explain does not
+		// validate it: a logged check under any kind must be replayable.
+		for i, it := range in.Items {
+			switch {
+			case it.SubjectID == "":
+				return PlaygroundBatchResponse{}, badRequest(fmt.Sprintf("items[%d].subjectId is required", i))
+			case it.Action == "":
+				return PlaygroundBatchResponse{}, badRequest(fmt.Sprintf("items[%d].action is required", i))
+			case it.ResourceType == "":
+				return PlaygroundBatchResponse{}, badRequest(fmt.Sprintf("items[%d].resourceType is required", i))
+			}
+		}
+		if err := validateNamespace(in.NamespacePath); err != nil {
+			return PlaygroundBatchResponse{}, err
+		}
+
+		results := make([]PlaygroundBatchResult, 0, len(in.Items))
+		for _, it := range in.Items {
+			// TenantID and NamespacePath stay empty on the request: the call
+			// options carry them, and they are what the engine trusts.
+			req := &warden.CheckRequest{
+				Subject:  warden.Subject{Kind: warden.SubjectKind(it.SubjectKind), ID: it.SubjectID},
+				Action:   warden.Action{Name: it.Action},
+				Resource: warden.Resource{Type: it.ResourceType, ID: it.ResourceID},
+			}
+			res, err := deps.Engine.Check(ctx, req,
+				warden.WithCallTenantID(tenantID),
+				warden.WithCallNamespacePath(in.NamespacePath),
+				warden.WithCallDryRun(),
+			)
+			if err != nil {
+				results = append(results, PlaygroundBatchResult{Decision: "error", Error: err.Error()})
+				continue
+			}
+			results = append(results, PlaygroundBatchResult{
+				Decision: string(res.Decision),
+				Allowed:  res.Allowed,
+				Reason:   res.Reason,
+			})
+		}
+		return PlaygroundBatchResponse{Results: results}, nil
+	}
 }

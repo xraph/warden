@@ -88,6 +88,7 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"maintenance.run":             dashcontract.IntentKindCommand,
 		"maintenance.cacheInvalidate": dashcontract.IntentKindCommand,
 		"playground.explain":          dashcontract.IntentKindQuery,
+		"playground.batchCheck":       dashcontract.IntentKindQuery,
 		"subjects.detail":             dashcontract.IntentKindQuery,
 	}
 	if len(m.Intents) != len(wantKind) {
@@ -494,6 +495,37 @@ func TestManifest_PlaygroundExplainIsAFreshReadQuery(t *testing.T) {
 	}
 	if !found {
 		t.Error("manifest declares no playground.explain intent")
+	}
+}
+
+func TestManifest_PlaygroundBatchIsAFreshReadQuery(t *testing.T) {
+	m := loadManifest(t)
+	q, ok := m.Queries["playgroundBatch"]
+	if !ok {
+		t.Fatal("manifest declares no playgroundBatch query")
+	}
+	if q.Intent != "playground.batchCheck" {
+		t.Errorf("playgroundBatch points at %q, want playground.batchCheck", q.Intent)
+	}
+	// Every run must evaluate against the store as it is now.
+	if q.Cache.StaleTime != "0s" {
+		t.Errorf("playgroundBatch staleTime = %q, want 0s", q.Cache.StaleTime)
+	}
+	var found bool
+	for _, in := range m.Intents {
+		if in.Name != "playground.batchCheck" {
+			continue
+		}
+		found = true
+		if in.Kind != dashcontract.IntentKindQuery || in.Capability != "read" {
+			t.Errorf("playground.batchCheck is %s/%s, want a read query", in.Kind, in.Capability)
+		}
+		if len(in.Invalidates) != 0 {
+			t.Errorf("playground.batchCheck invalidates %v: a query writes nothing", in.Invalidates)
+		}
+	}
+	if !found {
+		t.Error("manifest declares no playground.batchCheck intent")
 	}
 }
 

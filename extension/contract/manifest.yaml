@@ -123,6 +123,9 @@ intents:
   # Authorizing the call itself is a real, logged check: the warden.engine
   # gate enforces it, which writes a check log row and fires hooks.
   - { name: playground.explain, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  # A batch of the same dry-run checks at one namespace, capped by
+  # Config.MaxBatchChecks. A query for the same reasons.
+  - { name: playground.batchCheck, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # One subject's roles, grants, assignments, relations, policies and recent
   # checks. Every command that changes any of those invalidates it.
   - { name: subjects.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
@@ -189,6 +192,10 @@ queries:
   # Every run must evaluate against the store as it is now.
   playgroundExplain:
     intent: playground.explain
+    cache: { staleTime: 0s }
+  # Every run must evaluate against the store as it is now.
+  playgroundBatch:
+    intent: playground.batchCheck
     cache: { staleTime: 0s }
   subjectDetail:
     intent: subjects.detail

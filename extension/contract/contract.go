@@ -192,6 +192,9 @@ func Register(
 	if err := dispatcher.RegisterQuery(d, contributorName, "playground.explain", 1, playgroundExplainHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register playground.explain: %w", err)
 	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "playground.batchCheck", 1, playgroundBatchHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register playground.batchCheck: %w", err)
+	}
 	if err := dispatcher.RegisterQuery(d, contributorName, "subjects.detail", 1, subjectsDetailHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register subjects.detail: %w", err)
 	}

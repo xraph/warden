@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
+	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store/memory"
@@ -321,5 +323,79 @@ func TestNamespacesListIsSortedAndDeduplicated(t *testing.T) {
 		if got.Namespaces[i] != want[i] {
 			t.Fatalf("namespaces = %q, want %q", got.Namespaces, want)
 		}
+	}
+}
+
+// A leaf namespace where checks run may hold no role, grant or assignment,
+// so the check log is the only place it shows up.
+func TestNamespacesListIncludesNamespacesOnRecentCheckLogRows(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	rows := []*checklog.Entry{
+		{TenantID: "t1", NamespacePath: "eng/platform/leaf", SubjectKind: "user", SubjectID: "alice", Action: "read", ResourceType: "document", Decision: "allow", CreatedAt: now},
+		// Another tenant's row is not this tenant's namespace.
+		{TenantID: "t2", NamespacePath: "billing", SubjectKind: "user", SubjectID: "alice", Action: "read", ResourceType: "document", Decision: "allow", CreatedAt: now},
+	}
+	for _, e := range rows {
+		if err := s.CreateCheckLog(ctx, e); err != nil {
+			t.Fatalf("create check log: %v", err)
+		}
+	}
+	eng, err := warden.NewEngine(warden.WithStore(s))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	got, err := namespacesListHandler(Deps{Engine: eng})(ctx, struct{}{}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("namespaces.list: %v", err)
+	}
+	if !contains(got.Namespaces, "eng/platform/leaf") {
+		t.Errorf("namespaces = %q, want the check log's eng/platform/leaf", got.Namespaces)
+	}
+	if contains(got.Namespaces, "billing") {
+		t.Errorf("namespaces = %q, want none of t2's", got.Namespaces)
+	}
+}
+
+// Stores list newest first and the scan reads the newest namespaceScanLimit
+// rows, so a namespace seen only on an older row is not listed.
+func TestNamespacesListScansOnlyTheNewestCheckLogRows(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for i := 0; i < namespaceScanLimit; i++ {
+		e := &checklog.Entry{
+			TenantID: "t1", NamespacePath: "hot", SubjectKind: "user", SubjectID: "alice",
+			Action: "read", ResourceType: "document", Decision: "allow",
+			CreatedAt: now.Add(-time.Duration(i) * time.Second),
+		}
+		if err := s.CreateCheckLog(ctx, e); err != nil {
+			t.Fatalf("create check log: %v", err)
+		}
+	}
+	old := &checklog.Entry{
+		TenantID: "t1", NamespacePath: "old", SubjectKind: "user", SubjectID: "alice",
+		Action: "read", ResourceType: "document", Decision: "allow",
+		CreatedAt: now.Add(-24 * time.Hour),
+	}
+	if err := s.CreateCheckLog(ctx, old); err != nil {
+		t.Fatalf("create check log: %v", err)
+	}
+	eng, err := warden.NewEngine(warden.WithStore(s))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	got, err := namespacesListHandler(Deps{Engine: eng})(ctx, struct{}{}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("namespaces.list: %v", err)
+	}
+	if !contains(got.Namespaces, "hot") {
+		t.Errorf("namespaces = %q, want hot, on the newest %d rows", got.Namespaces, namespaceScanLimit)
+	}
+	if contains(got.Namespaces, "old") {
+		t.Errorf("namespaces = %q, want no old: it is beyond the newest %d rows", got.Namespaces, namespaceScanLimit)
 	}
 }
