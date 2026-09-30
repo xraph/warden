@@ -16,6 +16,7 @@ package contract
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"regexp"
 	"strconv"
@@ -50,6 +51,7 @@ const (
 	ReasonNoValidCIDR       ConditionReason = "noValidCIDR"
 	ReasonNotATime          ConditionReason = "notATime"
 	ReasonAlwaysPresent     ConditionReason = "alwaysPresent"
+	ReasonMatchesAnything   ConditionReason = "matchesAnything"
 )
 
 // knownOperators is the evaluator's switch in evaluateCondition. Anything
@@ -66,11 +68,15 @@ var knownOperators = map[policy.Operator]struct{}{
 // action.name and context.<x> ever produce a value. Bare "action" and
 // "action.<anything but name>" pass policy.ValidateCondition and never
 // resolve, which is a disagreement inside warden this contract compensates
-// for. An empty suffix ("context.") is treated as unresolvable too: it would
-// look up the attribute named "", which nothing sets.
+// for.
+//
+// An empty suffix on subject, resource and context ("context.") is NOT
+// unresolvable: resolveField looks up the attribute named "", which a caller
+// can set, so the outcome depends on the check and no fixed outcome can be
+// claimed. "action." is different, because only action.name resolves there.
 func fieldResolves(field string) bool {
 	prefix, suffix, ok := strings.Cut(field, ".")
-	if !ok || suffix == "" {
+	if !ok {
 		return false
 	}
 	switch prefix {
@@ -92,6 +98,15 @@ var alwaysPresentFields = map[string]struct{}{
 	"resource.type": {}, "resource.id": {},
 	"action.name": {},
 }
+
+// matchEveryRegex is the set of patterns recognised as matching every string.
+// Whether an arbitrary pattern matches everything is undecidable in general,
+// so anything outside this set that happens to match everything (for
+// example "(?s).*" or "(.*)") is NOT detected and is classified as
+// request-dependent. "^.*$" is deliberately absent: without (?s) the dot does
+// not match a newline, so it fails on a value containing one. The four here
+// are unanchored at one end or empty, so an empty match always exists.
+var matchEveryRegex = map[string]struct{}{"": {}, ".*": {}, "^.*": {}, ".*$": {}}
 
 // listOf mirrors inSlice's accepted shapes: []string and []any, nothing
 // else.
@@ -233,6 +248,18 @@ func classifyCondition(c policy.Condition) (ConditionProblem, ConditionReason) {
 		}
 		return ProblemAlwaysFalse, ReasonUnresolvableField
 	}
+	switch c.Operator {
+	case policy.OpContains, policy.OpStartsWith, policy.OpEndsWith:
+		// strings.Contains, HasPrefix and HasSuffix are all true for "", on any
+		// actual, including the "<nil>" a missing attribute prints as.
+		if fmt.Sprint(c.Value) == "" {
+			return ProblemAlwaysTrue, ReasonMatchesAnything
+		}
+	case policy.OpRegex:
+		if _, ok := matchEveryRegex[fmt.Sprint(c.Value)]; ok {
+			return ProblemAlwaysTrue, ReasonMatchesAnything
+		}
+	}
 	if _, ok := alwaysPresentFields[c.Field]; ok {
 		switch c.Operator {
 		case policy.OpExists:
@@ -256,7 +283,16 @@ func classifyCondition(c policy.Condition) (ConditionProblem, ConditionReason) {
 		}
 		return ProblemAlwaysTrue, reason
 	case policy.OpGreaterThan, policy.OpLessThan, policy.OpGTE, policy.OpLTE:
-		if _, ok := asNumber(c.Value); !ok {
+		n, ok := asNumber(c.Value)
+		if !ok {
+			return ProblemAlwaysFalse, ReasonNotANumber
+		}
+		// compareNumbers gives (0, true) when either side is NaN, because
+		// neither < nor > holds. So gt and lt are false against NaN, but gte
+		// and lte are TRUE for any numeric actual and false for the rest:
+		// request-dependent, left unclassified. Infinities are not fixed
+		// either: lt "+Inf" holds for every finite actual.
+		if math.IsNaN(n) && (c.Operator == policy.OpGreaterThan || c.Operator == policy.OpLessThan) {
 			return ProblemAlwaysFalse, ReasonNotANumber
 		}
 	case policy.OpIPInCIDR:
@@ -353,15 +389,27 @@ func analysePolicy(p *policy.Policy, now time.Time) policyAnalysis {
 			a.HasRoleMatcher = true
 		}
 	}
-	a.ActionsUnrestricted = len(p.Actions) == 0 || containsString(p.Actions, "*")
-	a.ResourcesUnrestricted = len(p.Resources) == 0 || containsString(p.Resources, "*")
+	a.ActionsUnrestricted = len(p.Actions) == 0 || anyMatchesEveryValue(p.Actions)
+	a.ResourcesUnrestricted = len(p.Resources) == 0 || anyMatchesEveryValue(p.Resources)
 	a.MatchesEverything = a.SubjectsUnrestricted && a.ActionsUnrestricted && a.ResourcesUnrestricted
 	return a
 }
 
-func containsString(list []string, want string) bool {
-	for _, v := range list {
-		if v == want {
+// matchesEveryValue reports whether matchGlob (matcher.go) accepts every
+// value for pattern. Its first two checks are the only unconditional ones:
+// "*", and the full wildcards "*:*" and "*.*". Every other pattern either
+// needs a literal prefix (a trailing ":*", ".*" or "*" keeps the text before
+// the star) or is compared for equality, so it restricts. matchesAction and
+// matchesResource both go through matchGlob, and the extra
+// matchGlob(r, Resource.Type) path in matchesResource uses the same function,
+// so the set is the same for actions and resources.
+func matchesEveryValue(pattern string) bool {
+	return pattern == "*" || pattern == "*:*" || pattern == "*.*"
+}
+
+func anyMatchesEveryValue(patterns []string) bool {
+	for _, p := range patterns {
+		if matchesEveryValue(p) {
 			return true
 		}
 	}

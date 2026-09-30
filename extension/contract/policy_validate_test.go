@@ -120,6 +120,7 @@ var oneBadConditionPerReason = []struct {
 	{ReasonUnknownOperator, PolicyCondition{Field: "context.ip", Operator: "approximately", Value: "x"}, "not an operator warden knows"},
 	{ReasonInvalidRegex, PolicyCondition{Field: "subject.id", Operator: "regex", Value: "(unclosed"}, "does not compile"},
 	{ReasonUnresolvableField, PolicyCondition{Field: "action.verb", Operator: "neq", Value: "read"}, "never gives"},
+	{ReasonMatchesAnything, PolicyCondition{Field: "subject.id", Operator: "contains", Value: ""}, "matches every value"},
 	{ReasonAlwaysPresent, PolicyCondition{Field: "action.name", Operator: "not_exists"}, "always gives"},
 	{ReasonNotAList, PolicyCondition{Field: "context.ip", Operator: "not_in", Value: "10.1.2.3"}, "needs a list"},
 	{ReasonEmptyList, PolicyCondition{Field: "context.ip", Operator: "in", Value: []any{}}, "list is empty"},
@@ -415,4 +416,131 @@ func TestPoliciesValidateHandler(t *testing.T) {
 			t.Fatal("no tenant, no error")
 		}
 	})
+}
+
+// conditionMessage returns the one message conditionIssue gives c, failing
+// the test if it gives none.
+func conditionMessage(t *testing.T, c PolicyCondition) string {
+	t.Helper()
+	msg := conditionIssue(c)
+	if msg == "" {
+		t.Fatalf("%+v was accepted", c)
+	}
+	return msg
+}
+
+func TestConditionIssue_ValidatesExactlyWhatIsStored(t *testing.T) {
+	// A padded field that does not resolve is refused, and it is refused for
+	// the field that would be STORED, not the padded string.
+	msg := conditionMessage(t, PolicyCondition{Field: "  action.verb ", Operator: "neq", Value: "read"})
+	if !strings.Contains(msg, `"action.verb"`) || strings.Contains(msg, "  action") {
+		t.Fatalf("message %q should quote the trimmed field", msg)
+	}
+
+	// Trailing space, always-present field, not_exists: storage trims it to
+	// subject.id, so it is a dead policy. It must be refused, not stored.
+	msg = conditionMessage(t, PolicyCondition{Field: "subject.id ", Operator: "not_exists"})
+	if !strings.Contains(msg, "always gives") || !strings.Contains(msg, "always be false") {
+		t.Fatalf("message %q", msg)
+	}
+
+	// A working field with padding is accepted, and stored trimmed.
+	good := PolicyCondition{Field: " action.name ", Operator: "eq", Value: "read"}
+	if msg := conditionIssue(good); msg != "" {
+		t.Fatalf("a padded action.name was refused: %q", msg)
+	}
+	stored := toPolicyConditions([]PolicyCondition{good})
+	if stored[0].Field != "action.name" {
+		t.Fatalf("stored %q", stored[0].Field)
+	}
+
+	// The invariant itself: whatever is accepted classifies the same after
+	// storage as it was validated.
+	for _, c := range []PolicyCondition{good, {Field: "context.ip\t", Operator: "exists"}, {Field: "\nsubject.level", Operator: "gt", Value: float64(2)}} {
+		validated, _ := classifyCondition(storedCondition(c))
+		s := toPolicyConditions([]PolicyCondition{c})[0]
+		again, _ := classifyCondition(policy.Condition{Field: s.Field, Operator: s.Operator, Value: s.Value})
+		if validated != again || conditionIssue(c) != "" {
+			t.Fatalf("%+v: validated %q, stored %q, issue %q", c, validated, again, conditionIssue(c))
+		}
+	}
+}
+
+func TestConditionIssue_EmptyListMessagesSayWhatTheConditionDoes(t *testing.T) {
+	in := conditionMessage(t, PolicyCondition{Field: "context.ip", Operator: "in", Value: []any{}})
+	if want := "The list is empty, so this condition is never met and the policy never applies."; in != want {
+		t.Fatalf("in [] says %q, want %q", in, want)
+	}
+	notIn := conditionMessage(t, PolicyCondition{Field: "context.ip", Operator: "not_in", Value: []any{}})
+	if want := "The list is empty, so this condition restricts nothing."; notIn != want {
+		t.Fatalf("not_in [] says %q, want %q", notIn, want)
+	}
+}
+
+func TestConditionIssue_NonFiniteNumbers(t *testing.T) {
+	const want = "The value is not a finite number."
+	for _, op := range []string{"gt", "lt", "gte", "lte"} {
+		for _, v := range []any{"NaN", "nan", "+Inf", "-Inf", "Infinity", "inf"} {
+			if got := conditionMessage(t, PolicyCondition{Field: "subject.level", Operator: op, Value: v}); got != want {
+				t.Errorf("%s %v: %q, want %q", op, v, got, want)
+			}
+		}
+	}
+	// A finite number in either form is fine.
+	for _, v := range []any{float64(3), "3", "-2.5", "1e3"} {
+		if msg := conditionIssue(PolicyCondition{Field: "subject.level", Operator: "lt", Value: v}); msg != "" {
+			t.Errorf("lt %v refused: %q", v, msg)
+		}
+	}
+}
+
+func TestConditionIssue_MatchesEverything(t *testing.T) {
+	const want = "This matches every value, so this condition is always true and restricts nothing."
+	for _, c := range []PolicyCondition{
+		{Field: "subject.id", Operator: "contains", Value: ""},
+		{Field: "subject.id", Operator: "starts_with", Value: ""},
+		{Field: "subject.id", Operator: "ends_with", Value: ""},
+		{Field: "subject.id", Operator: "regex", Value: ".*"},
+		{Field: "subject.id", Operator: "regex", Value: ""},
+	} {
+		if got := conditionMessage(t, c); got != want {
+			t.Errorf("%+v: %q, want %q", c, got, want)
+		}
+	}
+	// ^.*$ fails on a value with a newline, so it restricts and is allowed.
+	if msg := conditionIssue(PolicyCondition{Field: "subject.id", Operator: "regex", Value: "^.*$"}); msg != "" {
+		t.Errorf("^.*$ refused: %q", msg)
+	}
+}
+
+func TestConditionIssue_PrecisionMessageFollowsTheOperator(t *testing.T) {
+	const asString = "Numbers above 9007199254740992 lose precision when stored. Store it as a string instead."
+	const smaller = "Numbers above 9007199254740992 lose precision when stored, and a comparison reads a string as a number too, so use a smaller number."
+	for _, op := range []string{"eq", "neq", "in", "not_in"} {
+		var v any = 1e16
+		if op == "in" || op == "not_in" {
+			v = []any{1e16}
+		}
+		if got := conditionMessage(t, PolicyCondition{Field: "subject.level", Operator: op, Value: v}); got != asString {
+			t.Errorf("%s: %q, want %q", op, got, asString)
+		}
+	}
+	for _, op := range []string{"gt", "lt", "gte", "lte"} {
+		if got := conditionMessage(t, PolicyCondition{Field: "subject.level", Operator: op, Value: 1e16}); got != smaller {
+			t.Errorf("%s: %q, want %q", op, got, smaller)
+		}
+	}
+}
+
+func TestWindowIssue_EndEqualToStartSaysOnlyWhatIsTrue(t *testing.T) {
+	// EffectiveAt holds at exactly that instant, so "never in effect" would be
+	// false. It is still refused: a one-instant window is not a schedule.
+	const want = "The end must be after the start."
+	got := windowIssue("2026-06-01T00:00:00Z", "2026-06-01T00:00:00Z")
+	if got != want {
+		t.Fatalf("equal window says %q, want %q", got, want)
+	}
+	if got := windowIssue("2026-06-02T00:00:00Z", "2026-06-01T00:00:00Z"); got != want {
+		t.Fatalf("reversed window says %q, want %q", got, want)
+	}
 }

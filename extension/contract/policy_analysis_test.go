@@ -49,6 +49,15 @@ func requests() []*warden.CheckRequest {
 			Resource: warden.Resource{Type: "document", ID: "d2", Attributes: map[string]any{"size": 10}},
 			Context:  map[string]any{"ip": "10.1.2.3", "at": "2026-06-10T00:00:00Z"},
 		},
+		// Values that make the corner cases bite: a newline (the dot does not
+		// match it without (?s)), and attributes stored under the name "" (an
+		// empty suffix is a real lookup, not a field warden never resolves).
+		{
+			Subject:  warden.Subject{Kind: "user", ID: "line1\nline2", Attributes: map[string]any{"": "x", "level": "not a number"}},
+			Action:   warden.Action{Name: "read"},
+			Resource: warden.Resource{Type: "document", ID: "d3", Attributes: map[string]any{"": "y"}},
+			Context:  map[string]any{"": "z", "note": "a\nb"},
+		},
 		// Every always-present field empty: the value is still present, and
 		// exists must still be true. The probe has to prove that too.
 		{},
@@ -89,7 +98,25 @@ func TestClassifyConditionMatchesTheEvaluator(t *testing.T) {
 		{"time_before with an RFC3339 time is not fixed", policy.Condition{Field: "context.at", Operator: policy.OpTimeBefore, Value: "2026-06-12T00:00:00Z"}, ProblemNone, ReasonNone},
 		{"exists on a context attribute still depends on the check", policy.Condition{Field: "context.ip", Operator: policy.OpExists}, ProblemNone, ReasonNone},
 		{"not_exists on a subject attribute still depends on the check", policy.Condition{Field: "subject.level", Operator: policy.OpNotExists}, ProblemNone, ReasonNone},
-		{"an empty context suffix never resolves", policy.Condition{Field: "context.", Operator: policy.OpExists}, ProblemAlwaysFalse, ReasonUnresolvableField},
+		{"an empty context suffix is a lookup of the name empty, not fixed", policy.Condition{Field: "context.", Operator: policy.OpExists}, ProblemNone, ReasonNone},
+		{"an empty subject suffix is a lookup, not fixed", policy.Condition{Field: "subject.", Operator: policy.OpNotExists}, ProblemNone, ReasonNone},
+		{"an empty resource suffix is a lookup, not fixed", policy.Condition{Field: "resource.", Operator: policy.OpExists}, ProblemNone, ReasonNone},
+		{"action. with no name never resolves", policy.Condition{Field: "action.", Operator: policy.OpExists}, ProblemAlwaysFalse, ReasonUnresolvableField},
+		{"contains an empty string is always true", policy.Condition{Field: "subject.id", Operator: policy.OpContains, Value: ""}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"starts_with an empty string is always true", policy.Condition{Field: "context.ip", Operator: policy.OpStartsWith, Value: ""}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"ends_with an empty string is always true", policy.Condition{Field: "resource.id", Operator: policy.OpEndsWith, Value: ""}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"contains a real string is not fixed", policy.Condition{Field: "subject.id", Operator: policy.OpContains, Value: "u"}, ProblemNone, ReasonNone},
+		{"regex with the empty pattern is always true", policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: ""}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"regex .* is always true, newline or not", policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: ".*"}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"regex ^.* is always true, newline or not", policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: "^.*"}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"regex .*$ is always true, newline or not", policy.Condition{Field: "context.note", Operator: policy.OpRegex, Value: ".*$"}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"regex ^.*$ fails on a value with a newline, so it is not fixed", policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: "^.*$"}, ProblemNone, ReasonNone},
+		{"gt against NaN is always false", policy.Condition{Field: "subject.level", Operator: policy.OpGreaterThan, Value: "NaN"}, ProblemAlwaysFalse, ReasonNotANumber},
+		{"lt against nan in any case is always false", policy.Condition{Field: "subject.level", Operator: policy.OpLessThan, Value: "nan"}, ProblemAlwaysFalse, ReasonNotANumber},
+		{"gte against NaN is TRUE for a numeric actual, so not fixed", policy.Condition{Field: "subject.level", Operator: policy.OpGTE, Value: "NaN"}, ProblemNone, ReasonNone},
+		{"lte against NaN is TRUE for a numeric actual, so not fixed", policy.Condition{Field: "subject.level", Operator: policy.OpLTE, Value: "NaN"}, ProblemNone, ReasonNone},
+		{"lt against +Inf holds for every finite actual, so not fixed", policy.Condition{Field: "subject.level", Operator: policy.OpLessThan, Value: "+Inf"}, ProblemNone, ReasonNone},
+		{"gte against -Inf holds for every numeric actual, so not fixed", policy.Condition{Field: "subject.level", Operator: policy.OpGTE, Value: "-Inf"}, ProblemNone, ReasonNone},
 		{"an uppercase prefix never resolves", policy.Condition{Field: "Subject.id", Operator: policy.OpNotExists}, ProblemAlwaysTrue, ReasonUnresolvableField},
 		{"regex on an unresolvable field is matched against <nil>", policy.Condition{Field: "action.verb", Operator: policy.OpRegex, Value: "^<nil>$"}, ProblemAlwaysTrue, ReasonUnresolvableField},
 		{"starts_with on an unresolvable field is matched against <nil>", policy.Condition{Field: "action", Operator: policy.OpStartsWith, Value: "read"}, ProblemAlwaysFalse, ReasonUnresolvableField},
@@ -207,15 +234,19 @@ func TestAnalysePolicySeesEveryUnrestrictedShape(t *testing.T) {
 
 func TestPolicyState(t *testing.T) {
 	before, after := fixedNow.Add(-time.Hour), fixedNow.Add(time.Hour)
+	now := fixedNow
 	cases := map[string]struct {
 		p    policy.Policy
 		want string
 	}{
-		"inactive wins over the window": {policy.Policy{IsActive: false, NotAfter: &before}, StateInactive},
-		"end before start is never":     {policy.Policy{IsActive: true, NotBefore: &after, NotAfter: &before}, StateNever},
-		"not started is scheduled":      {policy.Policy{IsActive: true, NotBefore: &after}, StateScheduled},
-		"ended is expired":              {policy.Policy{IsActive: true, NotAfter: &before}, StateExpired},
-		"inside the window is active":   {policy.Policy{IsActive: true, NotBefore: &before, NotAfter: &after}, StateActive},
+		"inactive wins over the window":          {policy.Policy{IsActive: false, NotAfter: &before}, StateInactive},
+		"end before start is never":              {policy.Policy{IsActive: true, NotBefore: &after, NotAfter: &before}, StateNever},
+		"not started is scheduled":               {policy.Policy{IsActive: true, NotBefore: &after}, StateScheduled},
+		"ended is expired":                       {policy.Policy{IsActive: true, NotAfter: &before}, StateExpired},
+		"inside the window is active":            {policy.Policy{IsActive: true, NotBefore: &before, NotAfter: &after}, StateActive},
+		"now equal to the start is active":       {policy.Policy{IsActive: true, NotBefore: &now}, StateActive},
+		"now equal to the end is active":         {policy.Policy{IsActive: true, NotAfter: &now}, StateActive},
+		"start, end and now all equal is active": {policy.Policy{IsActive: true, NotBefore: &now, NotAfter: &now}, StateActive},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -228,5 +259,67 @@ func TestPolicyState(t *testing.T) {
 				t.Fatal("policyState disagrees with EffectiveAt")
 			}
 		})
+	}
+}
+
+// TestUnrestrictedFlagsMatchTheEngine runs a deny scoped by each pattern
+// through the real evaluator against varied requests, and requires the
+// analysis flag to be set exactly when the policy applies to every one of
+// them.
+func TestUnrestrictedFlagsMatchTheEngine(t *testing.T) {
+	reqs := append(requests(),
+		&warden.CheckRequest{Subject: warden.Subject{Kind: "service", ID: "s1"}, Action: warden.Action{Name: "documents.export"}, Resource: warden.Resource{Type: "report", ID: "r9"}},
+		&warden.CheckRequest{Subject: warden.Subject{Kind: "user", ID: "u3"}, Action: warden.Action{Name: "*"}, Resource: warden.Resource{Type: "*", ID: "*"}},
+		&warden.CheckRequest{Subject: warden.Subject{Kind: "user", ID: "u3"}, Action: warden.Action{Name: ":"}, Resource: warden.Resource{Type: ":", ID: ":"}},
+	)
+	eval := warden.NewConditionEvaluator(func() time.Time { return fixedNow })
+	appliesToAll := func(t *testing.T, p *policy.Policy) bool {
+		t.Helper()
+		for _, req := range reqs {
+			res, err := eval.Evaluate(context.Background(), []*policy.Policy{p}, req, nil)
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if res == nil {
+				return false
+			}
+		}
+		return true
+	}
+	cases := []struct {
+		pattern      string
+		unrestricted bool
+	}{
+		{"*", true}, {"*:*", true}, {"*.*", true},
+		{"document:*", false}, {"documents.*", false}, {"doc*", false}, {"**", false},
+		{"", false}, {"*:", false}, {":*", false}, {".*", false}, {"read", false}, {"*:*:*", false},
+	}
+	for _, tc := range cases {
+		for _, kind := range []string{"actions", "resources"} {
+			t.Run(kind+" "+tc.pattern, func(t *testing.T) {
+				p := &policy.Policy{Effect: policy.EffectDeny, IsActive: true}
+				if kind == "actions" {
+					p.Actions = []string{tc.pattern}
+				} else {
+					p.Resources = []string{tc.pattern}
+				}
+				a := analysePolicy(p, fixedNow)
+				flag := a.ActionsUnrestricted
+				if kind == "resources" {
+					flag = a.ResourcesUnrestricted
+				}
+				if flag != tc.unrestricted {
+					t.Fatalf("flag = %v, want %v", flag, tc.unrestricted)
+				}
+				if got := appliesToAll(t, p); got != tc.unrestricted {
+					t.Fatalf("the engine applies it to every request = %v, the case says %v", got, tc.unrestricted)
+				}
+				// The other matchers are empty, so the policy matches everything
+				// exactly when this pattern does.
+				if a.MatchesEverything != tc.unrestricted {
+					t.Fatalf("MatchesEverything = %v, want %v", a.MatchesEverything, tc.unrestricted)
+				}
+			})
+		}
 	}
 }

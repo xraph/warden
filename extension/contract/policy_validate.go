@@ -159,29 +159,43 @@ func windowIssue(notBefore, notAfter string) string {
 		}
 	}
 	if notBefore != "" && notAfter != "" && !na.After(nb) {
-		return "The end must be after the start, or the policy is never in effect."
+		return "The end must be after the start."
 	}
 	return ""
 }
 
+// storedCondition is the one place a wire condition becomes the condition
+// that is stored. Validation and storage both go through it, so what is
+// validated is exactly what is stored: the field is trimmed here, once.
+func storedCondition(c PolicyCondition) policy.Condition {
+	return policy.Condition{Field: strings.TrimSpace(c.Field), Operator: policy.Operator(c.Operator), Value: c.Value}
+}
+
 // conditionIssue returns why one condition cannot be saved, or "".
 func conditionIssue(c PolicyCondition) string {
-	pc := policy.Condition{Field: c.Field, Operator: policy.Operator(c.Operator), Value: c.Value}
+	pc := storedCondition(c)
 	// classifyCondition first: its messages say what the condition would DO,
 	// which is the useful thing to tell an operator.
-	switch problem, reason := classifyCondition(pc); {
+	problem, reason := classifyCondition(pc)
+	switch {
 	case reason == ReasonUnknownOperator:
 		return fmt.Sprintf("%q is not an operator warden knows, so this condition would fail every check.", c.Operator)
 	case reason == ReasonInvalidRegex:
 		return "This pattern does not compile, so this condition would fail every check."
 	case reason == ReasonUnresolvableField:
-		return fmt.Sprintf("Warden never gives %q a value, so this condition would always be %t. Use subject., resource., context., or action.name.", c.Field, problem == ProblemAlwaysTrue)
+		return fmt.Sprintf("Warden never gives %q a value, so this condition would always be %t. Use subject., resource., context., or action.name.", pc.Field, problem == ProblemAlwaysTrue)
 	case reason == ReasonAlwaysPresent:
-		return fmt.Sprintf("Warden always gives %q a value, even an empty one, so this condition would always be %t.", c.Field, problem == ProblemAlwaysTrue)
+		return fmt.Sprintf("Warden always gives %q a value, even an empty one, so this condition would always be %t.", pc.Field, problem == ProblemAlwaysTrue)
+	case reason == ReasonMatchesAnything:
+		return "This matches every value, so this condition is always true and restricts nothing."
+	case isComparison(pc.Operator) && nonFinite(pc.Value):
+		return "The value is not a finite number."
 	case reason == ReasonNotAList:
 		return "This operator needs a list of values."
+	case reason == ReasonEmptyList && problem == ProblemAlwaysFalse:
+		return "The list is empty, so this condition is never met and the policy never applies."
 	case reason == ReasonEmptyList:
-		return "The list is empty, so this condition would never restrict anything."
+		return "The list is empty, so this condition restricts nothing."
 	case reason == ReasonNotANumber:
 		return "This operator compares numbers, and the value is not one."
 	case reason == ReasonNoValidCIDR:
@@ -193,9 +207,28 @@ func conditionIssue(c PolicyCondition) string {
 		return strings.TrimPrefix(err.Error(), "policy: ")
 	}
 	if n, ok := largestMagnitude(c.Value); ok && n > maxExactInteger {
+		if isComparison(pc.Operator) {
+			return "Numbers above 9007199254740992 lose precision when stored, and a comparison reads a string as a number too, so use a smaller number."
+		}
 		return "Numbers above 9007199254740992 lose precision when stored. Store it as a string instead."
 	}
 	return ""
+}
+
+func isComparison(op policy.Operator) bool {
+	switch op {
+	case policy.OpGreaterThan, policy.OpLessThan, policy.OpGTE, policy.OpLTE:
+		return true
+	}
+	return false
+}
+
+// nonFinite reports whether v reads as NaN or an infinity, as a number or as
+// a string strconv.ParseFloat accepts. gt and lt against NaN never hold, and
+// an infinite bound is a comparison nobody means to write.
+func nonFinite(v any) bool {
+	n, ok := asNumber(v)
+	return ok && (math.IsNaN(n) || math.IsInf(n, 0))
 }
 
 // largestMagnitude finds the largest absolute numeric value in a value or
@@ -246,7 +279,9 @@ func toPolicyConditions(in []PolicyCondition) []policy.Condition {
 		if err != nil {
 			cid = id.NewConditionID()
 		}
-		out = append(out, policy.Condition{ID: cid, Field: strings.TrimSpace(c.Field), Operator: policy.Operator(c.Operator), Value: c.Value})
+		sc := storedCondition(c)
+		sc.ID = cid
+		out = append(out, sc)
 	}
 	return out
 }
