@@ -564,3 +564,143 @@ func TestPoliciesDetailRejectsAMalformedID(t *testing.T) {
 		}
 	}
 }
+
+// TestPoliciesDetailReportsEachUnrestrictedFlagIndependently seeds policies
+// where exactly one of the three matcher lists is open, so a projection that
+// copies one flag into another (or reports the combined matchesEverything in
+// place of them) is caught in the JSON a page reads.
+func TestPoliciesDetailReportsEachUnrestrictedFlagIndependently(t *testing.T) {
+	restrictedSubjects := []policy.SubjectMatch{{Kind: "user", ID: "alice"}}
+	for _, tc := range []struct {
+		name                         string
+		tweak                        func(*policy.Policy)
+		subjects, actions, resources bool
+	}{
+		{"open actions only", func(p *policy.Policy) {
+			p.Subjects = restrictedSubjects
+			p.Actions = []string{"*:*"}
+			p.Resources = []string{"document:readme"}
+		}, false, true, false},
+		{"open resources only", func(p *policy.Policy) {
+			p.Subjects = restrictedSubjects
+			p.Actions = []string{"read"}
+			p.Resources = []string{"*:*"}
+		}, false, false, true},
+		{"open subjects only, through an empty matcher", func(p *policy.Policy) {
+			p.Subjects = []policy.SubjectMatch{{}}
+			p.Actions = []string{"read"}
+			p.Resources = []string{"document:readme"}
+		}, true, false, false},
+		{"open subjects only, through no matchers", func(p *policy.Policy) {
+			p.Actions = []string{"read"}
+			p.Resources = []string{"document:readme"}
+		}, true, false, false},
+		{"open actions through a bare star, resources through a dotted one", func(p *policy.Policy) {
+			p.Subjects = restrictedSubjects
+			p.Actions = []string{"*"}
+			p.Resources = []string{"*.*"}
+		}, false, true, true},
+		{"a wildcard among restricted entries still opens the list", func(p *policy.Policy) {
+			p.Subjects = restrictedSubjects
+			p.Actions = []string{"read", "*:*"}
+			p.Resources = []string{"document:readme"}
+		}, false, true, false},
+		{"a partial wildcard restricts", func(p *policy.Policy) {
+			p.Subjects = restrictedSubjects
+			p.Actions = []string{"read:*"}
+			p.Resources = []string{"document:*"}
+		}, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := memory.New()
+			seeded := seedPolicy(t, s, "", "flags", tc.tweak)
+			h := policiesDetailHandler(Deps{Engine: engineOver(t, s)})
+			got, err := h(context.Background(), PolicyDetailInput{ID: seeded.ID.String()}, principalFor("t1"))
+			if err != nil {
+				t.Fatalf("policies.detail: %v", err)
+			}
+			raw, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var wire map[string]any
+			if err := json.Unmarshal(raw, &wire); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			for key, want := range map[string]bool{
+				"subjectsUnrestricted":  tc.subjects,
+				"actionsUnrestricted":   tc.actions,
+				"resourcesUnrestricted": tc.resources,
+				"matchesEverything":     tc.subjects && tc.actions && tc.resources,
+			} {
+				if wire[key] != want {
+					t.Errorf("%s = %v, want %v (JSON %s)", key, wire[key], want, raw)
+				}
+			}
+		})
+	}
+}
+
+// TestPoliciesDetailCarriesTheNewestReasonsOnTheWire checks the two reasons
+// added after the first cut, alwaysPresent and matchesAnything, at their own
+// condition index in the JSON. The expected values are also compared with
+// classifyCondition, so the test follows the analysis rather than restating
+// it.
+func TestPoliciesDetailCarriesTheNewestReasonsOnTheWire(t *testing.T) {
+	conds := []policy.Condition{
+		{ID: id.NewConditionID(), Field: "context.ip", Operator: policy.OpStartsWith, Value: ""},
+		{ID: id.NewConditionID(), Field: "subject.id", Operator: policy.OpExists},
+		{ID: id.NewConditionID(), Field: "subject.id", Operator: policy.OpNotExists},
+		{ID: id.NewConditionID(), Field: "subject.id", Operator: policy.OpEquals, Value: "alice"},
+	}
+	s := memory.New()
+	seeded := seedPolicy(t, s, "", "reasons", func(p *policy.Policy) { p.Conditions = conds })
+	h := policiesDetailHandler(Deps{Engine: engineOver(t, s)})
+	got, err := h(context.Background(), PolicyDetailInput{ID: seeded.ID.String()}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("policies.detail: %v", err)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire struct {
+		Conditions        []map[string]any `json:"conditions"`
+		DecidingCondition *int             `json:"decidingCondition"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(wire.Conditions) != len(conds) {
+		t.Fatalf("got %d conditions on the wire, want %d", len(wire.Conditions), len(conds))
+	}
+
+	for i, want := range []struct{ problem, reason string }{
+		{"alwaysTrue", "matchesAnything"},
+		{"alwaysTrue", "alwaysPresent"},
+		{"alwaysFalse", "alwaysPresent"},
+		{"", ""},
+	} {
+		// The committed classification is the authority for the expectation.
+		p, r := classifyCondition(conds[i])
+		if string(p) != want.problem || string(r) != want.reason {
+			t.Fatalf("condition %d: classifyCondition = %q/%q, this test expects %q/%q", i, p, r, want.problem, want.reason)
+		}
+		gotProblem, hasProblem := wire.Conditions[i]["problem"]
+		gotReason, hasReason := wire.Conditions[i]["reason"]
+		if want.problem == "" {
+			if hasProblem || hasReason {
+				t.Errorf("condition %d is clean but carries %v/%v", i, gotProblem, gotReason)
+			}
+			continue
+		}
+		if gotProblem != want.problem || gotReason != want.reason {
+			t.Errorf("condition %d wire problem/reason = %v/%v, want %s/%s", i, gotProblem, gotReason, want.problem, want.reason)
+		}
+	}
+	// alwaysTrue conditions restrict nothing but decide nothing; the first
+	// alwaysFalse one is the deciding condition.
+	if wire.DecidingCondition == nil || *wire.DecidingCondition != 2 {
+		t.Errorf("decidingCondition = %v, want 2", wire.DecidingCondition)
+	}
+}
