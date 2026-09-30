@@ -43,7 +43,7 @@ func TestCollectPolicyIssues_CleanDraftIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(raw), `{"valid":true,"fields":{},"conditions":[]}`; got != want {
+	if got, want := string(raw), `{"valid":true,"matchesEverything":false,"fields":{},"conditions":[]}`; got != want {
 		t.Fatalf("wire shape %s, want %s", got, want)
 	}
 }
@@ -542,5 +542,45 @@ func TestWindowIssue_EndEqualToStartSaysOnlyWhatIsTrue(t *testing.T) {
 	}
 	if got := windowIssue("2026-06-02T00:00:00Z", "2026-06-01T00:00:00Z"); got != want {
 		t.Fatalf("reversed window says %q, want %q", got, want)
+	}
+}
+
+func TestPoliciesValidateReportsMatchesEverything(t *testing.T) {
+	eng := testEngine(t, warden.Config{})
+	h := policiesValidateHandler(Deps{Engine: eng})
+	call := func(d PolicyDraft) PolicyValidateResponse {
+		t.Helper()
+		res, err := h(context.Background(), d, principalFor("t1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	open := PolicyDraft{Name: "open", Effect: "deny", Subjects: []PolicySubject{}, Actions: []string{"*"}, Resources: []string{" *:* "}}
+
+	if res := call(open); !res.MatchesEverything || !res.Valid {
+		t.Fatalf("an open deny with no conditions: %+v", res)
+	}
+	withDept := open
+	withDept.Conditions = []PolicyCondition{{Field: "subject.dept", Operator: "eq", Value: "eng"}}
+	if res := call(withDept); res.MatchesEverything {
+		t.Fatalf("a request-dependent condition still matches everything: %+v", res)
+	}
+	restricted := open
+	restricted.Actions = []string{"read"}
+	if res := call(restricted); res.MatchesEverything {
+		t.Fatalf("a restricted action matches everything: %+v", res)
+	}
+	// An always-true condition changes nothing, and is also refused: the
+	// answer is about the shape, whatever else the draft has wrong.
+	trivial := open
+	trivial.Conditions = []PolicyCondition{{Field: "subject.id", Operator: "contains", Value: ""}}
+	if res := call(trivial); !res.MatchesEverything || res.Valid {
+		t.Fatalf("an always-true condition: %+v", res)
+	}
+	// The same analysis the list uses, given the draft as it would be stored.
+	shape := &policy.Policy{Effect: policy.EffectDeny, Actions: []string{"*"}, Resources: []string{"*:*"}}
+	if got := analysePolicy(shape, fixedNow).MatchesEverything; !got {
+		t.Fatal("the stored shape does not match everything")
 	}
 }

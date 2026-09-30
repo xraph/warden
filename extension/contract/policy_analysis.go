@@ -345,8 +345,11 @@ type policyAnalysis struct {
 	SubjectsUnrestricted  bool
 	ActionsUnrestricted   bool
 	ResourcesUnrestricted bool
-	MatchesEverything     bool
-	HasRoleMatcher        bool
+	// MatchesEverything is true when the policy applies to every check: all
+	// three matchers are unrestricted AND the conditions always hold. It
+	// describes the rule's shape, so it does not depend on State.
+	MatchesEverything bool
+	HasRoleMatcher    bool
 }
 
 // analysePolicy walks the conditions in evaluation order.
@@ -391,8 +394,31 @@ func analysePolicy(p *policy.Policy, now time.Time) policyAnalysis {
 	}
 	a.ActionsUnrestricted = len(p.Actions) == 0 || anyMatchesEveryValue(p.Actions)
 	a.ResourcesUnrestricted = len(p.Resources) == 0 || anyMatchesEveryValue(p.Resources)
-	a.MatchesEverything = a.SubjectsUnrestricted && a.ActionsUnrestricted && a.ResourcesUnrestricted
+	a.MatchesEverything = a.SubjectsUnrestricted && a.ActionsUnrestricted && a.ResourcesUnrestricted &&
+		conditionsAlwaysHold(p.Effect, a.Problems)
 	return a
+}
+
+// conditionsAlwaysHold reports whether, for a policy that passes its matchers,
+// the conditions are met on every check. It walks them in evaluation order,
+// as evaluateConditions does: an always-true condition changes nothing, and
+// the first other condition decides. A throw on a deny is met (the engine
+// fails closed and treats the conditions as satisfied); a throw on an allow
+// skips the policy, an always-false condition fails, and a condition that
+// depends on the check holds for some checks and not others. Reaching the
+// end, including having no conditions at all, means they always hold.
+func conditionsAlwaysHold(effect policy.Effect, problems []ConditionProblem) bool {
+	for _, pr := range problems {
+		switch pr {
+		case ProblemAlwaysTrue:
+			continue
+		case ProblemThrows:
+			return effect != policy.EffectAllow
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // matchesEveryValue reports whether matchGlob (matcher.go) accepts every

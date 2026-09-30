@@ -253,7 +253,9 @@ func TestPoliciesListRowsAgreeWithTheAnalysis(t *testing.T) {
 		{"expired", func(p *policy.Policy) { p.NotAfter = &past }, policyFlags{StateExpired, false, false, true}},
 		{"never", func(p *policy.Policy) { p.NotBefore = &future; p.NotAfter = &past }, policyFlags{StateNever, false, false, true}},
 		{"fail-closed deny", func(p *policy.Policy) { p.Effect = policy.EffectDeny; p.Conditions = brokenOp }, policyFlags{StateActive, true, false, true}},
-		{"never-applies allow", func(p *policy.Policy) { p.Conditions = brokenOp }, policyFlags{StateActive, false, true, true}},
+		// A throw on an allow skips the policy, so it does not apply to every check
+		// even though its matchers are open.
+		{"never-applies allow", func(p *policy.Policy) { p.Conditions = brokenOp }, policyFlags{StateActive, false, true, false}},
 		{"matches everything through *:*", func(p *policy.Policy) { p.Actions = []string{"*:*"} }, policyFlags{StateActive, false, false, true}},
 		{"*:* on actions alone with a restricted resource", func(p *policy.Policy) {
 			p.Actions = []string{"*:*"}

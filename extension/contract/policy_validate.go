@@ -344,6 +344,11 @@ func toPolicyConditions(in []PolicyCondition, stored []policy.Condition) []polic
 // PolicyValidateResponse is policies.validate's reply.
 type PolicyValidateResponse struct {
 	Valid bool `json:"valid"`
+	// MatchesEverything is the same analysis the policy list applies, run over
+	// the submitted draft: true when, saved as it stands, the policy would
+	// apply to every check. It lets an editor confirm before an active policy
+	// is saved into that shape, without repeating the analysis in the page.
+	MatchesEverything bool `json:"matchesEverything"`
 	PolicyIssues
 }
 
@@ -356,6 +361,20 @@ func policiesValidateHandler(deps Deps) func(ctx context.Context, in PolicyDraft
 			return PolicyValidateResponse{}, err
 		}
 		issues := collectPolicyIssues(in, allParts)
-		return PolicyValidateResponse{Valid: issues.empty(), PolicyIssues: issues}, nil
+		// Built as a create would store it, so the answer is the stored
+		// policy's, not the raw draft's.
+		shape := &policy.Policy{
+			Effect:     policy.Effect(in.Effect),
+			IsActive:   true,
+			Subjects:   toPolicySubjects(in.Subjects),
+			Actions:    trimmedList(in.Actions),
+			Resources:  trimmedList(in.Resources),
+			Conditions: toPolicyConditions(in.Conditions, nil),
+		}
+		return PolicyValidateResponse{
+			Valid:             issues.empty(),
+			MatchesEverything: analysePolicy(shape, time.Now().UTC()).MatchesEverything,
+			PolicyIssues:      issues,
+		}, nil
 	}
 }

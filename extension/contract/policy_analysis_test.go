@@ -323,3 +323,86 @@ func TestUnrestrictedFlagsMatchTheEngine(t *testing.T) {
 		}
 	}
 }
+
+// TestMatchesEverythingAgreesWithTheEngine runs policies with open matchers
+// and assorted condition lists through the real evaluator, as an allow and as
+// a deny, and requires the flag to be true exactly when the policy applied to
+// every request.
+func TestMatchesEverythingAgreesWithTheEngine(t *testing.T) {
+	always := policy.Condition{Field: "subject.id", Operator: policy.OpContains, Value: ""}
+	alwaysToo := policy.Condition{Field: "action.verb", Operator: policy.OpNotExists}
+	present := policy.Condition{Field: "action.name", Operator: policy.OpExists}
+	depends := policy.Condition{Field: "subject.level", Operator: policy.OpGreaterThan, Value: float64(1)}
+	throws := policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: "(unclosed"}
+	never := policy.Condition{Field: "context.ip", Operator: policy.OpIPInCIDR, Value: "nope"}
+
+	cases := []struct {
+		name  string
+		conds []policy.Condition
+		// want is the expectation per effect: allow, then deny.
+		wantAllow, wantDeny bool
+	}{
+		{"no conditions", nil, true, true},
+		{"all always true", []policy.Condition{always, alwaysToo, present}, true, true},
+		{"a request-dependent condition", []policy.Condition{depends}, false, false},
+		{"always true, then request-dependent", []policy.Condition{always, depends}, false, false},
+		{"request-dependent, then a throw", []policy.Condition{depends, throws}, false, false},
+		{"always true, then a throw: a deny fails closed, an allow is skipped", []policy.Condition{always, throws}, false, true},
+		{"a throw alone", []policy.Condition{throws}, false, true},
+		{"a throw before always-false decides", []policy.Condition{throws, never}, false, true},
+		{"always-false first", []policy.Condition{never}, false, false},
+		{"always-false before a throw", []policy.Condition{never, throws}, false, false},
+		{"always true, then always-false", []policy.Condition{always, never}, false, false},
+	}
+	eval := warden.NewConditionEvaluator(func() time.Time { return fixedNow })
+	sawTrue, sawFalse := false, false
+	for _, tc := range cases {
+		for _, effect := range []policy.Effect{policy.EffectAllow, policy.EffectDeny, policy.Effect("DENY")} {
+			want := tc.wantDeny
+			if effect == policy.EffectAllow {
+				want = tc.wantAllow
+			}
+			t.Run(tc.name+"/"+string(effect), func(t *testing.T) {
+				p := &policy.Policy{Name: "shape", Effect: effect, IsActive: true, Conditions: tc.conds}
+				appliedToAll := true
+				for _, req := range requests() {
+					res, err := eval.Evaluate(context.Background(), []*policy.Policy{p}, req, nil)
+					if err != nil {
+						t.Fatalf("Evaluate: %v", err)
+					}
+					if res == nil {
+						appliedToAll = false
+					}
+				}
+				got := analysePolicy(p, fixedNow).MatchesEverything
+				if appliedToAll != want {
+					t.Fatalf("the engine applied it to every request = %v, the case expects %v", appliedToAll, want)
+				}
+				if got != appliedToAll {
+					t.Fatalf("MatchesEverything = %v, but the engine applied it to every request = %v", got, appliedToAll)
+				}
+				if got {
+					sawTrue = true
+				} else {
+					sawFalse = true
+				}
+			})
+		}
+	}
+	if !sawTrue || !sawFalse {
+		t.Fatal("the cases never exercised both outcomes")
+	}
+}
+
+func TestMatchesEverythingIsIndependentOfState(t *testing.T) {
+	past := fixedNow.Add(-time.Hour)
+	for _, p := range []*policy.Policy{
+		{Effect: policy.EffectDeny, IsActive: false},
+		{Effect: policy.EffectDeny, IsActive: true, NotAfter: &past},
+	} {
+		a := analysePolicy(p, fixedNow)
+		if a.State == StateActive || !a.MatchesEverything {
+			t.Fatalf("state %q, matchesEverything %v: the flag describes the shape, not the state", a.State, a.MatchesEverything)
+		}
+	}
+}
