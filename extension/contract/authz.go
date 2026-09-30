@@ -106,6 +106,10 @@ var intentPolicies = map[string]intentPolicy{
 
 	"maintenance.run":             {"manage", "warden:maintenance"},
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
+
+	// The playground asks the engine a question, so it needs the same grant
+	// a caller needs to run a check. It writes nothing.
+	"playground.explain": {"check", "warden:authz"},
 }
 
 // engineAuthorizer is the dashcontract.Warden the manifest delegates to.

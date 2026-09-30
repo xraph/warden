@@ -202,6 +202,10 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := cacheInvalidateHandler(deps)(context.Background(), CacheInvalidateInput{}, p)
 		return err
 	}},
+	{"playground.explain", func(deps Deps, p dashcontract.Principal) error {
+		_, err := playgroundExplainHandler(deps)(context.Background(), PlaygroundExplainInput{}, p)
+		return err
+	}},
 }
 
 func TestHandlers_RefuseWithoutTenant(t *testing.T) {

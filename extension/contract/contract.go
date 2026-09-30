@@ -189,6 +189,9 @@ func Register(
 	if err := dispatcher.RegisterCommand(d, contributorName, "maintenance.cacheInvalidate", 1, cacheInvalidateHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register maintenance.cacheInvalidate: %w", err)
 	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "playground.explain", 1, playgroundExplainHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register playground.explain: %w", err)
+	}
 
 	return nil
 }

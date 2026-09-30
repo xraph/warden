@@ -87,6 +87,7 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"policies.delete":             dashcontract.IntentKindCommand,
 		"maintenance.run":             dashcontract.IntentKindCommand,
 		"maintenance.cacheInvalidate": dashcontract.IntentKindCommand,
+		"playground.explain":          dashcontract.IntentKindQuery,
 	}
 	if len(m.Intents) != len(wantKind) {
 		t.Fatalf("manifest declares %d intents, want %d: %+v", len(m.Intents), len(wantKind), m.Intents)
@@ -461,5 +462,36 @@ func TestManifest_PolicyValidationIsAQueryThatIsNeverServedStale(t *testing.T) {
 				t.Errorf("a query invalidates nothing, got %v", in.Invalidates)
 			}
 		}
+	}
+}
+
+func TestManifest_PlaygroundExplainIsAFreshReadQuery(t *testing.T) {
+	m := loadManifest(t)
+	q, ok := m.Queries["playgroundExplain"]
+	if !ok {
+		t.Fatal("manifest declares no playgroundExplain query")
+	}
+	if q.Intent != "playground.explain" {
+		t.Errorf("playgroundExplain points at %q, want playground.explain", q.Intent)
+	}
+	// Every run must evaluate against the store as it is now.
+	if q.Cache.StaleTime != "0s" {
+		t.Errorf("playgroundExplain staleTime = %q, want 0s", q.Cache.StaleTime)
+	}
+	var found bool
+	for _, in := range m.Intents {
+		if in.Name != "playground.explain" {
+			continue
+		}
+		found = true
+		if in.Kind != dashcontract.IntentKindQuery || in.Capability != "read" {
+			t.Errorf("playground.explain is %s/%s, want a read query", in.Kind, in.Capability)
+		}
+		if len(in.Invalidates) != 0 {
+			t.Errorf("playground.explain invalidates %v: a query writes nothing", in.Invalidates)
+		}
+	}
+	if !found {
+		t.Error("manifest declares no playground.explain intent")
 	}
 }

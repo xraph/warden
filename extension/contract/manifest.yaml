@@ -118,6 +118,9 @@ intents:
       invalidates: [overview.stats, overview.recentChecks, checkLogs.list, checkLogs.detail, assignments.list,
                     assignments.expiring, roles.detail, namespaces.list] }
   - { name: maintenance.cacheInvalidate, kind: command, version: 1, requires: { warden: warden.engine }, capability: write }
+  # A dry run: no check log row, no hooks, no cache. It writes nothing, so it
+  # is a query, and a viewer who may run checks may run it.
+  - { name: playground.explain, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
 
 queries:
   config:
@@ -177,6 +180,10 @@ queries:
   # but the draft, so there is nothing to serve stale and nothing to reuse.
   policyValidation:
     intent: policies.validate
+    cache: { staleTime: 0s }
+  # Every run must evaluate against the store as it is now.
+  playgroundExplain:
+    intent: playground.explain
     cache: { staleTime: 0s }
 
 graph: []
