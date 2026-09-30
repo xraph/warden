@@ -115,8 +115,11 @@ func (e *Engine) SetExpressionEvaluator(ev ExpressionEvaluator) { e.exprEval = e
 // Config returns the engine configuration.
 func (e *Engine) Config() Config { return e.config }
 
-// CheckLogLoss reports how many decided checks left no check log row since
-// this engine started. ok is false when check logging is off.
+// CheckLogLoss reports how many checks the engine ran whose entries may not
+// have been recorded since this engine started. Failed checks count too,
+// because a failed check's entry goes through the same writer. A write that
+// times out after the store committed also counts as failed. ok is false when
+// check logging is off.
 func (e *Engine) CheckLogLoss() (CheckLogLoss, bool) {
 	if e.checkLogWriter == nil {
 		return CheckLogLoss{}, false

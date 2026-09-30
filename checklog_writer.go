@@ -19,7 +19,10 @@ const checkLogBatchSize = 100
 // not-yet-full batch before it is flushed anyway.
 const checkLogFlushInterval = 250 * time.Millisecond
 
-// CheckLogLoss counts the checks this engine decided but did not record.
+// CheckLogLoss counts checks the engine ran whose entries may not have been
+// recorded. Failed checks count too, because a failed check's entry goes
+// through the same writer. A write that times out after the store committed
+// also counts as failed.
 type CheckLogLoss struct {
 	// QueueFull counts entries dropped because the writer's bounded queue
 	// was full, or because the writer had already stopped.

@@ -53,7 +53,18 @@ func TestMongoCheckLogWithoutCachedFieldCountsAsNotCached(t *testing.T) {
 	if n, err := s.CountCheckLogs(ctx, &checklog.QueryFilter{TenantID: "t1", Cached: &no}); err != nil || n != 1 {
 		t.Fatalf("Cached=false count: want 1, got %d (err %v)", n, err)
 	}
-	if got, _ := s.ListCheckLogs(ctx, &checklog.QueryFilter{TenantID: "t1", Cached: &yes}); len(got) != 0 {
+	got, err = s.ListCheckLogs(ctx, &checklog.QueryFilter{TenantID: "t1", Cached: &yes})
+	if err != nil {
+		t.Fatalf("Cached=true list: %v", err)
+	}
+	if len(got) != 0 {
 		t.Fatalf("Cached=true: want no rows, got %d", len(got))
+	}
+	n, err := s.CountCheckLogs(ctx, &checklog.QueryFilter{TenantID: "t1", Cached: &yes})
+	if err != nil {
+		t.Fatalf("Cached=true count: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("Cached=true count: want 0, got %d", n)
 	}
 }

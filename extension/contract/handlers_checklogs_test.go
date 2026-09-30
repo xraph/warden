@@ -114,7 +114,10 @@ func TestCheckLogsListFiltersOneAtATime(t *testing.T) {
 		{"after equal to before is one instant", CheckLogsListInput{
 			After: checkLogT0.Format(time.RFC3339), Before: checkLogT0.Format(time.RFC3339),
 		}, onlyA},
-		{"fractional seconds parse", CheckLogsListInput{After: checkLogT0.Add(time.Hour).Format(time.RFC3339Nano)}, onlyB},
+		// Row b sits exactly at T0+1h. An After half a second later is a real
+		// fractional instant, so it excludes b. Truncating it to whole seconds
+		// would put it back at T0+1h and wrongly include b.
+		{"fractional seconds parse", CheckLogsListInput{After: checkLogT0.Add(time.Hour + 500*time.Millisecond).Format(time.RFC3339Nano)}, []string{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
