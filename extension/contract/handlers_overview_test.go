@@ -359,6 +359,40 @@ func TestNamespacesListIncludesNamespacesOnRecentCheckLogRows(t *testing.T) {
 	}
 }
 
+// Check never validates a namespace, so a check log row can carry a path
+// every namespace filter refuses. Listing it would offer a filter option
+// that fails when picked.
+func TestNamespacesListSkipsInvalidCheckLogNamespaces(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, ns := range []string{"eng/system", "ops/leaf"} {
+		e := &checklog.Entry{TenantID: "t1", NamespacePath: ns, SubjectKind: "user", SubjectID: "alice",
+			Action: "read", ResourceType: "document", Decision: "allow", CreatedAt: now}
+		if err := s.CreateCheckLog(ctx, e); err != nil {
+			t.Fatalf("create check log: %v", err)
+		}
+	}
+	if validateNamespace("eng/system") == nil {
+		t.Fatal("eng/system is valid, so this test proves nothing")
+	}
+	eng, err := warden.NewEngine(warden.WithStore(s))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	got, err := namespacesListHandler(Deps{Engine: eng})(ctx, struct{}{}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("namespaces.list: %v", err)
+	}
+	if contains(got.Namespaces, "eng/system") {
+		t.Errorf("namespaces = %q, want the reserved eng/system left out", got.Namespaces)
+	}
+	if !contains(got.Namespaces, "ops/leaf") {
+		t.Errorf("namespaces = %q, want the valid ops/leaf listed", got.Namespaces)
+	}
+}
+
 // Stores list newest first and the scan reads the newest namespaceScanLimit
 // rows, so a namespace seen only on an older row is not listed.
 func TestNamespacesListScansOnlyTheNewestCheckLogRows(t *testing.T) {

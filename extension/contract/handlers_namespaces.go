@@ -3,10 +3,10 @@
 // There is no namespace entity in warden. No table, no CRUD, no create. A
 // namespace exists only as a string on rows, so this scans the entity tables
 // for distinct values. Check log rows count too, because a leaf namespace
-// where checks run may hold no role, grant or assignment of its own. The
-// tenant root ("") is always present, because it is
-// a real place where things live and the filter needs it as an option
-// distinct from "all namespaces".
+// where checks run may hold no role, grant or assignment of its own, but only
+// when the path is valid: Check never validates one. The tenant root ("") is
+// always present, because it is a real place where things live and the
+// filter needs it as an option distinct from "all namespaces".
 package contract
 
 import (
@@ -105,6 +105,12 @@ func namespacesListHandler(deps Deps) func(context.Context, struct{}, dashcontra
 			return NamespacesResponse{}, mapWardenError(err)
 		}
 		for _, l := range logs {
+			// Check never validates a namespace, so a check log row can carry
+			// a reserved, uppercase or too-deep path that every filter would
+			// then refuse. List only paths a filter accepts.
+			if validateNamespace(l.NamespacePath) != nil {
+				continue
+			}
 			seen[l.NamespacePath] = struct{}{}
 		}
 
