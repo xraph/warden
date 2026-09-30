@@ -21,6 +21,8 @@ intents:
   - { name: config.detail,          kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: overview.stats,         kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: overview.recentChecks,  kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: checkLogs.list,   kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: checkLogs.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: namespaces.list,        kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: roles.list,   kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: roles.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
@@ -108,11 +110,13 @@ intents:
       invalidates: [policies.list, policies.detail, overview.stats, namespaces.list] }
   # RunMaintenance purges expired assignments and, past the retention, check
   # log entries. Both are deletes, so every view of them goes stale: the
-  # counters and the recent checks feed, the assignment list and expiring
-  # feed, the role page assignments.delete also refreshes, and the namespace
-  # list, which is built partly from assignment namespaces.
+  # counters and the recent checks feed, the check log list and detail, the
+  # assignment list and expiring feed, the role page assignments.delete also
+  # refreshes, and the namespace list, which is built partly from assignment
+  # namespaces.
   - { name: maintenance.run, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [overview.stats, overview.recentChecks, assignments.list, assignments.expiring, roles.detail, namespaces.list] }
+      invalidates: [overview.stats, overview.recentChecks, checkLogs.list, checkLogs.detail, assignments.list,
+                    assignments.expiring, roles.detail, namespaces.list] }
   - { name: maintenance.cacheInvalidate, kind: command, version: 1, requires: { warden: warden.engine }, capability: write }
 
 queries:
@@ -125,6 +129,14 @@ queries:
   recentChecks:
     intent: overview.recentChecks
     cache: { staleTime: 15s }
+  # Checks arrive continuously, so a short stale time: an operator hunting
+  # a denial is waiting for the next one.
+  checkLogList:
+    intent: checkLogs.list
+    cache: { staleTime: 10s }
+  checkLogDetail:
+    intent: checkLogs.detail
+    cache: { staleTime: 60s }
   namespaces:
     intent: namespaces.list
     cache: { staleTime: 60s }

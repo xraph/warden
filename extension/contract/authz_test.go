@@ -28,6 +28,8 @@ var wantPolicies = map[string]struct{ action, resource string }{
 	"config.detail":               {"read", "warden:config"},
 	"overview.stats":              {"read", "warden:overview"},
 	"overview.recentChecks":       {"read_audit", "warden:check_log"},
+	"checkLogs.list":              {"read_audit", "warden:check_log"},
+	"checkLogs.detail":            {"read_audit", "warden:check_log"},
 	"namespaces.list":             {"read", "warden:overview"},
 	"roles.list":                  {"read", "warden:role"},
 	"roles.detail":                {"read", "warden:role"},

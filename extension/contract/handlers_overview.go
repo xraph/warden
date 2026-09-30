@@ -123,7 +123,8 @@ func overviewRecentChecksHandler(deps Deps) func(context.Context, RecentChecksIn
 	}
 }
 
-// projectCheckLog is shared with the check log page in a later plan.
+// projectCheckLog is shared by overview.recentChecks and checkLogs.list, so
+// the two never disagree about what a row looks like.
 func projectCheckLog(e *checklog.Entry) CheckLogSummary {
 	return CheckLogSummary{
 		ID:            e.ID.String(),

@@ -50,6 +50,8 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"config.detail":               dashcontract.IntentKindQuery,
 		"overview.stats":              dashcontract.IntentKindQuery,
 		"overview.recentChecks":       dashcontract.IntentKindQuery,
+		"checkLogs.list":              dashcontract.IntentKindQuery,
+		"checkLogs.detail":            dashcontract.IntentKindQuery,
 		"namespaces.list":             dashcontract.IntentKindQuery,
 		"roles.list":                  dashcontract.IntentKindQuery,
 		"roles.detail":                dashcontract.IntentKindQuery,
@@ -310,8 +312,8 @@ func TestManifest_MaintenanceRunInvalidatesEverythingItPurges(t *testing.T) {
 	// handlers_maintenance.go returns AssignmentsPurged, so the command
 	// deletes assignment rows. It used to invalidate only the overview
 	// views, which left the assignment list and the expiring feed showing
-	// rows that no longer exist. Check logs are its other purge, and the only
-	// view of them is overview.recentChecks.
+	// rows that no longer exist. Check logs are its other purge, and they are
+	// shown by the recent checks feed and by the check log list and detail.
 	m := loadManifest(t)
 	var got []string
 	for _, in := range m.Intents {
@@ -320,7 +322,7 @@ func TestManifest_MaintenanceRunInvalidatesEverythingItPurges(t *testing.T) {
 		}
 	}
 	for _, target := range []string{
-		"overview.stats", "overview.recentChecks",
+		"overview.stats", "overview.recentChecks", "checkLogs.list", "checkLogs.detail",
 		"assignments.list", "assignments.expiring", "roles.detail", "namespaces.list",
 	} {
 		found := false
@@ -331,6 +333,36 @@ func TestManifest_MaintenanceRunInvalidatesEverythingItPurges(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("maintenance.run does not invalidate %s", target)
+		}
+	}
+}
+
+func TestManifest_CheckLogQueriesAreDeclared(t *testing.T) {
+	m := loadManifest(t)
+	for name, want := range map[string]struct{ intent, stale string }{
+		// Checks arrive continuously, so the list is short-lived. A single
+		// check's row never changes once written.
+		"checkLogList":   {"checkLogs.list", "10s"},
+		"checkLogDetail": {"checkLogs.detail", "60s"},
+	} {
+		q, ok := m.Queries[name]
+		if !ok {
+			t.Errorf("manifest declares no %s query", name)
+			continue
+		}
+		if q.Intent != want.intent {
+			t.Errorf("%s points at %q, want %s", name, q.Intent, want.intent)
+		}
+		if q.Cache.StaleTime != want.stale {
+			t.Errorf("%s staleTime = %q, want %s", name, q.Cache.StaleTime, want.stale)
+		}
+	}
+	for _, in := range m.Intents {
+		if in.Name != "checkLogs.list" && in.Name != "checkLogs.detail" {
+			continue
+		}
+		if in.Kind != dashcontract.IntentKindQuery || in.Capability != "read" {
+			t.Errorf("%s is %s/%s, want a read query", in.Name, in.Kind, in.Capability)
 		}
 	}
 }

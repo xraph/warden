@@ -54,6 +54,14 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := overviewRecentChecksHandler(deps)(context.Background(), RecentChecksInput{}, p)
 		return err
 	}},
+	{"checkLogs.list", func(deps Deps, p dashcontract.Principal) error {
+		_, err := checkLogsListHandler(deps)(context.Background(), CheckLogsListInput{}, p)
+		return err
+	}},
+	{"checkLogs.detail", func(deps Deps, p dashcontract.Principal) error {
+		_, err := checkLogsDetailHandler(deps)(context.Background(), CheckLogDetailInput{}, p)
+		return err
+	}},
 	{"namespaces.list", func(deps Deps, p dashcontract.Principal) error {
 		_, err := namespacesListHandler(deps)(context.Background(), struct{}{}, p)
 		return err
