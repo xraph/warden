@@ -120,6 +120,7 @@ var oneBadConditionPerReason = []struct {
 	{ReasonUnknownOperator, PolicyCondition{Field: "context.ip", Operator: "approximately", Value: "x"}, "not an operator warden knows"},
 	{ReasonInvalidRegex, PolicyCondition{Field: "subject.id", Operator: "regex", Value: "(unclosed"}, "does not compile"},
 	{ReasonUnresolvableField, PolicyCondition{Field: "action.verb", Operator: "neq", Value: "read"}, "never gives"},
+	{ReasonAlwaysPresent, PolicyCondition{Field: "action.name", Operator: "not_exists"}, "always gives"},
 	{ReasonNotAList, PolicyCondition{Field: "context.ip", Operator: "not_in", Value: "10.1.2.3"}, "needs a list"},
 	{ReasonEmptyList, PolicyCondition{Field: "context.ip", Operator: "in", Value: []any{}}, "list is empty"},
 	{ReasonNotANumber, PolicyCondition{Field: "subject.level", Operator: "gt", Value: "high"}, "compares numbers"},

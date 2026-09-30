@@ -49,6 +49,9 @@ func requests() []*warden.CheckRequest {
 			Resource: warden.Resource{Type: "document", ID: "d2", Attributes: map[string]any{"size": 10}},
 			Context:  map[string]any{"ip": "10.1.2.3", "at": "2026-06-10T00:00:00Z"},
 		},
+		// Every always-present field empty: the value is still present, and
+		// exists must still be true. The probe has to prove that too.
+		{},
 	}
 }
 
@@ -84,12 +87,31 @@ func TestClassifyConditionMatchesTheEvaluator(t *testing.T) {
 		{"gt against a numeric string is not fixed", policy.Condition{Field: "subject.level", Operator: policy.OpGreaterThan, Value: "3"}, ProblemNone, ReasonNone},
 		{"gt with no value is always false", policy.Condition{Field: "subject.level", Operator: policy.OpGreaterThan}, ProblemAlwaysFalse, ReasonNotANumber},
 		{"time_before with an RFC3339 time is not fixed", policy.Condition{Field: "context.at", Operator: policy.OpTimeBefore, Value: "2026-06-12T00:00:00Z"}, ProblemNone, ReasonNone},
+		{"exists on a context attribute still depends on the check", policy.Condition{Field: "context.ip", Operator: policy.OpExists}, ProblemNone, ReasonNone},
+		{"not_exists on a subject attribute still depends on the check", policy.Condition{Field: "subject.level", Operator: policy.OpNotExists}, ProblemNone, ReasonNone},
 		{"an empty context suffix never resolves", policy.Condition{Field: "context.", Operator: policy.OpExists}, ProblemAlwaysFalse, ReasonUnresolvableField},
 		{"an uppercase prefix never resolves", policy.Condition{Field: "Subject.id", Operator: policy.OpNotExists}, ProblemAlwaysTrue, ReasonUnresolvableField},
 		{"regex on an unresolvable field is matched against <nil>", policy.Condition{Field: "action.verb", Operator: policy.OpRegex, Value: "^<nil>$"}, ProblemAlwaysTrue, ReasonUnresolvableField},
 		{"starts_with on an unresolvable field is matched against <nil>", policy.Condition{Field: "action", Operator: policy.OpStartsWith, Value: "read"}, ProblemAlwaysFalse, ReasonUnresolvableField},
 		{"in on an unresolvable field looks for <nil>", policy.Condition{Field: "action.verb", Operator: policy.OpIn, Value: []any{"read"}}, ProblemAlwaysFalse, ReasonUnresolvableField},
 		{"eq with no value on an unresolvable field matches <nil>", policy.Condition{Field: "action.verb", Operator: policy.OpEquals}, ProblemAlwaysTrue, ReasonUnresolvableField},
+	}
+	// A value each field takes in some requests and not others, so the eq case
+	// below really varies.
+	alwaysPresent := map[string]string{
+		"subject.kind": "user", "subject.id": "u1", "resource.type": "document", "resource.id": "d1", "action.name": "read",
+	}
+	for _, field := range []string{"subject.kind", "subject.id", "resource.type", "resource.id", "action.name"} {
+		cases = append(cases, []struct {
+			name    string
+			c       policy.Condition
+			problem ConditionProblem
+			reason  ConditionReason
+		}{
+			{"exists on " + field + " is always true", policy.Condition{Field: field, Operator: policy.OpExists}, ProblemAlwaysTrue, ReasonAlwaysPresent},
+			{"not_exists on " + field + " is always false", policy.Condition{Field: field, Operator: policy.OpNotExists}, ProblemAlwaysFalse, ReasonAlwaysPresent},
+			{"eq on " + field + " still depends on the check", policy.Condition{Field: field, Operator: policy.OpEquals, Value: alwaysPresent[field]}, ProblemNone, ReasonNone},
+		}...)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,6 +156,7 @@ func TestAnalysePolicyIsOrderAware(t *testing.T) {
 	throws := policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: "(unclosed"}
 	never := policy.Condition{Field: "context.ip", Operator: policy.OpIPInCIDR, Value: "nope"}
 	varies := policy.Condition{Field: "context.ip", Operator: policy.OpIPInCIDR, Value: "10.0.0.0/8"}
+	absentNever := policy.Condition{Field: "subject.id", Operator: policy.OpNotExists}
 
 	cases := []struct {
 		name         string
@@ -150,6 +173,8 @@ func TestAnalysePolicyIsOrderAware(t *testing.T) {
 		{"the first fixed outcome decides: a throw before always-false", policy.EffectDeny, []policy.Condition{throws, never}, true, false, 0},
 		{"a varying condition before a throw does not change the classification", policy.EffectDeny, []policy.Condition{varies, throws}, true, false, 1},
 		{"an effect that is not exactly allow is a deny", policy.Effect("DENY"), []policy.Condition{throws}, true, false, 0},
+		{"not_exists on an always-present field means never applies", policy.EffectDeny, []policy.Condition{absentNever}, false, true, 0},
+		{"exists on an always-present field restricts nothing and decides nothing", policy.EffectDeny, []policy.Condition{{Field: "subject.id", Operator: policy.OpExists}, varies}, false, false, -1},
 		{"a clean policy is neither", policy.EffectDeny, []policy.Condition{varies}, false, false, -1},
 	}
 	for _, tc := range cases {

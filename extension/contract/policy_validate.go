@@ -176,6 +176,8 @@ func conditionIssue(c PolicyCondition) string {
 		return "This pattern does not compile, so this condition would fail every check."
 	case reason == ReasonUnresolvableField:
 		return fmt.Sprintf("Warden never gives %q a value, so this condition would always be %t. Use subject., resource., context., or action.name.", c.Field, problem == ProblemAlwaysTrue)
+	case reason == ReasonAlwaysPresent:
+		return fmt.Sprintf("Warden always gives %q a value, even an empty one, so this condition would always be %t.", c.Field, problem == ProblemAlwaysTrue)
 	case reason == ReasonNotAList:
 		return "This operator needs a list of values."
 	case reason == ReasonEmptyList:

@@ -49,6 +49,7 @@ const (
 	ReasonNotANumber        ConditionReason = "notANumber"
 	ReasonNoValidCIDR       ConditionReason = "noValidCIDR"
 	ReasonNotATime          ConditionReason = "notATime"
+	ReasonAlwaysPresent     ConditionReason = "alwaysPresent"
 )
 
 // knownOperators is the evaluator's switch in evaluateCondition. Anything
@@ -79,6 +80,17 @@ func fieldResolves(field string) bool {
 		return suffix == "name"
 	}
 	return false
+}
+
+// alwaysPresentFields are the fields resolveField returns as a plain string on
+// every request, so the value is never nil, even when the string is empty.
+// Every other resolvable field is an attribute or context lookup and can be
+// nil. Only exists and not_exists have a fixed outcome on these: every other
+// operator still depends on what the check carries.
+var alwaysPresentFields = map[string]struct{}{
+	"subject.kind": {}, "subject.id": {},
+	"resource.type": {}, "resource.id": {},
+	"action.name": {},
 }
 
 // listOf mirrors inSlice's accepted shapes: []string and []any, nothing
@@ -220,6 +232,14 @@ func classifyCondition(c policy.Condition) (ConditionProblem, ConditionReason) {
 			return ProblemAlwaysTrue, ReasonUnresolvableField
 		}
 		return ProblemAlwaysFalse, ReasonUnresolvableField
+	}
+	if _, ok := alwaysPresentFields[c.Field]; ok {
+		switch c.Operator {
+		case policy.OpExists:
+			return ProblemAlwaysTrue, ReasonAlwaysPresent
+		case policy.OpNotExists:
+			return ProblemAlwaysFalse, ReasonAlwaysPresent
+		}
 	}
 	switch c.Operator {
 	case policy.OpIn, policy.OpNotIn:
