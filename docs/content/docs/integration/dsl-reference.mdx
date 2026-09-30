@@ -233,7 +233,7 @@ role admin : editor {
 | `is_system` | `BOOL` | `false` | System-managed role; `--prune` will not delete it. |
 | `is_default` | `BOOL` | `false` | Marks the role as the default for new subjects. |
 | `max_members` | `INT` | `0` (no limit) | Soft limit enforced at assignment time. |
-| `grants` | `string_list` | `[]` | Permission names. Use `+=` to append to inherited grants. |
+| `grants` | `grant_list` | unmanaged | Permission names, found in the role's namespace and then at the root. A permission anywhere else, or a root one shadowed by a same-named permission in the role's namespace, is written `{ namespace = "eng", name = "deploy:run" }`. A `grants` clause sets the role's whole grant set, so `grants = []` revokes every grant; a role with no `grants` clause keeps its stored grants. |
 | `metadata` | `map` | `{}` | Arbitrary key/value pairs. |
 
 ### Inheritance
@@ -271,7 +271,7 @@ policy "business-hours-only" {
   not_before  = "2026-01-01T00:00:00Z"   // PBAC
   not_after   = "2026-12-31T23:59:59Z"   // PBAC
   obligations = ["audit-log"]            // PBAC
-  subjects    = []                       // empty = match any subject
+  subjects    = [{ kind = "user" }]      // none = match any subject
   actions     = ["write", "delete"]
   resources   = ["document"]
   metadata    = {}
@@ -295,7 +295,7 @@ policy "business-hours-only" {
 | `not_before` | `STRING` (RFC3339) | unset | PBAC: policy is inactive before this instant. |
 | `not_after` | `STRING` (RFC3339) | unset | PBAC: policy is inactive after this instant. |
 | `obligations` | `string_list` | `[]` | PBAC: named side-effect actions emitted on match. |
-| `subjects` | `string_list` | `[]` | Subject matchers (glob). Empty = any subject. |
+| `subjects` | `subject_list` | none | Subject matchers, each `{ kind = "...", id = "...", role = "..." }` with every field optional. The fields of one matcher are AND-ed; the policy applies when any matcher matches. `{}` matches every subject. No `subjects` clause = any subject. |
 | `actions` | `string_list` | `[]` | Action patterns (glob). |
 | `resources` | `string_list` | `[]` | Resource patterns (glob). |
 | `metadata` | `map` | `{}` | Arbitrary key/value pairs. |
@@ -606,7 +606,7 @@ role_member   = "name"        "=" STRING
               | "is_system"   "=" BOOL
               | "is_default"  "=" BOOL
               | "max_members" "=" INT
-              | "grants"      ("=" | "+=") string_list
+              | "grants"      ("=" | "+=") grant_list
               | "metadata"    "=" map_lit
 
 (* — Policies — *)
@@ -618,17 +618,32 @@ policy_member = "description" "=" STRING
               | "not_before"  "=" STRING                    (* RFC3339 *)
               | "not_after"   "=" STRING
               | "obligations" "=" string_list
-              | "subjects"    "=" string_list
+              | "subjects"    "=" subject_list
               | "actions"     "=" string_list
               | "resources"   "=" string_list
               | "metadata"    "=" map_lit
               | "when" "{" { condition } "}"
 
-condition     = field_path operator literal [ "negate" ]
+condition     = ( field_path | STRING ) operator [ value ] [ "negate" ]
               | "all_of" "{" { condition } "}"
               | "any_of" "{" { condition } "}"
+              (* value is optional only for exists / not exists, and is read
+                 only when it starts on the operator's line *)
 
-field_path    = IDENT { ("." IDENT | "[" STRING "]") }
+field_path    = WORD { ("." WORD | "." "[" STRING "]") }   (* WORD: IDENT or a keyword *)
+value         = STRING | [ "-" ] ( INT | FLOAT ) | BOOL
+              | "[" [ value { "," value } ] "]"
+
+subject_list  = "[" [ matcher { "," matcher } [ "," ] ] "]"
+matcher       = "{" { ( "kind" | "id" | "role" ) "=" STRING [ "," ] } "}"
+grant_list    = "[" [ grant { "," grant } [ "," ] ] "]"
+grant         = STRING
+              | "{" { ( "namespace" | "name" ) "=" STRING [ "," ] } "}"
+
+(* Wherever a name is expected (tenant, app, resource type, relation,
+   subject type, resource permission, a permission's resource and action,
+   role slug and parent, each part of a relation tuple), a STRING may stand
+   in for an IDENT. warden fmt quotes a name a bare IDENT cannot spell. *)
 
 operator      = "==" | "!=" | "<" | ">" | "<=" | ">=" | "=~"
               | "in" | "not" "in"
