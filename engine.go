@@ -284,12 +284,21 @@ func (e *Engine) prepareCheck(ctx context.Context, req *CheckRequest, opts []Cal
 		return tenantScope{}, callOptions{}, fmt.Errorf("warden: resource type is required for permission check")
 	}
 
+	return e.resolveScope(ctx, req.TenantID, req.NamespacePath, opts)
+}
+
+// resolveScope resolves one call's scope and call options, the scope-only
+// part of prepareCheck, which SubjectRoles shares. Precedence runs from the
+// context, to the request's own tenant and namespace (each only when
+// non-empty), to the call options, which win. SubjectRoles has no request
+// and passes "" for both, which skips that middle layer.
+func (e *Engine) resolveScope(ctx context.Context, reqTenantID, reqNamespacePath string, opts []CallOption) (tenantScope, callOptions, error) {
 	scope := scopeFromContext(ctx)
-	if req.TenantID != "" {
-		scope.tenantID = req.TenantID
+	if reqTenantID != "" {
+		scope.tenantID = reqTenantID
 	}
-	if req.NamespacePath != "" {
-		scope.namespacePath = req.NamespacePath
+	if reqNamespacePath != "" {
+		scope.namespacePath = reqNamespacePath
 	}
 
 	// Apply call-time options (highest priority).
@@ -504,9 +513,8 @@ func toMatchRefs(in []MatchInfo) []checklog.MatchRef {
 // callers can read both permissions (RBAC) and slugs (role-scoped ABAC
 // matching, see matchesSubject) from the same resolution.
 func (e *Engine) resolveAssignedRoles(ctx context.Context, scope tenantScope, req *CheckRequest) ([]*role.Role, error) {
-	globalRoleIDs, err := e.store.ListRolesForSubject(ctx, scope.tenantID, scope.namespaces, string(req.Subject.Kind), req.Subject.ID)
+	globalRoleIDs, err := e.globalRoleIDs(ctx, scope, req.Subject.Kind, req.Subject.ID)
 	if err != nil {
-		e.metrics.StoreError("list_roles_for_subject")
 		return nil, err
 	}
 	resourceRoleIDs, err := e.store.ListRolesForSubjectOnResource(ctx, scope.tenantID, scope.namespaces, string(req.Subject.Kind), req.Subject.ID, req.Resource.Type, req.Resource.ID)
@@ -522,13 +530,36 @@ func (e *Engine) resolveAssignedRoles(ctx context.Context, scope tenantScope, re
 		return nil, nil
 	}
 
-	direct, err := e.store.GetRoles(ctx, scope.tenantID, allIDs)
+	direct, err := e.getRoles(ctx, scope, allIDs)
 	if err != nil {
-		e.metrics.StoreError("get_roles")
 		return nil, err
 	}
 
 	return e.resolveInheritedRoleObjects(ctx, direct), nil
+}
+
+// globalRoleIDs lists the roles assigned to a subject at scope's namespace
+// or an ancestor, with no resource and unexpired: the global half of
+// resolveAssignedRoles, which SubjectRoles shares through globalRoles.
+func (e *Engine) globalRoleIDs(ctx context.Context, scope tenantScope, kind SubjectKind, subjectID string) ([]id.RoleID, error) {
+	globalRoleIDs, err := e.store.ListRolesForSubject(ctx, scope.tenantID, scope.namespaces, string(kind), subjectID)
+	if err != nil {
+		e.metrics.StoreError("list_roles_for_subject")
+		return nil, err
+	}
+	return globalRoleIDs, nil
+}
+
+// getRoles loads role objects by ID, counting a store failure under
+// "get_roles". Callers skip it for an empty ID list, as resolveAssignedRoles
+// always has.
+func (e *Engine) getRoles(ctx context.Context, scope tenantScope, roleIDs []id.RoleID) ([]*role.Role, error) {
+	direct, err := e.store.GetRoles(ctx, scope.tenantID, roleIDs)
+	if err != nil {
+		e.metrics.StoreError("get_roles")
+		return nil, err
+	}
+	return direct, nil
 }
 
 // resolveInheritedRoleObjects walks ParentSlug inheritance breadth-first,

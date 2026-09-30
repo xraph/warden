@@ -198,22 +198,7 @@ func contains(list []string, want string) bool {
 }
 
 func (e *conditionEvaluator) matchesSubject(pol *policy.Policy, req *CheckRequest, roleSlugs []string) bool {
-	if len(pol.Subjects) == 0 {
-		return true // No subject filter means all subjects.
-	}
-	for _, sm := range pol.Subjects {
-		if sm.Kind != "" && sm.Kind != string(req.Subject.Kind) {
-			continue
-		}
-		if sm.ID != "" && sm.ID != req.Subject.ID {
-			continue
-		}
-		if sm.Role != "" && !contains(roleSlugs, sm.Role) {
-			continue
-		}
-		return true
-	}
-	return false
+	return PolicySelectsSubject(pol, req.Subject.Kind, req.Subject.ID, roleSlugs)
 }
 
 func (e *conditionEvaluator) matchesAction(pol *policy.Policy, req *CheckRequest) bool {
