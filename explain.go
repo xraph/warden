@@ -60,7 +60,9 @@ type Explanation struct {
 // each model's part. It never reads or fills the cache, fires no hooks and
 // writes no check log. A request Check would refuse before evaluating
 // (a missing field, a missing tenant) returns that error; a model's store
-// failure is reported in the Explanation instead.
+// failure is reported in the Explanation instead. As in a dry-run Check, a
+// store failure still increments Metrics.StoreError and a failed
+// permission expression still logs its warning.
 func (e *Engine) Explain(ctx context.Context, req *CheckRequest, opts ...CallOption) (*Explanation, error) {
 	start := time.Now()
 	scope, _, err := e.prepareCheck(ctx, req, opts)
@@ -78,6 +80,9 @@ func (e *Engine) Explain(ctx context.Context, req *CheckRequest, opts ...CallOpt
 		out.Err = run.err.Error()
 		return out, nil
 	}
+	// mergeDecisions copies the winning lane's struct, so Result is not the
+	// lane's pointer, but Result.MatchedBy still shares its backing array
+	// with that lane's. Harmless for readers that only marshal it.
 	result := e.mergeDecisions(req, run.rbac, run.rebac, run.abac)
 	if !result.Allowed && run.rebac != nil && run.rebac.truncated {
 		result.Reason = truncatedWalkNote + joinReason(result.Reason)
@@ -110,10 +115,13 @@ func (e *Engine) lane(enabled bool, model string, run modelRun, result *CheckRes
 }
 
 // rebacLane is lane for ReBAC, which can also be skipped and carries what
-// its walk and expression reported.
+// its walk and expression reported. Skipped means exactly Check's own skip
+// rule held (RBAC allowed and EvaluateAllModels is off), whatever ABAC did
+// afterwards. When RBAC failed, run.rbac is nil and lane reports
+// notEvaluated.
 func (e *Engine) rebacLane(run modelRun) Lane {
 	enabled := e.config.rebacEnabled()
-	if enabled && run.failed == "" && run.rebac == nil {
+	if enabled && run.rbac != nil && run.rbac.Allowed && !e.config.EvaluateAllModels {
 		return Lane{State: LaneSkipped}
 	}
 	l := e.lane(enabled, "rebac", run, run.rebac)

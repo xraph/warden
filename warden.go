@@ -80,13 +80,13 @@ type CheckResult struct {
 
 	// truncated is set by the ReBAC evaluator when its graph walk stopped
 	// at a depth or budget limit. Check folds it into the reason of a
-	// denial. Unexported, so it never reaches the wire or the cache.
+	// denial. Unexported, so it never reaches the wire.
 	truncated bool
 
 	// exprErr is set by the ReBAC evaluator when the resource type's
 	// permission expression failed and was treated as no match. Explain
 	// reports it; Check keeps its behaviour. Unexported, so it never
-	// reaches the wire or the cache.
+	// reaches the wire.
 	exprErr string
 }
 

@@ -566,3 +566,76 @@ func TestCheck_SkipsTheGraphWalkAfterAnRBACAllow(t *testing.T) {
 		})
 	}
 }
+
+// failingRelationStore fails ReBAC's first store read.
+type failingRelationStore struct{ *memory.Store }
+
+func (failingRelationStore) CheckDirectRelation(context.Context, string, []string, string, string, string, string, string) (bool, error) {
+	return false, errors.New("relations unavailable")
+}
+
+// failingPolicyStore fails ABAC's policy read.
+type failingPolicyStore struct{ *memory.Store }
+
+func (failingPolicyStore) ListActivePolicies(context.Context, string, []string) ([]*policy.Policy, error) {
+	return nil, errors.New("policies unavailable")
+}
+
+func TestExplain_ReBACStoreFailure(t *testing.T) {
+	eng := newExplainEngine(t, WithStore(failingRelationStore{memory.New()}))
+
+	ex := explain(t, eng, bobReads())
+
+	if ex.RBAC.State != LaneNoMatch {
+		t.Errorf("RBAC state = %q, want noMatch", ex.RBAC.State)
+	}
+	if ex.ReBAC.State != LaneError || ex.ReBAC.Err != "relations unavailable" {
+		t.Errorf("ReBAC lane = %+v, want error with the store's message", ex.ReBAC)
+	}
+	if ex.ABAC.State != LaneNotEvaluated {
+		t.Errorf("ABAC state = %q, want notEvaluated", ex.ABAC.State)
+	}
+	if ex.Result != nil || ex.Err == "" {
+		t.Errorf("Result = %+v, Err = %q; want no result and an error", ex.Result, ex.Err)
+	}
+}
+
+func TestExplain_ABACStoreFailureAfterAnRBACAllow(t *testing.T) {
+	mem := memory.New()
+	seedAllow(t, mem)
+	eng := newExplainEngine(t, WithStore(failingPolicyStore{mem}))
+
+	ex := explain(t, eng, readReq())
+
+	if ex.RBAC.State != LaneAllow {
+		t.Errorf("RBAC state = %q, want allow", ex.RBAC.State)
+	}
+	if ex.ReBAC.State != LaneSkipped {
+		t.Errorf("ReBAC state = %q, want skipped: RBAC allowed, so Check never walked", ex.ReBAC.State)
+	}
+	if ex.ABAC.State != LaneError || ex.ABAC.Err != "policies unavailable" {
+		t.Errorf("ABAC lane = %+v, want error with the store's message", ex.ABAC)
+	}
+	if ex.Result != nil || ex.Err == "" {
+		t.Errorf("Result = %+v, Err = %q; want no result and an error", ex.Result, ex.Err)
+	}
+}
+
+func TestExplain_ABACStoreFailureWithEvaluateAllModels(t *testing.T) {
+	mem := memory.New()
+	seedAllow(t, mem)
+	eng := newExplainEngine(t, WithStore(failingPolicyStore{mem}),
+		WithConfig(configWith(func(c *Config) { c.EvaluateAllModels = true })))
+
+	ex := explain(t, eng, readReq())
+
+	if ex.RBAC.State != LaneAllow {
+		t.Errorf("RBAC state = %q, want allow", ex.RBAC.State)
+	}
+	if ex.ReBAC.State != LaneNoMatch || ex.ReBAC.Result == nil || ex.ReBAC.Result.Decision != DecisionDenyRelation {
+		t.Errorf("ReBAC lane = %+v, want the noMatch it really reached", ex.ReBAC)
+	}
+	if ex.ABAC.State != LaneError || ex.ABAC.Err != "policies unavailable" {
+		t.Errorf("ABAC lane = %+v, want error with the store's message", ex.ABAC)
+	}
+}
