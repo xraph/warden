@@ -576,11 +576,8 @@ func (p *parser) parseRole() *RoleDecl {
 			if !p.accept(ASSIGN) {
 				p.errf(p.cur.Pos, "expected `=` after max_members")
 			}
-			if p.cur.Kind == INT {
-				if v, err := strconv.Atoi(p.cur.Value); err == nil {
-					d.MaxMembers = v
-				}
-				p.advance()
+			if v, ok := p.parseSignedInt("max_members"); ok {
+				d.MaxMembers = v
 			}
 		case GRANTS:
 			p.advance()
@@ -637,11 +634,8 @@ func (p *parser) parsePolicy() *PolicyDecl {
 			if !p.accept(ASSIGN) {
 				p.errf(p.cur.Pos, "expected `=` after priority")
 			}
-			if p.cur.Kind == INT {
-				if v, err := strconv.Atoi(p.cur.Value); err == nil {
-					d.Priority = v
-				}
-				p.advance()
+			if v, ok := p.parseSignedInt("priority"); ok {
+				d.Priority = v
 			}
 		case ACTIVE:
 			p.advance()
@@ -747,7 +741,7 @@ func (p *parser) parseCondition() *Condition {
 			p.errf(p.cur.Pos, "expected `{` after all_of")
 			return nil
 		}
-		c := &Condition{Pos: pos}
+		c := &Condition{Pos: pos, AllOf: []*Condition{}}
 		for p.cur.Kind != RBRACE && p.cur.Kind != EOF {
 			if inner := p.parseCondition(); inner != nil {
 				c.AllOf = append(c.AllOf, inner)
@@ -761,7 +755,7 @@ func (p *parser) parseCondition() *Condition {
 			p.errf(p.cur.Pos, "expected `{` after any_of")
 			return nil
 		}
-		c := &Condition{Pos: pos}
+		c := &Condition{Pos: pos, AnyOf: []*Condition{}}
 		for p.cur.Kind != RBRACE && p.cur.Kind != EOF {
 			if inner := p.parseCondition(); inner != nil {
 				c.AnyOf = append(c.AnyOf, inner)
@@ -941,6 +935,27 @@ func (p *parser) parseLiteralValue() (any, bool) {
 	}
 	p.errf(p.cur.Pos, "expected literal value, got %s %q", p.cur.Kind, p.cur.Value)
 	return nil, false
+}
+
+// parseSignedInt reads an INT with an optional leading `-`, for an integer
+// field the store keeps signed (priority, max_members).
+func (p *parser) parseSignedInt(what string) (int, bool) {
+	neg := p.accept(MINUS)
+	if p.cur.Kind != INT {
+		p.errf(p.cur.Pos, "expected an integer after %s =, got %s %q", what, p.cur.Kind, p.cur.Value)
+		return 0, false
+	}
+	tok := p.advance()
+	raw := tok.Value
+	if neg {
+		raw = "-" + raw
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		p.errf(tok.Pos, "invalid integer %q for %s: %v", raw, what, err)
+		return 0, false
+	}
+	return v, true
 }
 
 // parseNumber reads an INT or FLOAT with an optional leading `-`.

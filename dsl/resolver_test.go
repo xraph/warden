@@ -230,3 +230,29 @@ namespace "Eng" {
 		t.Fatal("expected diagnostic on uppercase namespace segment")
 	}
 }
+
+// TestResolve_RefusesConditionsTheStoreCannotHold pins checkConditions: a
+// stored policy's conditions are a flat list that must all hold, with no
+// negation and no OR, so each shape that would be stored as something else
+// is a diagnostic at that condition.
+func TestResolve_RefusesConditionsTheStoreCannotHold(t *testing.T) {
+	for _, tc := range []struct {
+		name, when string
+		line       int
+		want       string
+	}{
+		{"negate", `subject.a == "x" negate`, 5, "`negate` cannot be stored"},
+		{"negate inside all_of", "all_of {\n            subject.a == \"x\" negate\n        }", 6, "`negate` cannot be stored"},
+		{"any_of with two conditions", "any_of {\n            subject.a == \"x\"\n            subject.b == \"y\"\n        }", 5, "any_of with 2 conditions cannot be stored"},
+		{"any_of nested in all_of", "all_of {\n            subject.c == \"z\"\n            any_of {\n                subject.a == \"x\"\n                subject.b == \"y\"\n            }\n        }", 7, "any_of with 2 conditions cannot be stored"},
+		{"empty any_of", "any_of {}", 5, "an empty any_of can never hold"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "warden config 1\npolicy \"p\" {\n    effect = deny\n    when {\n        " + tc.when + "\n    }\n}\n"
+			errs := resolveSrc(t, src)
+			if len(errs) != 1 || !strings.Contains(errs[0].Msg, tc.want) || errs[0].Pos.Line != tc.line {
+				t.Fatalf("want one diagnostic at line %d containing %q, got %v\n%s", tc.line, tc.want, errs, src)
+			}
+		})
+	}
+}

@@ -17,6 +17,7 @@ import (
 //   - resource-type permission expressions reference declared relations
 //   - traversal expressions hop through declared relation targets
 //   - condition operators are valid
+//   - every condition has a shape the store can hold (checkConditions)
 //   - identifier conventions (see conventions.go: names are whatever the
 //     store and the dashboard accept; namespace paths are validated)
 func Resolve(prog *Program) []*Diagnostic {
@@ -32,6 +33,7 @@ func Resolve(prog *Program) []*Diagnostic {
 	r.checkRoleParents()
 	r.checkCycles()
 	r.checkExpressions()
+	r.checkConditions()
 	return r.errs
 }
 
@@ -324,6 +326,46 @@ func (r *resolver) findResourceType(name string) *ResourceDecl {
 		}
 	}
 	return nil
+}
+
+// checkConditions refuses every condition shape the store cannot hold.
+//
+// A stored policy keeps its conditions as one flat list of
+// field/operator/value predicates that must all hold (policy.Condition). It
+// has no negation flag and no OR. So the language may group conditions
+// only in ways that flatten to that list without changing their meaning:
+// `all_of` (an AND, at any depth) and an `any_of` with exactly one
+// condition (which is just that condition). Everything else would be
+// stored as something else, so it is a diagnostic at the condition:
+//   - `negate`: stored without it, the condition would mean its opposite;
+//   - `any_of` with two or more conditions: only one would be stored;
+//   - an empty `any_of`: it can never hold, and an empty list always does.
+func (r *resolver) checkConditions() {
+	for _, pol := range r.prog.Policies {
+		for _, c := range pol.Conditions {
+			r.checkCondition(pol, c)
+		}
+	}
+}
+
+func (r *resolver) checkCondition(pol *PolicyDecl, c *Condition) {
+	switch {
+	case c.AnyOf != nil:
+		switch len(c.AnyOf) {
+		case 0:
+			r.errf(c.Pos, "policy %q: an empty any_of can never hold, and a stored policy cannot say that (its conditions are a list that must all hold)", pol.Name)
+		case 1:
+			r.checkCondition(pol, c.AnyOf[0])
+		default:
+			r.errf(c.Pos, "policy %q: any_of with %d conditions cannot be stored: a stored policy's conditions must all hold, and it has no OR. Split it into one policy per alternative", pol.Name, len(c.AnyOf))
+		}
+	case c.AllOf != nil:
+		for _, inner := range c.AllOf {
+			r.checkCondition(pol, inner)
+		}
+	case c.Negate:
+		r.errf(c.Pos, "policy %q: `negate` cannot be stored: a stored condition has no negation, so it would mean the opposite. Use the opposite operator (!=, not in, not exists) instead", pol.Name)
+	}
 }
 
 // sprintf wraps fmt.Sprintf without dragging fmt into hot paths if we ever

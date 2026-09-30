@@ -3,6 +3,7 @@ package dsl
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -753,5 +754,81 @@ func TestApply_UpdateKeepsWhatTheLanguageDoesNotExpress(t *testing.T) {
 	p, _ = s.GetPolicyByName(ctx, "t1", "", "p")
 	if p.Effect != "deny" || p.Metadata["ticket"] != "SEC-1" || p.AppID != "app1" {
 		t.Errorf("policy after update: effect %q metadata %v app %q", p.Effect, p.Metadata, p.AppID)
+	}
+}
+
+// TestApply_StorableConditionGroupsRoundTrip checks the grouping shapes
+// Resolve accepts are stored exactly: all_of at any depth (an AND) and a
+// one-condition any_of (just that condition). Before, a group nested in
+// all_of was dropped entirely.
+func TestApply_StorableConditionGroupsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	eng, s := newTestEngine(t)
+	prog := mustParse(t, `warden config 1
+policy "p" {
+    effect = deny
+    when {
+        subject.a == "1"
+        all_of {
+            subject.b == "2"
+            all_of {
+                subject.c == "3"
+            }
+            any_of {
+                subject.d == "4"
+            }
+        }
+        any_of {
+            all_of {
+                subject.e == "5"
+                subject.f == "6"
+            }
+        }
+        all_of {}
+    }
+}
+`)
+	if _, err := Apply(ctx, eng, prog, ApplyOptions{TenantID: "t1"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	p, err := s.GetPolicyByName(ctx, "t1", "", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(p.Conditions))
+	for _, c := range p.Conditions {
+		got = append(got, fmt.Sprintf("%s %s %v", c.Field, c.Operator, c.Value))
+	}
+	want := []string{"subject.a eq 1", "subject.b eq 2", "subject.c eq 3", "subject.d eq 4", "subject.e eq 5", "subject.f eq 6"}
+	if strings.Join(got, "; ") != strings.Join(want, "; ") {
+		t.Fatalf("stored conditions = %v, want %v", got, want)
+	}
+
+	// Planning the same source again is a no-op, so the flattened store
+	// and the grouped source agree.
+	res, err := Apply(ctx, eng, prog, ApplyOptions{TenantID: "t1", DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Updated) != 0 {
+		t.Fatalf("re-planning the grouped source reports %v", res.Updated)
+	}
+}
+
+// TestApply_RefusedConditionsWriteNothing checks a refused shape stops the
+// apply before any write.
+func TestApply_RefusedConditionsWriteNothing(t *testing.T) {
+	ctx := context.Background()
+	for _, when := range []string{`subject.a == "x" negate`, "any_of {\n subject.a == \"x\"\n subject.b == \"y\"\n}"} {
+		eng, s := newTestEngine(t)
+		prog := mustParse(t, "warden config 1\npolicy \"p\" {\n    effect = deny\n    when {\n"+when+"\n    }\n}\n")
+		_, err := Apply(ctx, eng, prog, ApplyOptions{TenantID: "t1"})
+		var derr *DiagnosticError
+		if !errors.As(err, &derr) {
+			t.Fatalf("%q: want a diagnostic, got %v", when, err)
+		}
+		if _, err := s.GetPolicyByName(ctx, "t1", "", "p"); err == nil {
+			t.Errorf("%q: the refused policy was stored", when)
+		}
 	}
 }

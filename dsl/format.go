@@ -429,21 +429,21 @@ func (f *formatter) policy(p *PolicyDecl) {
 }
 
 func (f *formatter) condition(c *Condition) {
-	if len(c.AllOf) > 0 {
-		f.writeln("all_of {")
-		f.indent++
-		for _, inner := range c.AllOf {
-			f.condition(inner)
+	// A group is non-nil even when empty, so `any_of {}` is written back as
+	// itself (and refused by Resolve) instead of as an empty condition.
+	if c.AllOf != nil || c.AnyOf != nil {
+		kw, inner := "all_of", c.AllOf
+		if c.AnyOf != nil {
+			kw, inner = "any_of", c.AnyOf
 		}
-		f.indent--
-		f.writeln("}")
-		return
-	}
-	if len(c.AnyOf) > 0 {
-		f.writeln("any_of {")
+		if len(inner) == 0 {
+			f.writef("%s {}\n", kw)
+			return
+		}
+		f.writef("%s {\n", kw)
 		f.indent++
-		for _, inner := range c.AnyOf {
-			f.condition(inner)
+		for _, in := range inner {
+			f.condition(in)
 		}
 		f.indent--
 		f.writeln("}")

@@ -1063,10 +1063,25 @@ func timePtrEqual(a, b *time.Time) bool {
 	return a.Equal(*b)
 }
 
+// flattenConditions turns the program's conditions into the store's flat
+// list, where every condition must hold. It is faithful for every shape
+// Resolve accepts (checkConditions): atomic conditions without `negate`,
+// `all_of` at any depth, and an `any_of` with exactly one condition. Apply
+// resolves first, so no other shape reaches it.
 func flattenConditions(in []*Condition) []policy.Condition {
 	var out []policy.Condition
-	for _, c := range in {
-		flatten := func(c *Condition) {
+	var walk func(c *Condition)
+	walk = func(c *Condition) {
+		switch {
+		case c.AnyOf != nil:
+			if len(c.AnyOf) == 1 {
+				walk(c.AnyOf[0])
+			}
+		case c.AllOf != nil:
+			for _, inner := range c.AllOf {
+				walk(inner)
+			}
+		case c.Field != "":
 			out = append(out, policy.Condition{
 				ID:       id.NewConditionID(),
 				Field:    c.Field,
@@ -1074,27 +1089,9 @@ func flattenConditions(in []*Condition) []policy.Condition {
 				Value:    c.Value,
 			})
 		}
-		switch {
-		case len(c.AllOf) > 0:
-			// AllOf: append each as separate AND-merged condition.
-			for _, inner := range c.AllOf {
-				if inner.Field != "" {
-					flatten(inner)
-				}
-			}
-		case len(c.AnyOf) > 0:
-			// AnyOf in v1: not yet supported at the evaluator layer; we
-			// record only the first sub-condition to avoid silent drops.
-			// Future work: extend evaluator to support OR groups.
-			for _, inner := range c.AnyOf {
-				if inner.Field != "" {
-					flatten(inner)
-					break
-				}
-			}
-		case c.Field != "":
-			flatten(c)
-		}
+	}
+	for _, c := range in {
+		walk(c)
 	}
 	return out
 }

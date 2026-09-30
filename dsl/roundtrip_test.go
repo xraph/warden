@@ -137,7 +137,8 @@ func seedRoundTripTenant(t *testing.T, s *memory.Store) {
 			grants: []permission.Ref{{NamespacePath: "eng", Name: "deploy:run"}},
 		},
 		{
-			r: &role.Role{NamespacePath: "eng/platform", Slug: "sre", Name: "SRE", Metadata: map[string]any{"pager": true}},
+			// A negative max_members is valid in the store, so it must read back.
+			r: &role.Role{NamespacePath: "eng/platform", Slug: "sre", Name: "SRE", MaxMembers: -1, Metadata: map[string]any{"pager": true}},
 			grants: []permission.Ref{
 				{NamespacePath: "eng/platform", Name: "svc:restart"},
 				// Found at the root by the fallback.
@@ -200,7 +201,7 @@ func seedRoundTripTenant(t *testing.T, s *memory.Store) {
 			// What the dashboard stores for "no subjects, no actions": empty
 			// lists, not nil.
 			NamespacePath: "eng/platform", Name: "platform-open",
-			Effect: policy.EffectAllow, IsActive: true, Version: 1,
+			Effect: policy.EffectAllow, IsActive: true, Version: 1, Priority: -5,
 			Subjects: []policy.SubjectMatch{}, Actions: []string{}, Resources: []string{}, Obligations: []string{},
 		},
 	} {
@@ -371,6 +372,8 @@ func TestRoundTrip_PlanComparesEveryField(t *testing.T) {
 			r := findRole(p, "eng", "lead")
 			r.Grants = nil
 		}, "~ role/eng/lead (grants)"},
+		{"permission resource", func(p *Program) { findPerm(p, "", "doc:read").Resource = "document" }, "~ permission//doc:read (resource)"},
+		{"permission action", func(p *Program) { findPerm(p, "", "doc:read").Action = "view" }, "~ permission//doc:read (action)"},
 		{"permission description", func(p *Program) { findPerm(p, "", "doc:read").Description = "x" }, "~ permission//doc:read (description)"},
 		{"permission is_system", func(p *Program) { findPerm(p, "", "warden:*").IsSystem = false }, "~ permission//warden:* (is_system)"},
 		{"policy subjects", func(p *Program) {
@@ -382,6 +385,8 @@ func TestRoundTrip_PlanComparesEveryField(t *testing.T) {
 		{"policy description", func(p *Program) { findPolicy(p, "", "allow-readers").Description = "" }, "~ policy//allow-readers (description)"},
 		{"policy effect", func(p *Program) { findPolicy(p, "", "allow-readers").Effect = "deny" }, "~ policy//allow-readers (effect)"},
 		{"policy priority", func(p *Program) { findPolicy(p, "", "allow-readers").Priority = 11 }, "~ policy//allow-readers (priority)"},
+		{"policy negative priority", func(p *Program) { findPolicy(p, "eng/platform", "platform-open").Priority = -6 }, "~ policy/eng/platform/platform-open (priority)"},
+		{"role negative max_members", func(p *Program) { findRole(p, "eng/platform", "sre").MaxMembers = -2 }, "~ role/eng/platform/sre (max_members)"},
 		{"policy active", func(p *Program) { findPolicy(p, "", "allow-readers").Active = false }, "~ policy//allow-readers (active)"},
 		{"policy not_before", func(p *Program) { findPolicy(p, "eng", "Deny Contractors").NotBefore = nil }, "~ policy/eng/Deny Contractors (not_before)"},
 		{"policy not_after", func(p *Program) { findPolicy(p, "eng", "Deny Contractors").NotAfter = later }, "~ policy/eng/Deny Contractors (not_after)"},
@@ -421,6 +426,31 @@ func TestRoundTrip_PlanComparesEveryField(t *testing.T) {
 				t.Fatalf("plan: created %v, updated %v, deleted %v; want updated [%s]", res.Created, res.Updated, res.Deleted, tc.want)
 			}
 		})
+	}
+}
+
+// TestRoundTrip_PlanComparesTheApp checks an apply that names an app plans
+// the app change on every entity that stores one, and that an apply naming
+// no app plans nothing (it keeps the stored app).
+func TestRoundTrip_PlanComparesTheApp(t *testing.T) {
+	s := memory.New()
+	seedRoundTripTenant(t, s)
+	eng := rtEngine(t, s)
+	parsed, _ := exportParsed(t, eng)
+
+	res, err := Apply(context.Background(), eng, parsed, ApplyOptions{TenantID: rtTenant, AppID: "app2", DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	// 3 resource types, 7 permissions, 6 roles and 3 policies store an app
+	// id; tuples are never updated, only created.
+	if len(res.Created) != 0 || len(res.Deleted) != 0 || len(res.Updated) != 19 {
+		t.Fatalf("plan: created %v, deleted %v, %d updated %v; want 19 app updates", res.Created, res.Deleted, len(res.Updated), res.Updated)
+	}
+	for _, line := range res.Updated {
+		if !strings.HasSuffix(line, " (app)") {
+			t.Errorf("an app change is reported as %q", line)
+		}
 	}
 }
 
