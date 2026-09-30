@@ -111,7 +111,7 @@ Pre-built archives ship `linux`, `darwin`, `windows` × `amd64`, `arm64` from ev
 - `--tenant ID` / `--app ID` — override `tenant` / `app` declared in source. Both are optional; if neither source nor flag sets a tenant, apply uses the **global scope** (empty `tenant_id`) — the natural default for single-tenant apps. See [Multi-Tenancy](/docs/concepts/multi-tenancy#single-tenant-apps-skip-the-tenant-entirely).
 - `--var KEY=VALUE` — bind a DSL template variable. Repeatable. Wins over `WARDEN_VAR_*` env. See [Variables](#variables) below.
 - `--dry-run` — plan without writing.
-- `--prune` — delete tenant entries not in config (apply only).
+- `--prune` — delete tenant entries not in config (apply only). Prune is scoped to the namespaces the config covers: a namespace is covered when the config declares an entity in it or opens a `namespace` block for it, even an empty one. The tenant root is covered only when something is declared at the root. Coverage is exact, so covering `eng` does not cover `eng/platform`. Entities in any other namespace are left alone, and system roles are never pruned.
 - `--skip-migrate` — don't run store migrations on connect.
 
 **Exit codes:** `0` success, `1` diagnostics, `2` usage error, `3` store/runtime error.

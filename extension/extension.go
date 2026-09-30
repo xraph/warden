@@ -601,6 +601,10 @@ func mergeDeclProgram(dst, src *dsl.Program) {
 	dst.Roles = append(dst.Roles, src.Roles...)
 	dst.Policies = append(dst.Policies, src.Policies...)
 	dst.Relations = append(dst.Relations, src.Relations...)
+	// Namespaces are already flattened into the lists above. They are kept
+	// because Prune reads them: a `namespace` block, even an empty one,
+	// covers that namespace.
+	dst.Namespaces = append(dst.Namespaces, src.Namespaces...)
 }
 
 func (e *Extension) buildStoreFromGroveDB(db *grove.DB) (store.Store, error) {

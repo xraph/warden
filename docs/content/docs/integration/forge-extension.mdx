@@ -202,7 +202,7 @@ All defaults below come from `extension.DefaultConfig()`, which itself mirrors `
 | `declarative_path` | `string` | `""` | A single `.warden` file, directory, or glob to auto-apply |
 | `declarative_paths` | `[]string` | `nil` | Additional paths to load alongside `declarative_path` |
 | `declarative_on_start` | `bool` | `false` | Auto-apply the declarative config at Start, after migrations |
-| `declarative_prune` | `bool` | `false` | Delete tenant entries not present in the config (kubectl-apply style) |
+| `declarative_prune` | `bool` | `false` | Delete tenant entries not present in the config (kubectl-apply style), only in namespaces the config covers: one it declares an entity in or opens a `namespace` block for (even an empty one), counted across every configured path. The tenant root is covered only when something is declared there, and `eng` does not cover `eng/platform`. Other namespaces are left alone |
 | `declarative_strict` | `bool` | `false` | Fail startup when the apply produces diagnostics (when `false`, errors are logged and startup continues) |
 | `declarative_tenant_id` | `string` | `""` | Overrides any `tenant <id>` declared in source |
 | `auth.require_identity` | `bool` | `true` | Require a resolved identity on every route |
