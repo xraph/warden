@@ -198,6 +198,12 @@ func Register(
 	if err := dispatcher.RegisterQuery(d, contributorName, "subjects.detail", 1, subjectsDetailHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register subjects.detail: %w", err)
 	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "schema.export", 1, schemaExportHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register schema.export: %w", err)
+	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "schema.plan", 1, schemaPlanHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register schema.plan: %w", err)
+	}
 
 	return nil
 }

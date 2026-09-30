@@ -120,6 +120,13 @@ var intentPolicies = map[string]intentPolicy{
 	// warden:policy itself before it returns those sections, and leaves out
 	// the check log, which needs read_audit.
 	"subjects.detail": {"read", "warden:assignment"},
+
+	// The schema source carries roles, permissions, policies, resource types
+	// and relations. The gate takes one (action, resource) per intent, so it
+	// checks warden:role and the handlers check read on the other four
+	// through principalHolds, refusing with the first missing grant.
+	"schema.export": {"read", "warden:role"},
+	"schema.plan":   {"read", "warden:role"},
 }
 
 // engineAuthorizer is the dashcontract.Warden the manifest delegates to.

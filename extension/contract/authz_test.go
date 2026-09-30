@@ -68,6 +68,9 @@ var wantPolicies = map[string]struct{ action, resource string }{
 	"playground.explain":          {"check", "warden:authz"},
 	"playground.batchCheck":       {"check", "warden:authz"},
 	"subjects.detail":             {"read", "warden:assignment"},
+	// The gate checks one grant; the handlers check the other four reads.
+	"schema.export": {"read", "warden:role"},
+	"schema.plan":   {"read", "warden:role"},
 }
 
 // grantUser gives subject exactly the named "<resource>:<action>"

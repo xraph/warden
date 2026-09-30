@@ -132,6 +132,12 @@ intents:
   # reads them through checkLogs.list. Every command that changes any of
   # those invalidates it.
   - { name: subjects.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  # The schema as Warden source, and a dry run of an edited copy. Both are
+  # queries because they write nothing. The gate checks read on warden:role;
+  # the handlers check read on permissions, policies, resource types and
+  # relations themselves, because the source carries all of them.
+  - { name: schema.export, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: schema.plan, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
 
 queries:
   config:
@@ -203,5 +209,13 @@ queries:
   subjectDetail:
     intent: subjects.detail
     cache: { staleTime: 15s }
+  schemaExport:
+    intent: schema.export
+    cache: { staleTime: 15s }
+  # A plan describes the store as it is now and its digest is what
+  # schema.apply checks, so it is never served stale.
+  schemaPlan:
+    intent: schema.plan
+    cache: { staleTime: 0s }
 
 graph: []

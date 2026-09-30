@@ -90,6 +90,8 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"playground.explain":          dashcontract.IntentKindQuery,
 		"playground.batchCheck":       dashcontract.IntentKindQuery,
 		"subjects.detail":             dashcontract.IntentKindQuery,
+		"schema.export":               dashcontract.IntentKindQuery,
+		"schema.plan":                 dashcontract.IntentKindQuery,
 	}
 	if len(m.Intents) != len(wantKind) {
 		t.Fatalf("manifest declares %d intents, want %d: %+v", len(m.Intents), len(wantKind), m.Intents)
@@ -598,6 +600,46 @@ func TestManifest_EveryCommandThatChangesASubjectsAccessInvalidatesItsDetail(t *
 			if v == "subjects.detail" && !want[name] {
 				t.Errorf("%s invalidates subjects.detail but is not in subjectDetailInvalidators", name)
 			}
+		}
+	}
+}
+
+func TestManifest_SchemaIntentsAreReadQueriesWithTheirStaleTimes(t *testing.T) {
+	m := loadManifest(t)
+	for _, tc := range []struct {
+		query, intent, staleTime string
+	}{
+		{"schemaExport", "schema.export", "15s"},
+		// A plan describes the store as it is now, and its digest is what
+		// schema.apply checks, so it is never served stale.
+		{"schemaPlan", "schema.plan", "0s"},
+	} {
+		q, ok := m.Queries[tc.query]
+		if !ok {
+			t.Errorf("manifest declares no %s query", tc.query)
+			continue
+		}
+		if q.Intent != tc.intent {
+			t.Errorf("%s points at %q, want %s", tc.query, q.Intent, tc.intent)
+		}
+		if q.Cache.StaleTime != tc.staleTime {
+			t.Errorf("%s staleTime = %q, want %s", tc.query, q.Cache.StaleTime, tc.staleTime)
+		}
+		var found bool
+		for _, in := range m.Intents {
+			if in.Name != tc.intent {
+				continue
+			}
+			found = true
+			if in.Kind != dashcontract.IntentKindQuery || in.Capability != "read" {
+				t.Errorf("%s is %s/%s, want a read query", tc.intent, in.Kind, in.Capability)
+			}
+			if len(in.Invalidates) != 0 {
+				t.Errorf("%s invalidates %v: a query writes nothing", tc.intent, in.Invalidates)
+			}
+		}
+		if !found {
+			t.Errorf("manifest declares no %s intent", tc.intent)
 		}
 	}
 }
