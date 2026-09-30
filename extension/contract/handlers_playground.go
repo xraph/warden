@@ -1,8 +1,9 @@
 // handlers_playground.go: the policy playground's explain intent.
 //
 // playground.explain runs one authorization check as a dry run and reports
-// what each model did. It writes no check log row, fires no hooks and reads
-// no cache, so it is a query: a viewer who may run checks may run it.
+// what each model did. The check it builds writes no check log row, fires no
+// hooks and reads no cache, so it is a query: a viewer who may run checks may
+// run it. Authorizing the call itself is a separate, logged check.
 package contract
 
 import (
@@ -70,9 +71,10 @@ func playgroundExplainHandler(deps Deps) func(context.Context, PlaygroundExplain
 		if err != nil {
 			return PlaygroundExplainResponse{}, err
 		}
-		if _, ok := validSubjectKinds[in.SubjectKind]; !ok {
-			return PlaygroundExplainResponse{}, badRequest("subjectKind must be one of user, api_key, service, service_acct")
-		}
+		// The subject kind is not validated. Warden logs checks under other
+		// kinds (the REST API passes "" through, and Go callers pass
+		// anything) and the engine evaluates whatever it is given, so a
+		// logged check must be replayable here.
 		if in.SubjectID == "" {
 			return PlaygroundExplainResponse{}, badRequest("subjectId is required")
 		}

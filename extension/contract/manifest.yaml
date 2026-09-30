@@ -118,8 +118,10 @@ intents:
       invalidates: [overview.stats, overview.recentChecks, checkLogs.list, checkLogs.detail, assignments.list,
                     assignments.expiring, roles.detail, namespaces.list] }
   - { name: maintenance.cacheInvalidate, kind: command, version: 1, requires: { warden: warden.engine }, capability: write }
-  # A dry run: no check log row, no hooks, no cache. It writes nothing, so it
-  # is a query, and a viewer who may run checks may run it.
+  # The check the playground builds is a dry run: no check log row, no hooks,
+  # no cache. It is a query, and a viewer who may run checks may run it.
+  # Authorizing the call itself is a real, logged check: the warden.engine
+  # gate enforces it, which writes a check log row and fires hooks.
   - { name: playground.explain, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
 
 queries:

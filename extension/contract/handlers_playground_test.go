@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -80,10 +81,6 @@ func TestPlaygroundExplainRefusesBadInput(t *testing.T) {
 		mut  func(*PlaygroundExplainInput)
 		want string
 	}{
-		{"subject kind outside the four", func(in *PlaygroundExplainInput) { in.SubjectKind = "robot" },
-			"subjectKind must be one of user, api_key, service, service_acct"},
-		{"empty subject kind", func(in *PlaygroundExplainInput) { in.SubjectKind = "" },
-			"subjectKind must be one of user, api_key, service, service_acct"},
 		{"empty subject id", func(in *PlaygroundExplainInput) { in.SubjectID = "" }, "subjectId is required"},
 		{"empty action", func(in *PlaygroundExplainInput) { in.Action = "" }, "action is required"},
 		{"empty resource type", func(in *PlaygroundExplainInput) { in.ResourceType = "" }, "resourceType is required"},
@@ -101,6 +98,35 @@ func TestPlaygroundExplainRefusesBadInput(t *testing.T) {
 			}
 			if !strings.Contains(ce.Message, tc.want) {
 				t.Errorf("message = %q, want it to contain %q", ce.Message, tc.want)
+			}
+		})
+	}
+}
+
+// Warden logs checks under kinds outside the four assignments accept: the
+// REST API passes "" through and Go callers pass anything. The engine
+// evaluates whatever kind it is given, so a logged check must replay here.
+func TestPlaygroundExplainEvaluatesAnySubjectKind(t *testing.T) {
+	deps := Deps{Engine: engineOver(t, memory.New())}
+	for _, kind := range []string{"", "robot"} {
+		kind := kind
+		t.Run("kind "+strconv.Quote(kind), func(t *testing.T) {
+			in := aliceReads()
+			in.SubjectKind = kind
+			got := runExplain(t, deps, in)
+			if got.Allowed {
+				t.Fatalf("allowed with no grants: %+v", got)
+			}
+			rbac := laneByModel(t, got, "rbac")
+			if rbac.State != string(warden.LaneNoMatch) {
+				t.Errorf("rbac state = %q, want noMatch", rbac.State)
+			}
+			if rbac.Decision != string(warden.DecisionDenyNoRoles) {
+				t.Errorf("rbac decision = %q, want %q", rbac.Decision, warden.DecisionDenyNoRoles)
+			}
+			wantReason := `subject ` + kind + `:alice has no assigned roles in tenant "t1"`
+			if rbac.Reason != wantReason {
+				t.Errorf("rbac reason = %q, want %q", rbac.Reason, wantReason)
 			}
 		})
 	}

@@ -108,7 +108,9 @@ var intentPolicies = map[string]intentPolicy{
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
 
 	// The playground asks the engine a question, so it needs the same grant
-	// a caller needs to run a check. It writes nothing.
+	// a caller needs to run a check. The check it builds is a dry run, but
+	// authorizing the call is a real, logged check: engineAuthorizer enforces
+	// it, which writes a check log row and fires hooks.
 	"playground.explain": {"check", "warden:authz"},
 }
 
