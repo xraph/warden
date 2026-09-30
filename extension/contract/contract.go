@@ -204,6 +204,9 @@ func Register(
 	if err := dispatcher.RegisterQuery(d, contributorName, "schema.plan", 1, schemaPlanHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register schema.plan: %w", err)
 	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "schema.apply", 1, schemaApplyHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register schema.apply: %w", err)
+	}
 
 	return nil
 }

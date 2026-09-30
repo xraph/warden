@@ -1,6 +1,8 @@
 // handlers_schema.go: the schema as Warden source. schema.export writes a
-// tenant's state as canonical source, and schema.plan reports what applying
-// an edited copy would do, without doing it.
+// tenant's state as canonical source, schema.plan reports what applying an
+// edited copy would do without doing it, and schema.apply does it, but only
+// as planned: it re-plans and refuses unless the digest the operator saw
+// still matches.
 //
 // Both wrap the dsl package. The dashboard never reads a file, so anything
 // the file loader would supply is refused instead: imports, because there is
@@ -54,6 +56,33 @@ type SchemaDiagnostic struct {
 	Message string `json:"message"`
 }
 
+// SchemaApplyInput is the schema.apply request.
+type SchemaApplyInput struct {
+	Source string `json:"source"`
+	Prune  bool   `json:"prune"`
+	// Digest is the plan digest the operator saw.
+	Digest string `json:"digest"`
+}
+
+// SchemaApplyResponse is the schema.apply reply: what was written.
+type SchemaApplyResponse struct {
+	Created []string `json:"created"`
+	Updated []string `json:"updated"`
+	Deleted []string `json:"deleted"`
+	NoOps   int      `json:"noOps"`
+}
+
+// schemaAppliedEvent is the entity of the schema.applied audit event: the
+// four counts of an apply, and whether it pruned. The per-entity events the
+// applier emits are separate.
+type schemaAppliedEvent struct {
+	Created int  `json:"created"`
+	Updated int  `json:"updated"`
+	Deleted int  `json:"deleted"`
+	NoOps   int  `json:"noOps"`
+	Prune   bool `json:"prune"`
+}
+
 // SchemaPlanInput is the schema.plan request.
 type SchemaPlanInput struct {
 	Source string `json:"source"`
@@ -75,11 +104,11 @@ type SchemaPlanResponse struct {
 	Digest string `json:"digest"`
 }
 
-// schemaReadGrants are the reads a caller needs for the schema intents, in
-// the order a refusal names them. The first is the one the manifest gate
-// enforces; it is asked again here so a handler called directly refuses the
-// same way.
-var schemaReadGrants = []string{
+// schemaGrantResources are the resources a caller needs the intent's action
+// on, in the order a refusal names them: read for export and plan, manage for
+// apply. The first is the one the manifest gate enforces; it is asked again
+// here so a handler called directly refuses the same way.
+var schemaGrantResources = []string{
 	"warden:role",
 	"warden:permission",
 	"warden:policy",
@@ -87,23 +116,28 @@ var schemaReadGrants = []string{
 	"warden:relation",
 }
 
-// requireSchemaReads refuses with PERMISSION_DENIED naming the first read
-// the caller lacks. An engine that cannot decide fails the request, as the
-// authorizer does.
-func requireSchemaReads(ctx context.Context, eng *warden.Engine, p dashcontract.Principal, tenantID string) error {
-	for _, resource := range schemaReadGrants {
-		held, err := principalHolds(ctx, eng, p, tenantID, "read", resource)
+// requireSchemaGrants refuses with PERMISSION_DENIED naming the first
+// resource the caller lacks action on. An engine that cannot decide fails the
+// request, as the authorizer does.
+func requireSchemaGrants(ctx context.Context, eng *warden.Engine, p dashcontract.Principal, tenantID, action string) error {
+	for _, resource := range schemaGrantResources {
+		held, err := principalHolds(ctx, eng, p, tenantID, action, resource)
 		if err != nil {
 			return mapWardenError(err)
 		}
 		if !held {
 			return &dashcontract.Error{
 				Code:    dashcontract.CodePermissionDenied,
-				Message: fmt.Sprintf("missing permission read on %s", resource),
+				Message: fmt.Sprintf("missing permission %s on %s", action, resource),
 			}
 		}
 	}
 	return nil
+}
+
+// requireSchemaReads is requireSchemaGrants for the read intents.
+func requireSchemaReads(ctx context.Context, eng *warden.Engine, p dashcontract.Principal, tenantID string) error {
+	return requireSchemaGrants(ctx, eng, p, tenantID, "read")
 }
 
 func schemaExportHandler(deps Deps) func(context.Context, SchemaExportInput, dashcontract.Principal) (SchemaExportResponse, error) {
@@ -147,24 +181,12 @@ func schemaPlanHandler(deps Deps) func(context.Context, SchemaPlanInput, dashcon
 			return SchemaPlanResponse{}, err
 		}
 
-		prog, diags := checkSource(in.Source, tenantID)
+		_, res, diags, err := dryRunSchema(ctx, deps, tenantID, in.Source, in.Prune)
+		if err != nil {
+			return SchemaPlanResponse{}, err
+		}
 		if len(diags) > 0 {
 			return invalidPlan(diags), nil
-		}
-
-		// TenantID wins over the header, and checkSource has already refused
-		// a header that names another tenant, so this is always the caller's.
-		res, err := dsl.Apply(ctx, deps.Engine, prog, dsl.ApplyOptions{
-			TenantID: tenantID,
-			DryRun:   true,
-			Prune:    in.Prune,
-		})
-		if err != nil {
-			var derr *dsl.DiagnosticError
-			if errors.As(err, &derr) {
-				return invalidPlan(schemaDiagnostics(derr.Diags)), nil
-			}
-			return SchemaPlanResponse{}, mapWardenError(err)
 		}
 		return SchemaPlanResponse{
 			Valid:       true,
@@ -174,6 +196,106 @@ func schemaPlanHandler(deps Deps) func(context.Context, SchemaPlanInput, dashcon
 			Deleted:     nonNil(res.Deleted),
 			NoOps:       res.NoOps,
 			Digest:      planDigest(in.Prune, res),
+		}, nil
+	}
+}
+
+// dryRunSchema checks src and plans it against the store without writing. It
+// is the one path schema.plan and schema.apply share, so the diff an operator
+// sees and the diff apply verifies cannot come from different code. It
+// returns the program and result when there are no diagnostics.
+func dryRunSchema(ctx context.Context, deps Deps, tenantID, src string, prune bool) (*dsl.Program, *dsl.ApplyResult, []SchemaDiagnostic, error) {
+	prog, diags := checkSource(src, tenantID)
+	if len(diags) > 0 {
+		return nil, nil, diags, nil
+	}
+	// TenantID wins over the header, and checkSource has already refused a
+	// header that names another tenant, so this is always the caller's.
+	res, err := dsl.Apply(ctx, deps.Engine, prog, dsl.ApplyOptions{
+		TenantID: tenantID,
+		DryRun:   true,
+		Prune:    prune,
+	})
+	if err != nil {
+		var derr *dsl.DiagnosticError
+		if errors.As(err, &derr) {
+			return nil, nil, schemaDiagnostics(derr.Diags), nil
+		}
+		return nil, nil, nil, mapWardenError(err)
+	}
+	return prog, res, nil, nil
+}
+
+// errSchemaChanged is the refusal for a digest that does not match the plan
+// apply just computed, for any reason: the store changed, the source or the
+// prune flag is not the one planned, or there was no plan.
+func errSchemaChanged() error {
+	return &dashcontract.Error{
+		Code:    dashcontract.CodeConflict,
+		Message: "the schema changed since you planned: plan again",
+	}
+}
+
+func schemaApplyHandler(deps Deps) func(context.Context, SchemaApplyInput, dashcontract.Principal) (SchemaApplyResponse, error) {
+	return func(ctx context.Context, in SchemaApplyInput, p dashcontract.Principal) (SchemaApplyResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return SchemaApplyResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return SchemaApplyResponse{}, err
+		}
+		if err := requireSchemaGrants(ctx, deps.Engine, p, tenantID, "manage"); err != nil {
+			return SchemaApplyResponse{}, err
+		}
+
+		// Invalid source is refused before the digest is looked at: there is
+		// nothing to plan, so nothing the operator could have seen.
+		prog, planned, diags, err := dryRunSchema(ctx, deps, tenantID, in.Source, in.Prune)
+		if err != nil {
+			return SchemaApplyResponse{}, err
+		}
+		if len(diags) > 0 {
+			d := diags[0]
+			return SchemaApplyResponse{}, badRequest(fmt.Sprintf(
+				"the source has an error at line %d, column %d: %s", d.Line, d.Col, d.Message))
+		}
+		// The operator applies the diff they saw or nothing. An empty digest
+		// never matches: planDigest is always 64 hex characters.
+		if in.Digest == "" || in.Digest != planDigest(in.Prune, planned) {
+			return SchemaApplyResponse{}, errSchemaChanged()
+		}
+
+		ctx = withActor(ctx, p)
+		res, err := dsl.Apply(ctx, deps.Engine, prog, dsl.ApplyOptions{
+			TenantID: tenantID,
+			Prune:    in.Prune,
+		})
+		if err != nil {
+			var derr *dsl.DiagnosticError
+			if errors.As(err, &derr) && len(derr.Diags) > 0 {
+				d := derr.Diags[0]
+				return SchemaApplyResponse{}, badRequest(fmt.Sprintf(
+					"the source has an error at line %d, column %d: %s", d.Pos.Line, d.Pos.Col, d.Msg))
+			}
+			// Not transactional: what the applier wrote before the failure
+			// stays written, and the per-entity audit events it emitted say
+			// which. No schema.applied event: the apply did not complete.
+			return SchemaApplyResponse{}, mapWardenError(err)
+		}
+
+		emitAudit(ctx, deps, p, "schema.applied", tenantID, tenantID, schemaAppliedEvent{
+			Created: len(res.Created),
+			Updated: len(res.Updated),
+			Deleted: len(res.Deleted),
+			NoOps:   res.NoOps,
+			Prune:   in.Prune,
+		}, nil)
+		return SchemaApplyResponse{
+			Created: nonNil(res.Created),
+			Updated: nonNil(res.Updated),
+			Deleted: nonNil(res.Deleted),
+			NoOps:   res.NoOps,
 		}, nil
 	}
 }
@@ -210,8 +332,8 @@ func schemaDiagnostics(in []*dsl.Diagnostic) []SchemaDiagnostic {
 // the diagnostics say why. schema.apply runs the same check, so a plan and
 // the apply it leads to cannot disagree about what is acceptable.
 //
-// Order: syntax, then the two things the dashboard refuses outright (imports
-// and another tenant), then the resolver. A parse failure stops there,
+// Order: syntax, then the things the dashboard refuses outright (imports,
+// another tenant, an app), then the resolver. A parse failure stops there,
 // because the program is partial and the later checks would report noise.
 func checkSource(src string, tenantID string) (*dsl.Program, []SchemaDiagnostic) {
 	prog, errs := dsl.Parse(schemaFile, []byte(src))
@@ -228,18 +350,26 @@ func checkSource(src string, tenantID string) (*dsl.Program, []SchemaDiagnostic)
 			Message: "imports are not supported here: paste the imported source instead",
 		})
 	}
+	// Program keeps no position for the tenant or app lines, so both report
+	// the header's. A program with no header position reports 1:1.
+	headerLine, headerCol := prog.HeaderPos.Line, prog.HeaderPos.Col
+	if headerLine < 1 {
+		headerLine, headerCol = 1, 1
+	}
 	if prog.Tenant != "" && prog.Tenant != tenantID {
-		// Program keeps no position for the tenant line, so report the
-		// header's. A program with no header position reports 1:1.
-		pos := prog.HeaderPos
-		line, col := pos.Line, pos.Col
-		if line < 1 {
-			line, col = 1, 1
-		}
 		refused = append(refused, SchemaDiagnostic{
-			Line:    line,
-			Col:     col,
+			Line:    headerLine,
+			Col:     headerCol,
 			Message: fmt.Sprintf("this source names tenant %q; the dashboard applies to your tenant only", prog.Tenant),
+		})
+	}
+	// The dashboard sets no app, and Apply would otherwise stamp the source's
+	// onto every entity it writes.
+	if prog.App != "" {
+		refused = append(refused, SchemaDiagnostic{
+			Line:    headerLine,
+			Col:     headerCol,
+			Message: fmt.Sprintf("this source names app %q; the dashboard does not set an app: remove the declaration", prog.App),
 		})
 	}
 	if len(refused) > 0 {

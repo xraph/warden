@@ -92,6 +92,7 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"subjects.detail":             dashcontract.IntentKindQuery,
 		"schema.export":               dashcontract.IntentKindQuery,
 		"schema.plan":                 dashcontract.IntentKindQuery,
+		"schema.apply":                dashcontract.IntentKindCommand,
 	}
 	if len(m.Intents) != len(wantKind) {
 		t.Fatalf("manifest declares %d intents, want %d: %+v", len(m.Intents), len(wantKind), m.Intents)
@@ -543,6 +544,7 @@ var subjectDetailInvalidators = []string{
 	"relations.create", "relations.delete",
 	"policies.update", "policies.setActive", "policies.delete",
 	"maintenance.run",
+	"schema.apply",
 }
 
 func TestManifest_SubjectDetailIsARefreshedReadQuery(t *testing.T) {
@@ -640,6 +642,77 @@ func TestManifest_SchemaIntentsAreReadQueriesWithTheirStaleTimes(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("manifest declares no %s intent", tc.intent)
+		}
+	}
+}
+
+// schemaApplyInvalidates is what schema.apply must refresh: every read that
+// shows a role, permission, policy, resource type or relation, the counters
+// and the namespace list, the subject view, and the two schema queries. The
+// assignment reads are here because a prune that deletes a role cascades to
+// its assignments.
+var schemaApplyInvalidates = []string{
+	"roles.list", "roles.detail",
+	"permissions.list", "permissions.detail",
+	"policies.list", "policies.detail",
+	"resourceTypes.list", "resourceTypes.detail",
+	"relations.list",
+	"assignments.list", "assignments.expiring",
+	"namespaces.list", "overview.stats", "subjects.detail",
+	"schema.export", "schema.plan",
+}
+
+// schemaApplyLeavesAlone are the query intents an apply cannot change, each
+// with the reason. Every other query intent must be in schemaApplyInvalidates,
+// so a new list or detail query cannot be added without deciding.
+var schemaApplyLeavesAlone = map[string]string{
+	"config.detail":         "engine config",
+	"overview.recentChecks": "check log",
+	"checkLogs.list":        "check log",
+	"checkLogs.detail":      "check log",
+	"policies.validate":     "depends on the draft alone",
+	"playground.explain":    "evaluates on every run",
+	"playground.batchCheck": "evaluates on every run",
+}
+
+func TestManifest_SchemaApplyInvalidatesEveryViewOfWhatItWrites(t *testing.T) {
+	m := loadManifest(t)
+	var apply *dashcontract.Intent
+	queries := map[string]bool{}
+	for i := range m.Intents {
+		in := &m.Intents[i]
+		if in.Name == "schema.apply" {
+			apply = in
+		}
+		if in.Kind == dashcontract.IntentKindQuery {
+			queries[in.Name] = true
+		}
+	}
+	if apply == nil {
+		t.Fatal("manifest declares no schema.apply intent")
+	}
+	if apply.Kind != dashcontract.IntentKindCommand || apply.Capability != "write" {
+		t.Errorf("schema.apply is %s/%s, want a write command", apply.Kind, apply.Capability)
+	}
+	got := map[string]bool{}
+	for _, v := range apply.Invalidates {
+		got[v] = true
+	}
+	want := map[string]bool{}
+	for _, v := range schemaApplyInvalidates {
+		want[v] = true
+		if !got[v] {
+			t.Errorf("schema.apply does not invalidate %s", v)
+		}
+	}
+	for v := range got {
+		if !want[v] {
+			t.Errorf("schema.apply invalidates %s, which is not in schemaApplyInvalidates", v)
+		}
+	}
+	for q := range queries {
+		if !want[q] && schemaApplyLeavesAlone[q] == "" {
+			t.Errorf("query intent %s is neither invalidated by schema.apply nor listed as unaffected", q)
 		}
 	}
 }

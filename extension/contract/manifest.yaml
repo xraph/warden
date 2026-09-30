@@ -138,6 +138,16 @@ intents:
   # relations themselves, because the source carries all of them.
   - { name: schema.export, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: schema.plan, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  # Applies an edited schema, only as planned. It can write every kind the
+  # source carries and, with prune, delete them, and a deleted role takes its
+  # assignments with it, so every view of roles, permissions, policies,
+  # resource types, relations and assignments goes stale, as do the counters,
+  # the namespace list, the subject view and the two schema queries. The gate
+  # checks manage on warden:role; the handler checks the other four.
+  - { name: schema.apply, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
+      invalidates: [roles.list, roles.detail, permissions.list, permissions.detail, policies.list, policies.detail,
+                    resourceTypes.list, resourceTypes.detail, relations.list, assignments.list, assignments.expiring,
+                    namespaces.list, overview.stats, subjects.detail, schema.export, schema.plan] }
 
 queries:
   config:

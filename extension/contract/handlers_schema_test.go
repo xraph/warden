@@ -3,14 +3,17 @@ package contract
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/permission"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/policy"
 	"github.com/xraph/warden/relation"
 	"github.com/xraph/warden/resourcetype"
@@ -30,7 +33,15 @@ var schemaReads = []string{
 	"warden:resourcetype:read", "warden:relation:read",
 }
 
-// schemaHarness runs the two handlers as a t1 user who holds every read.
+// schemaManages are the five manage grants schema.apply needs, in the order a
+// refusal names them.
+var schemaManages = []string{
+	"warden:role:manage", "warden:permission:manage", "warden:policy:manage",
+	"warden:resourcetype:manage", "warden:relation:manage",
+}
+
+// schemaHarness runs the three handlers as a t1 user who holds every read
+// and every manage.
 type schemaHarness struct {
 	t    *testing.T
 	s    *memory.Store
@@ -46,7 +57,7 @@ func newSchemaHarness(t *testing.T, s *memory.Store) *schemaHarness {
 	// grants.
 	seedPolicy(t, s, "", "caller-reads-warden", func(p *policy.Policy) {
 		p.Subjects = []policy.SubjectMatch{{Kind: "user", ID: "tester"}}
-		p.Actions = []string{"read"}
+		p.Actions = []string{"read", "manage"}
 		p.Resources = []string{"warden:*"}
 	})
 	return &schemaHarness{t: t, s: s, deps: Deps{Engine: engineOver(t, s)}}
@@ -68,6 +79,25 @@ func (h *schemaHarness) plan(src string, prune bool) SchemaPlanResponse {
 		h.t.Fatalf("schema.plan: %v", err)
 	}
 	return got
+}
+
+func (h *schemaHarness) applyRaw(src string, prune bool, digest string) (SchemaApplyResponse, error) {
+	h.t.Helper()
+	return schemaApplyHandler(h.deps)(context.Background(), SchemaApplyInput{Source: src, Prune: prune, Digest: digest}, principalFor("t1"))
+}
+
+// apply plans src, then applies it with that plan's digest.
+func (h *schemaHarness) apply(src string, prune bool) (SchemaPlanResponse, SchemaApplyResponse) {
+	h.t.Helper()
+	plan := h.plan(src, prune)
+	if !plan.Valid {
+		h.t.Fatalf("setup: the source does not plan: %+v", plan.Diagnostics)
+	}
+	got, err := h.applyRaw(src, prune, plan.Digest)
+	if err != nil {
+		h.t.Fatalf("schema.apply: %v", err)
+	}
+	return plan, got
 }
 
 // seedSchemaWorld stores one of every exported kind, each with populated
@@ -383,6 +413,12 @@ func TestSchemaPlanDiagnostics(t *testing.T) {
 			src:  "warden config 1\n\nimport \"x.warden\"\n",
 			want: "imports are not supported here: paste the imported source instead",
 			line: 3, col: 1,
+		},
+		{
+			name: "an app",
+			src:  "\nwarden config 1\napp billing\n",
+			want: `this source names app "billing"; the dashboard does not set an app: remove the declaration`,
+			line: 2, col: 1,
 		},
 		{
 			name: "a tenant that is not the caller's",
@@ -732,4 +768,406 @@ func TestSchemaPlanLetsANamespacedRoleGrantARootPermission(t *testing.T) {
 			t.Errorf("the real apply would refuse this, so the plan must: %+v", got)
 		}
 	})
+}
+
+// applySource adds a role and a permission, changes a permission's
+// description and adds a policy and a relation, against the store
+// seedApplyStore builds.
+const applySource = `warden config 1
+tenant t1
+
+permission "doc:read" {
+    resource = doc
+    action = read
+    description = "read a document"
+}
+permission "doc:write" (doc : write)
+permission "doc:share" (doc : share)
+
+role viewer {
+    name = "viewer"
+}
+
+role auditor {
+    name = "Auditor"
+    grants = ["doc:read"]
+}
+
+policy "freeze" {
+    effect = deny
+    active = true
+    actions = ["write"]
+    resources = ["doc"]
+}
+
+relation doc:readme viewer = user:alice
+`
+
+func seedApplyStore(t *testing.T) *memory.Store {
+	t.Helper()
+	s := memory.New()
+	seedPermission(t, s, "doc:read", "doc", "read")
+	seedPermission(t, s, "doc:write", "doc", "write")
+	seedRoles(t, s, "", "viewer")
+	return s
+}
+
+func TestSchemaApplyWritesExactlyWhatWasPlanned(t *testing.T) {
+	s := seedApplyStore(t)
+	h := newSchemaHarness(t, s)
+
+	plan, got := h.apply(applySource, false)
+	if len(plan.Created) == 0 || len(plan.Updated) == 0 {
+		t.Fatalf("setup: the plan changes too little to prove anything: %+v", plan)
+	}
+	if !reflect.DeepEqual(got.Created, plan.Created) || !reflect.DeepEqual(got.Updated, plan.Updated) ||
+		!reflect.DeepEqual(got.Deleted, plan.Deleted) || got.NoOps != plan.NoOps {
+		t.Errorf("apply reported %+v, the plan said created %v updated %v deleted %v noOps %d",
+			got, plan.Created, plan.Updated, plan.Deleted, plan.NoOps)
+	}
+	if got.Created == nil || got.Updated == nil || got.Deleted == nil {
+		t.Errorf("lists must marshal as [] not null: %+v", got)
+	}
+
+	ctx := context.Background()
+	if _, err := s.GetRoleBySlug(ctx, "t1", "", "auditor"); err != nil {
+		t.Errorf("the planned role was not written: %v", err)
+	}
+	if perm, err := s.GetPermissionByName(ctx, "t1", "", "doc:share"); err != nil || perm == nil {
+		t.Errorf("the planned permission was not written: %v", err)
+	}
+	if perm, err := s.GetPermissionByName(ctx, "t1", "", "doc:read"); err != nil || perm.Description != "read a document" {
+		t.Errorf("the planned description change was not written: %v %+v", err, perm)
+	}
+	if _, err := s.GetPolicyByName(ctx, "t1", "", "freeze"); err != nil {
+		t.Errorf("the planned policy was not written: %v", err)
+	}
+	tuples, err := s.ListRelations(ctx, &relation.ListFilter{TenantID: "t1", ObjectType: "doc", Limit: 10})
+	if err != nil || len(tuples) != 1 {
+		t.Errorf("the planned relation was not written: %v %v", tuples, err)
+	}
+
+	// Nothing else moved: planning the same source again is now empty.
+	again := h.plan(applySource, false)
+	if len(again.Created)+len(again.Updated)+len(again.Deleted) != 0 {
+		t.Errorf("a second plan still has work: %+v", again)
+	}
+}
+
+func TestSchemaApplyWithPruneDeletesWhatWasPlanned(t *testing.T) {
+	s := seedApplyStore(t)
+	seedRoles(t, s, "", "stale")
+	h := newSchemaHarness(t, s)
+
+	src := "warden config 1\n\nrole viewer {\n    name = \"viewer\"\n}\n\npermission \"doc:read\" (doc : read)\npermission \"doc:write\" (doc : write)\n\npolicy \"caller-reads-warden\" {\n    effect = allow\n    active = true\n    actions = [\"read\", \"manage\"]\n    resources = [\"warden:*\"]\n}\n"
+	_, got := h.apply(src, true)
+	if !strings.Contains(strings.Join(got.Deleted, "|"), "- role//stale") {
+		t.Fatalf("deleted = %v, want the stale role", got.Deleted)
+	}
+	if _, err := s.GetRoleBySlug(context.Background(), "t1", "", "stale"); err == nil {
+		t.Error("the stale role survived an applied prune")
+	}
+}
+
+func TestSchemaApplyRefusesAStalePlanAndWritesNothing(t *testing.T) {
+	const want = "the schema changed since you planned: plan again"
+
+	t.Run("the store changed between plan and apply", func(t *testing.T) {
+		s := seedApplyStore(t)
+		h := newSchemaHarness(t, s)
+		plan := h.plan(applySource, false)
+		// Someone creates the role the source was about to create.
+		seedRoles(t, s, "", "auditor")
+		before := storeSnapshot(t, s)
+
+		_, err := h.applyRaw(applySource, false, plan.Digest)
+		ce := refusal(t, err, dashcontract.CodeConflict)
+		if ce.Message != want {
+			t.Errorf("message = %q, want %q", ce.Message, want)
+		}
+		if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
+			t.Error("a refused apply changed the store")
+		}
+	})
+
+	t.Run("the digest is for the other prune value", func(t *testing.T) {
+		s := seedApplyStore(t)
+		h := newSchemaHarness(t, s)
+		plan := h.plan(applySource, false)
+		before := storeSnapshot(t, s)
+
+		_, err := h.applyRaw(applySource, true, plan.Digest)
+		ce := refusal(t, err, dashcontract.CodeConflict)
+		if ce.Message != want {
+			t.Errorf("message = %q, want %q", ce.Message, want)
+		}
+		if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
+			t.Error("a refused apply changed the store")
+		}
+	})
+
+	for name, digest := range map[string]string{"empty": "", "made up": "deadbeef"} {
+		t.Run("the digest is "+name, func(t *testing.T) {
+			s := seedApplyStore(t)
+			h := newSchemaHarness(t, s)
+			before := storeSnapshot(t, s)
+
+			_, err := h.applyRaw(applySource, false, digest)
+			ce := refusal(t, err, dashcontract.CodeConflict)
+			if ce.Message != want {
+				t.Errorf("message = %q, want %q", ce.Message, want)
+			}
+			if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
+				t.Error("a refused apply changed the store")
+			}
+		})
+	}
+
+	t.Run("the source is not the one planned", func(t *testing.T) {
+		s := seedApplyStore(t)
+		h := newSchemaHarness(t, s)
+		plan := h.plan(applySource, false)
+		before := storeSnapshot(t, s)
+
+		_, err := h.applyRaw(applySource+"\nrole sneaky {\n}\n", false, plan.Digest)
+		refusal(t, err, dashcontract.CodeConflict)
+		if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
+			t.Error("a refused apply changed the store")
+		}
+	})
+}
+
+func TestSchemaApplyRefusesInvalidSourceWithItsPosition(t *testing.T) {
+	for _, tc := range []struct {
+		name, src, want string
+	}{
+		{"a syntax error", "warden config 1\n\nrole {\n}\n", "line 3, column 6"},
+		{"an import", "warden config 1\n\nimport \"x.warden\"\n", "line 3, column 1"},
+		{"another tenant", "\nwarden config 1\ntenant other\n", "line 2, column 1"},
+		{"an app", "\nwarden config 1\napp billing\n", "line 2, column 1"},
+		{"an unknown grant", "warden config 1\n\nrole r {\n    grants = [\"nope:x\"]\n}\n", "line 3, column 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := seedApplyStore(t)
+			h := newSchemaHarness(t, s)
+			before := storeSnapshot(t, s)
+			plan := h.plan(tc.src, false)
+			if plan.Valid {
+				t.Fatalf("setup: the plan accepts it: %+v", plan)
+			}
+
+			// Whatever digest it carries, the source is refused first.
+			for _, digest := range []string{"", "deadbeef"} {
+				_, err := h.applyRaw(tc.src, false, digest)
+				ce := refusal(t, err, dashcontract.CodeBadRequest)
+				if !strings.Contains(ce.Message, tc.want) || !strings.Contains(ce.Message, plan.Diagnostics[0].Message) {
+					t.Errorf("message = %q, want it to name %s and %q", ce.Message, tc.want, plan.Diagnostics[0].Message)
+				}
+			}
+			if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
+				t.Error("a refused apply changed the store")
+			}
+		})
+	}
+}
+
+func TestSchemaApplyNeedsEveryManageGrant(t *testing.T) {
+	for _, missing := range schemaManages {
+		t.Run("without "+missing, func(t *testing.T) {
+			s := seedApplyStore(t)
+			var held []string
+			for _, g := range schemaManages {
+				if g != missing {
+					held = append(held, g)
+				}
+			}
+			// Reads are not enough and not needed: the grant list is the
+			// manage set alone.
+			grantUser(t, s, "tester", held...)
+			deps := Deps{Engine: engineOver(t, s)}
+			before := storeSnapshot(t, s)
+
+			_, err := schemaApplyHandler(deps)(context.Background(),
+				SchemaApplyInput{Source: applySource, Digest: "deadbeef"}, principalFor("t1"))
+			ce := refusal(t, err, dashcontract.CodePermissionDenied)
+			want := "missing permission manage on " + strings.TrimSuffix(missing, ":manage")
+			if ce.Message != want {
+				t.Errorf("message = %q, want %q", ce.Message, want)
+			}
+			if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
+				t.Error("a refused apply changed the store")
+			}
+		})
+	}
+
+	t.Run("read without manage", func(t *testing.T) {
+		s := seedApplyStore(t)
+		grantUser(t, s, "tester", schemaReads...)
+		_, err := schemaApplyHandler(Deps{Engine: engineOver(t, s)})(context.Background(),
+			SchemaApplyInput{Source: applySource}, principalFor("t1"))
+		refusal(t, err, dashcontract.CodePermissionDenied)
+	})
+}
+
+func TestSchemaApplyAuditsOnceAsTheOperator(t *testing.T) {
+	s := seedApplyStore(t)
+	h := newSchemaHarness(t, s)
+	eng, probe := probedEngine(t, s)
+	h.deps.Engine = eng
+
+	plan, _ := h.apply(applySource, false)
+
+	probe.mu.Lock()
+	var applied []plugin.Event
+	for _, e := range probe.events {
+		if e.Action == "schema.applied" {
+			applied = append(applied, e)
+		}
+	}
+	probe.mu.Unlock()
+	if len(applied) != 1 {
+		t.Fatalf("got %d schema.applied events, want 1 (events: %v)", len(applied), probe.actions())
+	}
+	ev := applied[0]
+	if ev.Actor != wantActor {
+		t.Errorf("actor = %+v, want %+v", ev.Actor, wantActor)
+	}
+	if ev.TenantID != "t1" {
+		t.Errorf("tenant = %q, want t1", ev.TenantID)
+	}
+	got, ok := ev.Entity.(schemaAppliedEvent)
+	if !ok {
+		t.Fatalf("entity is %T, want schemaAppliedEvent", ev.Entity)
+	}
+	want := schemaAppliedEvent{
+		Created: len(plan.Created), Updated: len(plan.Updated), Deleted: len(plan.Deleted), NoOps: plan.NoOps,
+	}
+	if got != want {
+		t.Errorf("entity = %+v, want %+v", got, want)
+	}
+	if want.Created == 0 || want.Updated == 0 || want.NoOps == 0 {
+		t.Errorf("setup: the counts are too thin to tell the fields apart: %+v", want)
+	}
+
+	t.Run("none on a refusal", func(t *testing.T) {
+		s := seedApplyStore(t)
+		h := newSchemaHarness(t, s)
+		eng, probe := probedEngine(t, s)
+		h.deps.Engine = eng
+		plan := h.plan(applySource, false)
+
+		_, _ = h.applyRaw(applySource, false, "")                             // stale
+		_, _ = h.applyRaw("warden config 1\nrole {\n}\n", false, plan.Digest) // invalid
+		_, _ = h.applyRaw(applySource, true, plan.Digest)                     // wrong prune
+		if acts := probe.actions(); strings.Contains(strings.Join(acts, ","), "schema.applied") {
+			t.Errorf("a refusal was audited as an apply: %v", acts)
+		}
+		if acts := probe.actions(); len(acts) != 0 {
+			t.Errorf("a refusal produced audit events: %v", acts)
+		}
+	})
+}
+
+// failingPolicyStore fails every policy write and delegates the rest.
+type failingPolicyStore struct{ *memory.Store }
+
+var errDiskFull = errors.New("disk full")
+
+func (failingPolicyStore) CreatePolicy(context.Context, *policy.Policy) error { return errDiskFull }
+func (failingPolicyStore) UpdatePolicy(context.Context, *policy.Policy) error { return errDiskFull }
+
+func TestSchemaApplyIsNotTransactional(t *testing.T) {
+	// The page tells the operator an apply can stop half way. This pins that
+	// as a fact: what was written before the failure stays written.
+	s := memory.New()
+	h := newSchemaHarness(t, s)
+	eng, err := warden.NewEngine(warden.WithStore(failingPolicyStore{s}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.deps.Engine = eng
+
+	src := `warden config 1
+tenant t1
+
+resource folder {
+    relation owner: user
+    permission edit = owner
+}
+
+permission "doc:read" (doc : read)
+
+role reader {
+    name = "Reader"
+    grants = ["doc:read"]
+}
+
+policy "freeze" {
+    effect = deny
+    active = true
+}
+
+relation folder:root owner = user:alice
+`
+	plan := h.plan(src, false)
+	if !plan.Valid || len(plan.Created) != 5 {
+		t.Fatalf("setup: the plan should create five things, got %+v", plan)
+	}
+	_, err = h.applyRaw(src, false, plan.Digest)
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("want the policy write failure, got %v", err)
+	}
+
+	ctx := context.Background()
+	if _, gErr := s.GetResourceTypeByName(ctx, "t1", "", "folder"); gErr != nil {
+		t.Errorf("the resource type written before the failure is gone: %v", gErr)
+	}
+	if _, gErr := s.GetPermissionByName(ctx, "t1", "", "doc:read"); gErr != nil {
+		t.Errorf("the permission written before the failure is gone: %v", gErr)
+	}
+	reader, gErr := s.GetRoleBySlug(ctx, "t1", "", "reader")
+	if gErr != nil {
+		t.Fatalf("the role written before the failure is gone: %v", gErr)
+	}
+	if grants, _ := s.ListRolePermissions(ctx, "t1", reader.ID); len(grants) != 1 {
+		t.Errorf("the role's grant was written before the policy: %v", grants)
+	}
+	if _, gErr := s.GetPolicyByName(ctx, "t1", "", "freeze"); gErr == nil {
+		t.Error("the policy exists although its write failed")
+	}
+	if tuples, _ := s.ListRelations(ctx, &relation.ListFilter{TenantID: "t1", ObjectType: "folder", Limit: 10}); len(tuples) != 0 {
+		t.Errorf("a relation after the failed policy was written: %v", tuples)
+	}
+}
+
+func TestSchemaApplyOfANamespacedExportIsANoOp(t *testing.T) {
+	// The end-to-end proof the editor rests on: export a namespaced tenant,
+	// plan that source, apply it with its own digest, and nothing moves.
+	for _, prune := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prune=%v", prune), func(t *testing.T) {
+			s := memory.New()
+			seedSchemaWorld(t, s)
+			h := newSchemaHarness(t, s)
+			exported := h.export(SchemaExportInput{})
+			if !strings.Contains(exported.Source, `namespace "eng"`) {
+				t.Fatalf("setup: the export has no eng namespace block:\n%s", exported.Source)
+			}
+			before := storeSnapshot(t, s)
+
+			plan, got := h.apply(exported.Source, prune)
+			if len(plan.Created)+len(plan.Updated)+len(plan.Deleted) != 0 {
+				t.Fatalf("the export plans work against its own store: %+v", plan)
+			}
+			if len(got.Created)+len(got.Updated)+len(got.Deleted) != 0 || got.NoOps == 0 {
+				t.Errorf("applying the export is not a no-op: %+v", got)
+			}
+			if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
+				for k := range before {
+					if before[k] != after[k] {
+						t.Errorf("the no-op apply changed %s:\nbefore %s\nafter  %s", k, before[k], after[k])
+					}
+				}
+			}
+		})
+	}
 }

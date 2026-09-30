@@ -71,6 +71,8 @@ var wantPolicies = map[string]struct{ action, resource string }{
 	// The gate checks one grant; the handlers check the other four reads.
 	"schema.export": {"read", "warden:role"},
 	"schema.plan":   {"read", "warden:role"},
+	// The gate checks one grant; the handler checks the other four manages.
+	"schema.apply": {"manage", "warden:role"},
 }
 
 // grantUser gives subject exactly the named "<resource>:<action>"

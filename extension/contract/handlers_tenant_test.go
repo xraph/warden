@@ -222,6 +222,10 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := schemaPlanHandler(deps)(context.Background(), SchemaPlanInput{}, p)
 		return err
 	}},
+	{"schema.apply", func(deps Deps, p dashcontract.Principal) error {
+		_, err := schemaApplyHandler(deps)(context.Background(), SchemaApplyInput{}, p)
+		return err
+	}},
 }
 
 func TestHandlers_RefuseWithoutTenant(t *testing.T) {

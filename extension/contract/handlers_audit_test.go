@@ -91,6 +91,13 @@ func (a *auditProbe) actionsLocked() []string {
 	return out
 }
 
+// actions lists every audit action recorded so far.
+func (a *auditProbe) actions() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.actionsLocked()
+}
+
 func (a *auditProbe) hasTyped(s string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -127,6 +127,10 @@ var intentPolicies = map[string]intentPolicy{
 	// through principalHolds, refusing with the first missing grant.
 	"schema.export": {"read", "warden:role"},
 	"schema.plan":   {"read", "warden:role"},
+
+	// An apply writes all five kinds, so the gate checks manage on
+	// warden:role and the handler checks manage on the other four.
+	"schema.apply": {"manage", "warden:role"},
 }
 
 // engineAuthorizer is the dashcontract.Warden the manifest delegates to.
