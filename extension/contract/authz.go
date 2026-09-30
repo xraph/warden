@@ -112,6 +112,10 @@ var intentPolicies = map[string]intentPolicy{
 	// authorizing the call is a real, logged check: engineAuthorizer enforces
 	// it, which writes a check log row and fires hooks.
 	"playground.explain": {"check", "warden:authz"},
+
+	// A subject's whole access picture is assignment data, so it needs the
+	// same read grant the assignment list does.
+	"subjects.detail": {"read", "warden:assignment"},
 }
 
 // engineAuthorizer is the dashcontract.Warden the manifest delegates to.

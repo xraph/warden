@@ -29,25 +29,25 @@ intents:
   # A create changes the list and the counters, and can change another
   # role's children if it names a parent.
   - { name: roles.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.list, roles.detail, overview.stats, namespaces.list] }
+      invalidates: [roles.list, roles.detail, overview.stats, namespaces.list, subjects.detail] }
   # An update can change the name shown in the list, the parent (which moves
   # this role between two other roles' children), and the roleSlug/roleName
   # that assignment rows denormalise. Nothing else.
   - { name: roles.update, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.list, roles.detail, permissions.detail, assignments.list, assignments.expiring] }
+      invalidates: [roles.list, roles.detail, permissions.detail, assignments.list, assignments.expiring, subjects.detail] }
   # A delete cascades: DeleteAssignmentsByRole removes every assignment of
   # this role, so the assignments list and the counters change too.
   - { name: roles.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.list, roles.detail, permissions.detail, overview.stats, namespaces.list, assignments.list, assignments.expiring] }
+      invalidates: [roles.list, roles.detail, permissions.detail, overview.stats, namespaces.list, assignments.list, assignments.expiring, subjects.detail] }
   # A grant change alters the role's detail page. It does NOT change the
   # roles list, which shows no grant information, and it does not change
   # any counter.
   - { name: roles.attachPermission, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.detail, permissions.detail] }
+      invalidates: [roles.detail, permissions.detail, subjects.detail] }
   - { name: roles.detachPermission, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.detail, permissions.detail] }
+      invalidates: [roles.detail, permissions.detail, subjects.detail] }
   - { name: roles.setPermissions, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [roles.detail, permissions.detail] }
+      invalidates: [roles.detail, permissions.detail, subjects.detail] }
   - { name: permissions.list,   kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: permissions.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # A new permission can appear in a role's attach picker, and creates a
@@ -55,10 +55,10 @@ intents:
   - { name: permissions.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [permissions.list, overview.stats, namespaces.list] }
   - { name: permissions.update, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [permissions.list, permissions.detail] }
+      invalidates: [permissions.list, permissions.detail, subjects.detail] }
   # A delete removes junction rows, so any role's detail page can change.
   - { name: permissions.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [permissions.list, permissions.detail, roles.detail, overview.stats, namespaces.list] }
+      invalidates: [permissions.list, permissions.detail, roles.detail, overview.stats, namespaces.list, subjects.detail] }
   - { name: assignments.list,     kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: assignments.expiring, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # A new binding changes the list, the expiring feed if it carries an
@@ -67,9 +67,9 @@ intents:
   # namespaces.list scans assignments too, so a binding in a new namespace
   # adds one and deleting the last binding in a namespace can remove it.
   - { name: assignments.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [assignments.list, assignments.expiring, roles.detail, overview.stats, namespaces.list] }
+      invalidates: [assignments.list, assignments.expiring, roles.detail, overview.stats, namespaces.list, subjects.detail] }
   - { name: assignments.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [assignments.list, assignments.expiring, roles.detail, overview.stats, namespaces.list] }
+      invalidates: [assignments.list, assignments.expiring, roles.detail, overview.stats, namespaces.list, subjects.detail] }
   - { name: relations.list, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # A tuple change alters the list and the counters. It does NOT change any
   # role or permission surface: tuples are ReBAC and grant through the graph
@@ -77,9 +77,9 @@ intents:
   # list, because namespaces.list is built partly from tuple namespaces: a
   # create can introduce one and a delete of its last tuple can remove it.
   - { name: relations.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [relations.list, overview.stats, namespaces.list] }
+      invalidates: [relations.list, overview.stats, namespaces.list, subjects.detail] }
   - { name: relations.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [relations.list, overview.stats, namespaces.list] }
+      invalidates: [relations.list, overview.stats, namespaces.list, subjects.detail] }
   - { name: resourceTypes.list,   kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: resourceTypes.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # A schema change alters what the graph walker can derive, so it affects
@@ -103,11 +103,11 @@ intents:
   - { name: policies.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [policies.list, overview.stats, namespaces.list] }
   - { name: policies.update, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [policies.list, policies.detail] }
+      invalidates: [policies.list, policies.detail, subjects.detail] }
   - { name: policies.setActive, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [policies.list, policies.detail] }
+      invalidates: [policies.list, policies.detail, subjects.detail] }
   - { name: policies.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [policies.list, policies.detail, overview.stats, namespaces.list] }
+      invalidates: [policies.list, policies.detail, overview.stats, namespaces.list, subjects.detail] }
   # RunMaintenance purges expired assignments and, past the retention, check
   # log entries. Both are deletes, so every view of them goes stale: the
   # counters and the recent checks feed, the check log list and detail, the
@@ -116,13 +116,16 @@ intents:
   # namespaces.
   - { name: maintenance.run, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [overview.stats, overview.recentChecks, checkLogs.list, checkLogs.detail, assignments.list,
-                    assignments.expiring, roles.detail, namespaces.list] }
+                    assignments.expiring, roles.detail, namespaces.list, subjects.detail] }
   - { name: maintenance.cacheInvalidate, kind: command, version: 1, requires: { warden: warden.engine }, capability: write }
   # The check the playground builds is a dry run: no check log row, no hooks,
   # no cache. It is a query, and a viewer who may run checks may run it.
   # Authorizing the call itself is a real, logged check: the warden.engine
   # gate enforces it, which writes a check log row and fires hooks.
   - { name: playground.explain, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  # One subject's roles, grants, assignments, relations, policies and recent
+  # checks. Every command that changes any of those invalidates it.
+  - { name: subjects.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
 
 queries:
   config:
@@ -187,5 +190,8 @@ queries:
   playgroundExplain:
     intent: playground.explain
     cache: { staleTime: 0s }
+  subjectDetail:
+    intent: subjects.detail
+    cache: { staleTime: 15s }
 
 graph: []

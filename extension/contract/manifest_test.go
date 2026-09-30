@@ -88,6 +88,7 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"maintenance.run":             dashcontract.IntentKindCommand,
 		"maintenance.cacheInvalidate": dashcontract.IntentKindCommand,
 		"playground.explain":          dashcontract.IntentKindQuery,
+		"subjects.detail":             dashcontract.IntentKindQuery,
 	}
 	if len(m.Intents) != len(wantKind) {
 		t.Fatalf("manifest declares %d intents, want %d: %+v", len(m.Intents), len(wantKind), m.Intents)
@@ -493,5 +494,78 @@ func TestManifest_PlaygroundExplainIsAFreshReadQuery(t *testing.T) {
 	}
 	if !found {
 		t.Error("manifest declares no playground.explain intent")
+	}
+}
+
+// subjectDetailInvalidators is every command that can change what
+// subjects.detail reports: a subject's resolved roles, the grants of those
+// roles, its assignments and relations, the policies that select it, and
+// (through maintenance) the rows purged from under it.
+var subjectDetailInvalidators = []string{
+	"roles.create", "roles.update", "roles.delete",
+	"roles.attachPermission", "roles.detachPermission", "roles.setPermissions",
+	"permissions.update", "permissions.delete",
+	"assignments.create", "assignments.delete",
+	"relations.create", "relations.delete",
+	"policies.update", "policies.setActive", "policies.delete",
+	"maintenance.run",
+}
+
+func TestManifest_SubjectDetailIsARefreshedReadQuery(t *testing.T) {
+	m := loadManifest(t)
+	q, ok := m.Queries["subjectDetail"]
+	if !ok {
+		t.Fatal("manifest declares no subjectDetail query")
+	}
+	if q.Intent != "subjects.detail" {
+		t.Errorf("subjectDetail points at %q, want subjects.detail", q.Intent)
+	}
+	if q.Cache.StaleTime != "15s" {
+		t.Errorf("subjectDetail staleTime = %q, want 15s", q.Cache.StaleTime)
+	}
+	found := false
+	for _, in := range m.Intents {
+		if in.Name != "subjects.detail" {
+			continue
+		}
+		found = true
+		if in.Kind != dashcontract.IntentKindQuery || in.Capability != "read" {
+			t.Errorf("subjects.detail is %s/%s, want a read query", in.Kind, in.Capability)
+		}
+		if len(in.Invalidates) != 0 {
+			t.Errorf("subjects.detail invalidates %v: a query writes nothing", in.Invalidates)
+		}
+	}
+	if !found {
+		t.Error("manifest declares no subjects.detail intent")
+	}
+}
+
+func TestManifest_EveryCommandThatChangesASubjectsAccessInvalidatesItsDetail(t *testing.T) {
+	m := loadManifest(t)
+	byName := map[string][]string{}
+	for _, in := range m.Intents {
+		byName[in.Name] = in.Invalidates
+	}
+	want := map[string]bool{}
+	for _, intent := range subjectDetailInvalidators {
+		want[intent] = true
+		found := false
+		for _, v := range byName[intent] {
+			if v == "subjects.detail" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s does not invalidate subjects.detail", intent)
+		}
+	}
+	// The reverse: nothing else invalidates it without a reason recorded here.
+	for name, list := range byName {
+		for _, v := range list {
+			if v == "subjects.detail" && !want[name] {
+				t.Errorf("%s invalidates subjects.detail but is not in subjectDetailInvalidators", name)
+			}
+		}
 	}
 }

@@ -66,6 +66,7 @@ var wantPolicies = map[string]struct{ action, resource string }{
 	"maintenance.run":             {"manage", "warden:maintenance"},
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
 	"playground.explain":          {"check", "warden:authz"},
+	"subjects.detail":             {"read", "warden:assignment"},
 }
 
 // grantUser gives subject exactly the named "<resource>:<action>"
