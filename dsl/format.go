@@ -511,12 +511,7 @@ func (f *formatter) relations(relations []*RelationDecl) {
 		return false
 	})
 	for _, r := range sorted {
-		subj := formatName(r.SubjectType) + ":" + formatName(r.SubjectID)
-		if r.SubjectRelation != "" {
-			subj += "#" + formatName(r.SubjectRelation)
-		}
-		f.writef("relation %s:%s %s = %s\n",
-			formatName(r.ObjectType), formatName(r.ObjectID), formatName(r.Relation), subj)
+		f.writef("relation %s\n", relationText(r))
 	}
 }
 

@@ -45,6 +45,24 @@ type ApplyOptions struct {
 	// "eng/platform". An entity in an uncovered namespace is never pruned,
 	// so a source that says nothing about a namespace cannot delete it.
 	Prune bool
+	// ProtectSystem, when true, refuses every change to a system role or
+	// system permission. No store checks IsSystem, so without it an apply
+	// can rename a system role, rewrite its grants, flip it to non-system
+	// or prune it. With it, the dry run and the real apply both refuse, as
+	// a diagnostic at the offending declaration and before anything is
+	// written:
+	//
+	//   - an update to a stored system role or permission (any field,
+	//     grants included);
+	//   - source that sets or clears is_system relative to the store;
+	//   - creating a system role or permission;
+	//   - pruning a system role or permission.
+	//
+	// The dashboard sets it, matching the guard every other dashboard write
+	// goes through (extension/contract/immutable.go). The CLI and the
+	// declarative loader leave it off and keep their behaviour: they own
+	// the system entities they declare, and prune skips system roles.
+	ProtectSystem bool
 	// Now is the time used for CreatedAt/UpdatedAt timestamps. Defaults to
 	// time.Now().UTC().
 	Now time.Time
@@ -92,6 +110,7 @@ func Apply(ctx context.Context, eng *warden.Engine, prog *Program, opts ApplyOpt
 		appID:    firstNonEmpty(opts.AppID, prog.App),
 		now:      now,
 		prune:    opts.Prune,
+		protect:  opts.ProtectSystem,
 		dryRun:   opts.DryRun,
 		result:   &ApplyResult{},
 		covered:  coveredNamespaces(prog),
@@ -153,6 +172,7 @@ type applier struct {
 	appID    string
 	now      time.Time
 	prune    bool
+	protect  bool
 	dryRun   bool
 
 	// covered is the set of namespace paths the program declares something
@@ -234,6 +254,12 @@ func (a *applier) run(prog *Program) error {
 	// stops a real apply as early as it stops a dry run.
 	if err := a.checkGrants(prog); err != nil {
 		return err
+	}
+	// So is a change to a system entity, when the caller protects them.
+	if a.protect {
+		if err := a.checkSystem(prog); err != nil {
+			return err
+		}
 	}
 	if err := a.applyResourceTypes(prog); err != nil {
 		return err
@@ -451,20 +477,7 @@ func (a *applier) applyPermissions(prog *Program) error {
 	declared := make(map[string]struct{})
 	for _, p := range prog.Permissions {
 		declared[keyOf(p.NamespacePath, p.Name)] = struct{}{}
-		desired := &permission.Permission{
-			TenantID:      a.tenantID,
-			NamespacePath: p.NamespacePath,
-			AppID:         a.appID,
-			Name:          p.Name,
-			Description:   p.Description,
-			Resource:      p.Resource,
-			Action:        p.Action,
-			IsSystem:      p.IsSystem,
-			CreatedBy:     declarativeActor.ID,
-			UpdatedBy:     declarativeActor.ID,
-			CreatedAt:     a.now,
-			UpdatedAt:     a.now,
-		}
+		desired := a.desiredPermission(p)
 		existing, _ := a.store.GetPermissionByName(a.ctx, a.tenantID, p.NamespacePath, p.Name) //nolint:errcheck // missing → create
 		if existing == nil {
 			// ID is auto-assigned by the store on CreatePermission.
@@ -477,27 +490,8 @@ func (a *applier) applyPermissions(prog *Program) error {
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ permission/%s/%s", p.NamespacePath, p.Name))
 			continue
 		}
-		desired.ID = existing.ID
-		desired.CreatedAt = existing.CreatedAt
-		desired.CreatedBy = existing.CreatedBy
-		desired.Metadata = existing.Metadata
-		desired.AppID = a.appFor(existing.AppID)
-		var changed []string
-		if existing.Resource != desired.Resource {
-			changed = append(changed, "resource")
-		}
-		if existing.Action != desired.Action {
-			changed = append(changed, "action")
-		}
-		if existing.Description != desired.Description {
-			changed = append(changed, "description")
-		}
-		if existing.IsSystem != desired.IsSystem {
-			changed = append(changed, "is_system")
-		}
-		if existing.AppID != desired.AppID {
-			changed = append(changed, "app")
-		}
+		a.carryPermission(desired, existing)
+		changed := permissionChanges(existing, desired)
 		if len(changed) == 0 {
 			a.result.NoOps++
 			continue
@@ -538,6 +532,55 @@ func (a *applier) applyPermissions(prog *Program) error {
 	return nil
 }
 
+// desiredPermission is the row the program declares for p, before anything
+// is carried over from a stored row.
+func (a *applier) desiredPermission(p *PermissionDecl) *permission.Permission {
+	return &permission.Permission{
+		TenantID:      a.tenantID,
+		NamespacePath: p.NamespacePath,
+		AppID:         a.appID,
+		Name:          p.Name,
+		Description:   p.Description,
+		Resource:      p.Resource,
+		Action:        p.Action,
+		IsSystem:      p.IsSystem,
+		CreatedBy:     declarativeActor.ID,
+		UpdatedBy:     declarativeActor.ID,
+		CreatedAt:     a.now,
+		UpdatedAt:     a.now,
+	}
+}
+
+// carryPermission keeps what an update of existing does not rewrite.
+func (a *applier) carryPermission(desired, existing *permission.Permission) {
+	desired.ID = existing.ID
+	desired.CreatedAt = existing.CreatedAt
+	desired.CreatedBy = existing.CreatedBy
+	desired.Metadata = existing.Metadata
+	desired.AppID = a.appFor(existing.AppID)
+}
+
+// permissionChanges lists the permission fields that differ.
+func permissionChanges(a, b *permission.Permission) []string {
+	var out []string
+	if a.Resource != b.Resource {
+		out = append(out, "resource")
+	}
+	if a.Action != b.Action {
+		out = append(out, "action")
+	}
+	if a.Description != b.Description {
+		out = append(out, "description")
+	}
+	if a.IsSystem != b.IsSystem {
+		out = append(out, "is_system")
+	}
+	if a.AppID != b.AppID {
+		out = append(out, "app")
+	}
+	return out
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Roles (toposorted by parent slug).
 // ─────────────────────────────────────────────────────────────────────────
@@ -550,22 +593,7 @@ func (a *applier) applyRoles(prog *Program) error {
 	declared := make(map[string]struct{})
 	for _, r := range sorted {
 		declared[keyOf(r.NamespacePath, r.Slug)] = struct{}{}
-		desired := &role.Role{
-			TenantID:      a.tenantID,
-			NamespacePath: r.NamespacePath,
-			AppID:         a.appID,
-			Name:          firstNonEmpty(r.Name, r.Slug),
-			Description:   r.Description,
-			Slug:          r.Slug,
-			IsSystem:      r.IsSystem,
-			IsDefault:     r.IsDefault,
-			ParentSlug:    parentSlugForStorage(r.Parent),
-			MaxMembers:    r.MaxMembers,
-			CreatedBy:     declarativeActor.ID,
-			UpdatedBy:     declarativeActor.ID,
-			CreatedAt:     a.now,
-			UpdatedAt:     a.now,
-		}
+		desired := a.desiredRole(r)
 		existing, _ := a.store.GetRoleBySlug(a.ctx, a.tenantID, r.NamespacePath, r.Slug) //nolint:errcheck // missing → create
 		if existing == nil {
 			// ID is auto-assigned by the store on CreateRole.
@@ -578,11 +606,7 @@ func (a *applier) applyRoles(prog *Program) error {
 			a.result.Created = append(a.result.Created, fmt.Sprintf("+ role/%s/%s", r.NamespacePath, r.Slug))
 			continue
 		}
-		desired.ID = existing.ID
-		desired.CreatedAt = existing.CreatedAt
-		desired.CreatedBy = existing.CreatedBy
-		desired.Metadata = existing.Metadata
-		desired.AppID = a.appFor(existing.AppID)
+		a.carryRole(desired, existing)
 		changed := roleChanges(existing, desired)
 		roleFieldsChanged := len(changed) > 0
 		grantsChanged, err := a.grantsDiffer(r, existing)
@@ -639,6 +663,36 @@ func (a *applier) applyRoles(prog *Program) error {
 	return nil
 }
 
+// desiredRole is the row the program declares for r, before anything is
+// carried over from a stored row.
+func (a *applier) desiredRole(r *RoleDecl) *role.Role {
+	return &role.Role{
+		TenantID:      a.tenantID,
+		NamespacePath: r.NamespacePath,
+		AppID:         a.appID,
+		Name:          firstNonEmpty(r.Name, r.Slug),
+		Description:   r.Description,
+		Slug:          r.Slug,
+		IsSystem:      r.IsSystem,
+		IsDefault:     r.IsDefault,
+		ParentSlug:    parentSlugForStorage(r.Parent),
+		MaxMembers:    r.MaxMembers,
+		CreatedBy:     declarativeActor.ID,
+		UpdatedBy:     declarativeActor.ID,
+		CreatedAt:     a.now,
+		UpdatedAt:     a.now,
+	}
+}
+
+// carryRole keeps what an update of existing does not rewrite.
+func (a *applier) carryRole(desired, existing *role.Role) {
+	desired.ID = existing.ID
+	desired.CreatedAt = existing.CreatedAt
+	desired.CreatedBy = existing.CreatedBy
+	desired.Metadata = existing.Metadata
+	desired.AppID = a.appFor(existing.AppID)
+}
+
 // roleChanges lists the role's own fields that differ, grants aside.
 func roleChanges(a, b *role.Role) []string {
 	var out []string
@@ -669,6 +723,13 @@ func roleChanges(a, b *role.Role) []string {
 // grantsDiffer reports whether applying r would change the stored role's
 // grant set. A role without a grants clause leaves its grants alone, so it
 // never differs.
+//
+// A stored grant whose permission this apply prunes is left out of what
+// the role holds: deleting the permission removes the grant before
+// applyRolePermissions runs, so it is not a change the role's write makes.
+// Counting it would plan a `~ (grants)` line that the real apply finds
+// already true, and the result would differ from the plan with nothing
+// else writing to the store.
 func (a *applier) grantsDiffer(r *RoleDecl, stored *role.Role) (bool, error) {
 	if !grantsManaged(r) {
 		return false, nil
@@ -679,6 +740,9 @@ func (a *applier) grantsDiffer(r *RoleDecl, stored *role.Role) (bool, error) {
 	}
 	have := make(map[string]struct{}, len(current))
 	for _, p := range current {
+		if a.prunes(p.NamespacePath, p.Name) {
+			continue
+		}
 		have[keyOf(p.NamespacePath, p.Name)] = struct{}{}
 	}
 	// Unknown grants were refused by checkGrants before anything ran.
@@ -738,12 +802,22 @@ func (a *applier) permExists(ns, name string) bool {
 	if _, ok := a.declared[keyOf(ns, name)]; ok {
 		return true
 	}
-	if a.prune && a.covers(ns) {
-		// Undeclared in a covered namespace: prune deletes it.
+	if a.prunes(ns, name) {
 		return false
 	}
 	perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, ns, name)
 	return err == nil && perm != nil
+}
+
+// prunes reports whether this apply deletes the permission ns/name if the
+// store holds it: prune is on, the program covers its namespace, and the
+// program does not declare it.
+func (a *applier) prunes(ns, name string) bool {
+	if !a.prune || !a.covers(ns) {
+		return false
+	}
+	_, ok := a.declared[keyOf(ns, name)]
+	return !ok
 }
 
 // resolveGrant finds the permission a bare grant names. It looks in the
@@ -807,6 +881,139 @@ func (a *applier) checkGrants(prog *Program) error {
 		return &DiagnosticError{Diags: diags}
 	}
 	return nil
+}
+
+// checkSystem refuses, when the apply protects system entities, every
+// change to a system role or permission, as a diagnostic at the offending
+// declaration and before anything is written. It reads what the writes
+// below would compare, so a dry run and a real apply refuse the same
+// source. The messages follow extension/contract/immutable.go.
+func (a *applier) checkSystem(prog *Program) error {
+	var diags []*Diagnostic
+	refuse := func(pos Pos, format string, args ...any) {
+		diags = append(diags, &Diagnostic{Pos: pos, Msg: fmt.Sprintf(format, args...)})
+	}
+	for _, p := range prog.Permissions {
+		existing, _ := a.store.GetPermissionByName(a.ctx, a.tenantID, p.NamespacePath, p.Name) //nolint:errcheck // missing → create
+		switch {
+		case existing == nil:
+			if p.IsSystem {
+				refuse(p.Pos, "%q cannot be created as a system permission", p.Name)
+			}
+		case existing.IsSystem:
+			desired := a.desiredPermission(p)
+			a.carryPermission(desired, existing)
+			if len(permissionChanges(existing, desired)) > 0 {
+				refuse(p.Pos, "%q is a system permission and cannot be changed or deleted", p.Name)
+			}
+		case p.IsSystem:
+			refuse(p.Pos, "%q is not a system permission, and source cannot make it one", p.Name)
+		}
+	}
+	for _, r := range prog.Roles {
+		existing, _ := a.store.GetRoleBySlug(a.ctx, a.tenantID, r.NamespacePath, r.Slug) //nolint:errcheck // missing → create
+		switch {
+		case existing == nil:
+			if r.IsSystem {
+				refuse(r.Pos, "%q cannot be created as a system role", r.Slug)
+			}
+		case existing.IsSystem:
+			desired := a.desiredRole(r)
+			a.carryRole(desired, existing)
+			changed := len(roleChanges(existing, desired)) > 0
+			if !changed {
+				grants, err := a.grantsDiffer(r, existing)
+				if err != nil {
+					return err
+				}
+				changed = grants
+			}
+			if changed {
+				refuse(r.Pos, "%q is a system role and cannot be changed or deleted", r.Slug)
+			}
+		case r.IsSystem:
+			refuse(r.Pos, "%q is not a system role, and source cannot make it one", r.Slug)
+		}
+	}
+	if a.prune {
+		at := coverPositions(prog)
+		perms, err := collectPages(func(limit, offset int) ([]*permission.Permission, error) {
+			return a.store.ListPermissions(a.ctx, &permission.ListFilter{
+				TenantID: a.tenantID, Limit: limit, Offset: offset,
+			})
+		})
+		if err != nil {
+			return err
+		}
+		for _, p := range perms {
+			if p.IsSystem && a.prunes(p.NamespacePath, p.Name) {
+				refuse(at[p.NamespacePath], "%q is a system permission and cannot be changed or deleted, and prune would delete it", p.Name)
+			}
+		}
+		declaredRoles := make(map[string]struct{}, len(prog.Roles))
+		for _, r := range prog.Roles {
+			declaredRoles[keyOf(r.NamespacePath, r.Slug)] = struct{}{}
+		}
+		roles, err := collectPages(func(limit, offset int) ([]*role.Role, error) {
+			return a.store.ListRoles(a.ctx, &role.ListFilter{
+				TenantID: a.tenantID, Limit: limit, Offset: offset,
+			})
+		})
+		if err != nil {
+			return err
+		}
+		for _, r := range roles {
+			if !r.IsSystem || !a.covers(r.NamespacePath) {
+				continue
+			}
+			if _, ok := declaredRoles[keyOf(r.NamespacePath, r.Slug)]; ok {
+				continue
+			}
+			refuse(at[r.NamespacePath], "%q is a system role and cannot be changed or deleted, and prune would delete it", r.Slug)
+		}
+	}
+	if len(diags) > 0 {
+		return &DiagnosticError{Diags: diags}
+	}
+	return nil
+}
+
+// coverPositions maps each namespace the program covers to the first place
+// in the source that covers it: the earliest entity or `namespace` block in
+// it. A refused prune has no declaration of its own, so its diagnostic
+// stands where the source took hold of the namespace.
+func coverPositions(prog *Program) map[string]Pos {
+	out := make(map[string]Pos)
+	mark := func(ns string, pos Pos) {
+		if cur, ok := out[ns]; !ok || pos.Line < cur.Line || (pos.Line == cur.Line && pos.Col < cur.Col) {
+			out[ns] = pos
+		}
+	}
+	for _, rt := range prog.ResourceTypes {
+		mark(rt.NamespacePath, rt.Pos)
+	}
+	for _, p := range prog.Permissions {
+		mark(p.NamespacePath, p.Pos)
+	}
+	for _, r := range prog.Roles {
+		mark(r.NamespacePath, r.Pos)
+	}
+	for _, p := range prog.Policies {
+		mark(p.NamespacePath, p.Pos)
+	}
+	for _, r := range prog.Relations {
+		mark(r.NamespacePath, r.Pos)
+	}
+	var walk func(parent string, nss []*NamespaceDecl)
+	walk = func(parent string, nss []*NamespaceDecl) {
+		for _, ns := range nss {
+			abs := joinNS(parent, ns.Name)
+			mark(abs, ns.Pos)
+			walk(abs, ns.Namespaces)
+		}
+	}
+	walk("", prog.Namespaces)
+	return out
 }
 
 // applyRolePermissions sets each role's grant set from its `grants`

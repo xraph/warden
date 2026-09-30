@@ -11,7 +11,8 @@ import (
 // diagnostics found; the program may still be applied even with warnings.
 //
 // Checks performed:
-//   - duplicate slugs / names within and across files
+//   - duplicate slugs / names within and across files, and duplicate
+//     relation tuples
 //   - role parent slug resolves to a real role (local or ancestor namespace)
 //   - cycle detection in the role parent graph
 //   - resource-type permission expressions reference declared relations
@@ -88,6 +89,29 @@ func (r *resolver) indexAndCheckDuplicates() {
 		}
 		r.rtsByKey[k] = rt
 	}
+	// A tuple is its whole row. The store holds one of each, so a second
+	// line for the same tuple could only be a no-op, and a plan would count
+	// it as a second write the apply never makes.
+	tuples := make(map[string]*RelationDecl, len(r.prog.Relations))
+	for _, rel := range r.prog.Relations {
+		k := strings.Join([]string{rel.NamespacePath, rel.ObjectType, rel.ObjectID, rel.Relation,
+			rel.SubjectType, rel.SubjectID, rel.SubjectRelation}, "\x00")
+		if existing, ok := tuples[k]; ok {
+			r.errf(rel.Pos, "relation %s already declared at %s", relationText(rel), existing.Pos)
+			continue
+		}
+		tuples[k] = rel
+	}
+}
+
+// relationText writes a relation tuple as its source line does, after the
+// `relation` keyword.
+func relationText(rel *RelationDecl) string {
+	subj := formatName(rel.SubjectType) + ":" + formatName(rel.SubjectID)
+	if rel.SubjectRelation != "" {
+		subj += "#" + formatName(rel.SubjectRelation)
+	}
+	return formatName(rel.ObjectType) + ":" + formatName(rel.ObjectID) + " " + formatName(rel.Relation) + " = " + subj
 }
 
 func (r *resolver) checkConventions() {

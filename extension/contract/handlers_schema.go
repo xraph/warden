@@ -231,10 +231,15 @@ func dryRunSchema(ctx context.Context, deps Deps, tenantID, src string, prune bo
 	}
 	// TenantID wins over the header, and checkSource has already refused a
 	// header that names another tenant, so this is always the caller's.
+	// ProtectSystem holds this door to the guard every other role and
+	// permission write here goes through (immutable.go): no store checks
+	// IsSystem, so without it one apply could rewrite or delete a system
+	// entity. A refusal is a diagnostic at the declaration.
 	res, err := dsl.Apply(ctx, deps.Engine, prog, dsl.ApplyOptions{
-		TenantID: tenantID,
-		DryRun:   true,
-		Prune:    prune,
+		TenantID:      tenantID,
+		DryRun:        true,
+		Prune:         prune,
+		ProtectSystem: true,
 	})
 	if err != nil {
 		var derr *dsl.DiagnosticError
@@ -302,8 +307,9 @@ func schemaApplyHandler(deps Deps) func(context.Context, SchemaApplyInput, dashc
 		}, nil)
 
 		res, err := dsl.Apply(ctx, deps.Engine, prog, dsl.ApplyOptions{
-			TenantID: tenantID,
-			Prune:    in.Prune,
+			TenantID:      tenantID,
+			Prune:         in.Prune,
+			ProtectSystem: true,
 		})
 		if err != nil {
 			// The dry run passed, so anything that fails now failed after

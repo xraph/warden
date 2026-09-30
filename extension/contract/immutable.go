@@ -12,6 +12,10 @@
 //
 // The guard belongs here rather than in each handler so that the plans
 // after this one cannot add a role or permission write that forgets it.
+//
+// schema.plan and schema.apply write through dsl.Apply, which cannot call
+// these two. They set dsl.ApplyOptions.ProtectSystem instead, which refuses
+// the same writes in the same words, as a diagnostic at the declaration.
 package contract
 
 import (
