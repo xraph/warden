@@ -82,6 +82,12 @@ type CheckResult struct {
 	// at a depth or budget limit. Check folds it into the reason of a
 	// denial. Unexported, so it never reaches the wire or the cache.
 	truncated bool
+
+	// exprErr is set by the ReBAC evaluator when the resource type's
+	// permission expression failed and was treated as no match. Explain
+	// reports it; Check keeps its behaviour. Unexported, so it never
+	// reaches the wire or the cache.
+	exprErr string
 }
 
 // Decision is the authorization outcome.

@@ -197,44 +197,10 @@ func (e *Engine) InvalidateTenant(ctx context.Context, tenantID string) {
 func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOption) (*CheckResult, error) {
 	start := time.Now()
 
-	// Validate required fields.
-	if req.Subject.ID == "" {
-		return nil, fmt.Errorf("warden: subject ID is required")
+	scope, co, err := e.prepareCheck(ctx, req, opts)
+	if err != nil {
+		return nil, err
 	}
-	if req.Action.Name == "" {
-		return nil, fmt.Errorf("warden: action name is required")
-	}
-	if req.Resource.Type == "" {
-		return nil, fmt.Errorf("warden: resource type is required for permission check")
-	}
-
-	scope := scopeFromContext(ctx)
-	if req.TenantID != "" {
-		scope.tenantID = req.TenantID
-	}
-	if req.NamespacePath != "" {
-		scope.namespacePath = req.NamespacePath
-	}
-
-	// Apply call-time options (highest priority).
-	co := resolveCallOptions(opts)
-	if co.tenantID != "" {
-		scope.tenantID = co.tenantID
-	}
-	if co.appID != "" {
-		scope.appID = co.appID
-	}
-	if co.namespacePathSet {
-		scope.namespacePath = co.namespacePath
-	}
-
-	if e.config.requireTenant() && scope.tenantID == "" {
-		return nil, ErrTenantRequired
-	}
-
-	// Computed once, after every scope override has been applied, and
-	// reused by every evaluator below instead of each recomputing it.
-	scope.namespaces = AncestorNamespaces(scope.namespacePath)
 
 	e.logger.Debug("warden: check",
 		log.String("subject_kind", string(req.Subject.Kind)),
@@ -264,39 +230,12 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 		}
 	}
 
-	var rbacResult *CheckResult
-	var rbacRoles []*role.Role
-	var err error
-
-	// 2. RBAC: resolve roles → check permissions.
-	if e.config.rbacEnabled() {
-		rbacResult, rbacRoles, err = e.evaluateRBAC(ctx, scope, req)
-		if err != nil {
-			return e.failCheck(ctx, scope, req, fmt.Errorf("warden rbac: %w", err), co.dryRun)
-		}
+	// 2 to 4. RBAC, ReBAC, ABAC.
+	run := e.runModels(ctx, scope, req)
+	if run.err != nil {
+		return e.failCheck(ctx, scope, req, run.err, co.dryRun)
 	}
-
-	// 3. ReBAC: check relation tuples → walk graph. Skipped once RBAC has
-	// already allowed the request, unless EvaluateAllModels is set: the
-	// graph walk is the most expensive of the three evaluators.
-	var rebacResult *CheckResult
-	if e.config.rebacEnabled() && (rbacResult == nil || !rbacResult.Allowed || e.config.EvaluateAllModels) {
-		rebacResult, err = e.evaluateReBAC(ctx, scope, req)
-		if err != nil {
-			return e.failCheck(ctx, scope, req, fmt.Errorf("warden rebac: %w", err), co.dryRun)
-		}
-	}
-
-	// 4. ABAC: evaluate active policies with conditions. Always runs (even
-	// after an RBAC/ReBAC allow) because an explicit deny policy must be
-	// able to override an allow from another model.
-	var abacResult *CheckResult
-	if e.config.abacEnabled() {
-		abacResult, err = e.evaluateABAC(ctx, scope, req, rolesToSlugs(rbacRoles))
-		if err != nil {
-			return e.failCheck(ctx, scope, req, fmt.Errorf("warden abac: %w", err), co.dryRun)
-		}
-	}
+	rbacResult, rebacResult, abacResult := run.rbac, run.rebac, run.abac
 
 	// 5. Merge: explicit deny > allow > default deny.
 	result := e.mergeDecisions(req, rbacResult, rebacResult, abacResult)
@@ -329,6 +268,102 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	}
 
 	return result, nil
+}
+
+// prepareCheck validates req and resolves its scope and call options, as
+// the first part of Check. Explain shares it.
+func (e *Engine) prepareCheck(ctx context.Context, req *CheckRequest, opts []CallOption) (tenantScope, callOptions, error) {
+	// Validate required fields.
+	if req.Subject.ID == "" {
+		return tenantScope{}, callOptions{}, fmt.Errorf("warden: subject ID is required")
+	}
+	if req.Action.Name == "" {
+		return tenantScope{}, callOptions{}, fmt.Errorf("warden: action name is required")
+	}
+	if req.Resource.Type == "" {
+		return tenantScope{}, callOptions{}, fmt.Errorf("warden: resource type is required for permission check")
+	}
+
+	scope := scopeFromContext(ctx)
+	if req.TenantID != "" {
+		scope.tenantID = req.TenantID
+	}
+	if req.NamespacePath != "" {
+		scope.namespacePath = req.NamespacePath
+	}
+
+	// Apply call-time options (highest priority).
+	co := resolveCallOptions(opts)
+	if co.tenantID != "" {
+		scope.tenantID = co.tenantID
+	}
+	if co.appID != "" {
+		scope.appID = co.appID
+	}
+	if co.namespacePathSet {
+		scope.namespacePath = co.namespacePath
+	}
+
+	if e.config.requireTenant() && scope.tenantID == "" {
+		return tenantScope{}, callOptions{}, ErrTenantRequired
+	}
+
+	// Computed once, after every scope override has been applied, and
+	// reused by every evaluator below instead of each recomputing it.
+	scope.namespaces = AncestorNamespaces(scope.namespacePath)
+
+	return scope, co, nil
+}
+
+// modelRun is one pass through the models, in Check's order.
+type modelRun struct {
+	rbac, rebac, abac *CheckResult
+	rbacRoles         []*role.Role
+	// failed names the model whose store read failed ("rbac", "rebac",
+	// "abac"); err is the wrapped error Check returns. Empty on success.
+	failed string
+	err    error
+}
+
+// runModels runs RBAC, ReBAC and ABAC exactly as Check always has: ReBAC
+// only when RBAC did not allow or EvaluateAllModels is on, ABAC whenever
+// enabled, and nothing after a failure.
+func (e *Engine) runModels(ctx context.Context, scope tenantScope, req *CheckRequest) modelRun {
+	var run modelRun
+	var err error
+
+	// 2. RBAC: resolve roles → check permissions.
+	if e.config.rbacEnabled() {
+		run.rbac, run.rbacRoles, err = e.evaluateRBAC(ctx, scope, req)
+		if err != nil {
+			run.failed, run.err = "rbac", fmt.Errorf("warden rbac: %w", err)
+			return run
+		}
+	}
+
+	// 3. ReBAC: check relation tuples → walk graph. Skipped once RBAC has
+	// already allowed the request, unless EvaluateAllModels is set: the
+	// graph walk is the most expensive of the three evaluators.
+	if e.config.rebacEnabled() && (run.rbac == nil || !run.rbac.Allowed || e.config.EvaluateAllModels) {
+		run.rebac, err = e.evaluateReBAC(ctx, scope, req)
+		if err != nil {
+			run.failed, run.err = "rebac", fmt.Errorf("warden rebac: %w", err)
+			return run
+		}
+	}
+
+	// 4. ABAC: evaluate active policies with conditions. Always runs (even
+	// after an RBAC/ReBAC allow) because an explicit deny policy must be
+	// able to override an allow from another model.
+	if e.config.abacEnabled() {
+		run.abac, err = e.evaluateABAC(ctx, scope, req, rolesToSlugs(run.rbacRoles))
+		if err != nil {
+			run.failed, run.err = "abac", fmt.Errorf("warden abac: %w", err)
+			return run
+		}
+	}
+
+	return run
 }
 
 func (e *Engine) emitAfterCheck(ctx context.Context, req *CheckRequest, result *CheckResult) {
@@ -634,13 +669,17 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 
 	// Resource-type expression: if the request's resource type defines the
 	// permission as an expression (`read = viewer or editor or parent->read`),
-	// evaluate it.
+	// evaluate it. A failed expression is logged and treated as no match;
+	// its message rides on every result returned below so Explain can
+	// report it.
+	exprErr := ""
 	if e.exprEval != nil {
 		matched, err := e.exprEval.EvalPermission(ctx, scope.tenantID, scope.namespacePath,
 			req.Resource.Type, req.Action.Name,
 			string(req.Subject.Kind), req.Subject.ID, req.Resource.ID)
 		if err != nil {
 			e.logger.Warn("warden: rebac expression eval error", log.Error(err))
+			exprErr = err.Error()
 		} else if matched {
 			return &CheckResult{
 				Allowed:   true,
@@ -668,6 +707,7 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 				Allowed:   true,
 				Decision:  DecisionAllow,
 				MatchedBy: []MatchInfo{{Source: "rebac", Detail: "transitive: " + path}},
+				exprErr:   exprErr,
 			}, nil
 		}
 	}
@@ -676,6 +716,7 @@ func (e *Engine) evaluateReBAC(ctx context.Context, scope tenantScope, req *Chec
 		Decision:  DecisionDenyRelation,
 		Reason:    fmt.Sprintf("no relation grants %s:%s %s access to %s:%s", req.Subject.Kind, req.Subject.ID, req.Action.Name, req.Resource.Type, req.Resource.ID),
 		truncated: truncated,
+		exprErr:   exprErr,
 	}, nil
 }
 
