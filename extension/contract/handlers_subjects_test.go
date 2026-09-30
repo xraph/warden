@@ -569,3 +569,153 @@ func TestSubjectsDetailNeverShowsAnotherTenantsRows(t *testing.T) {
 		t.Errorf("t1's own rows are wrong: roles %+v assignments %+v", got.Roles, got.Assignments)
 	}
 }
+
+// A store treats an empty SubjectKind/SubjectType filter as "any kind", but
+// the engine matches "" exactly. With subjectKind "" the lists must hold only
+// rows whose kind is exactly "".
+
+func createBareAssignment(t *testing.T, s *memory.Store, r *role.Role, kind, resourceID string, at time.Time) *assignment.Assignment {
+	t.Helper()
+	a := &assignment.Assignment{
+		TenantID: "t1", RoleID: r.ID, SubjectKind: kind, SubjectID: "alice",
+		ResourceType: "doc", ResourceID: resourceID, CreatedAt: at,
+	}
+	if err := s.CreateAssignment(context.Background(), a); err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	return a
+}
+
+func createBareTuple(t *testing.T, s *memory.Store, subjType, objID string, at time.Time) *relation.Tuple {
+	t.Helper()
+	tp := &relation.Tuple{
+		TenantID: "t1", ObjectType: "doc", ObjectID: objID, Relation: "viewer",
+		SubjectType: subjType, SubjectID: "alice", CreatedAt: at,
+	}
+	if err := s.CreateRelation(context.Background(), tp); err != nil {
+		t.Fatalf("create tuple: %v", err)
+	}
+	return tp
+}
+
+func TestSubjectsDetailEmptyKindKeepsOnlyRowsOfKindEmpty(t *testing.T) {
+	s := memory.New()
+	eng := engineOver(t, s)
+	r := seedRoleIn(t, s, "t1", "", "reader", "")
+	now := time.Now()
+	var wantA, wantT, wantC string
+	for i, kind := range []string{"", "user", "api_key"} {
+		at := now.Add(time.Duration(i) * time.Minute)
+		a := createBareAssignment(t, s, r, kind, "d1", at)
+		tp := createBareTuple(t, s, kind, "o1", at)
+		c := seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", SubjectKind: kind, SubjectID: "alice", Action: "read", Decision: "allow", CreatedAt: at})
+		if kind == "" {
+			wantA, wantT, wantC = a.ID.String(), tp.ID.String(), c.ID.String()
+		}
+	}
+
+	got, err := subjectsDetailHandler(Deps{Engine: eng})(context.Background(), SubjectDetailInput{SubjectID: "alice"}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("subjects.detail: %v", err)
+	}
+	if len(got.Assignments) != 1 || got.Assignments[0].ID != wantA {
+		t.Errorf("assignments = %+v, want only the empty-kind row %s", got.Assignments, wantA)
+	}
+	if len(got.Relations) != 1 || got.Relations[0].ID != wantT {
+		t.Errorf("relations = %+v, want only the empty-type row %s", got.Relations, wantT)
+	}
+	if len(got.RecentChecks) != 1 || got.RecentChecks[0].ID != wantC {
+		t.Errorf("recentChecks = %+v, want only the empty-kind row %s", got.RecentChecks, wantC)
+	}
+	if got.AssignmentsTruncated || got.RelationsTruncated {
+		t.Error("nothing was cut off")
+	}
+}
+
+func TestSubjectsDetailEmptyKindPagesPastManyNonMatchingRows(t *testing.T) {
+	// More than a page of other-kind rows come first in the store's order, so
+	// a single fetch of 201 would hold no empty-kind row at all.
+	const noise = 450
+	seed := func(t *testing.T, matching int) (*memory.Store, []string, []string, []string) {
+		t.Helper()
+		s := memory.New()
+		eng := engineOver(t, s)
+		r := seedRoleIn(t, s, "t1", "", "reader", "")
+		base := time.Now().Add(-24 * time.Hour)
+		var as, ts, cs []string
+		// Assignments and tuples list oldest first, check logs newest first,
+		// so the noise is oldest for the first two and newest for the third.
+		for i := 0; i < noise; i++ {
+			kind := []string{"user", "api_key"}[i%2]
+			createBareAssignment(t, s, r, kind, fmt.Sprintf("n%03d", i), base.Add(time.Duration(i)*time.Second))
+			createBareTuple(t, s, kind, fmt.Sprintf("n%03d", i), base.Add(time.Duration(i)*time.Second))
+			seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", SubjectKind: kind, SubjectID: "alice", Action: "read", Decision: "allow",
+				CreatedAt: base.Add(time.Hour + time.Duration(i)*time.Second)})
+		}
+		for i := 0; i < matching; i++ {
+			at := base.Add(time.Hour + time.Duration(i)*time.Second)
+			a := createBareAssignment(t, s, r, "", fmt.Sprintf("m%03d", i), at)
+			tp := createBareTuple(t, s, "", fmt.Sprintf("m%03d", i), at)
+			c := seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", SubjectKind: "", SubjectID: "alice", Action: "read", Decision: "allow",
+				CreatedAt: base.Add(-time.Hour + time.Duration(i)*time.Second)})
+			as, ts, cs = append(as, a.ID.String()), append(ts, tp.ID.String()), append(cs, c.ID.String())
+		}
+		return s, as, ts, cs
+	}
+	run := func(t *testing.T, s *memory.Store) SubjectDetailResponse {
+		t.Helper()
+		got, err := subjectsDetailHandler(Deps{Engine: engineOver(t, s)})(context.Background(), SubjectDetailInput{SubjectID: "alice"}, principalFor("t1"))
+		if err != nil {
+			t.Fatalf("subjects.detail: %v", err)
+		}
+		return got
+	}
+
+	t.Run("a few matching rows are found behind the noise", func(t *testing.T) {
+		s, as, ts, cs := seed(t, 3)
+		got := run(t, s)
+		if len(got.Assignments) != 3 || len(got.Relations) != 3 || len(got.RecentChecks) != 3 {
+			t.Fatalf("got %d assignments, %d relations, %d checks, want 3 of each",
+				len(got.Assignments), len(got.Relations), len(got.RecentChecks))
+		}
+		if got.AssignmentsTruncated || got.RelationsTruncated {
+			t.Error("three rows are not truncated")
+		}
+		for i, a := range got.Assignments {
+			if a.ID != as[i] {
+				t.Errorf("assignment %d = %s, want %s", i, a.ID, as[i])
+			}
+		}
+		for i, r := range got.Relations {
+			if r.ID != ts[i] {
+				t.Errorf("relation %d = %s, want %s", i, r.ID, ts[i])
+			}
+		}
+		// Newest first: the seeded matching checks ascend, so they reverse.
+		for i, c := range got.RecentChecks {
+			if c.ID != cs[len(cs)-1-i] {
+				t.Errorf("check %d = %s, want %s", i, c.ID, cs[len(cs)-1-i])
+			}
+		}
+	})
+
+	t.Run("truncation reflects the matching rows, not the noise", func(t *testing.T) {
+		s, _, _, _ := seed(t, 201)
+		got := run(t, s)
+		if len(got.Assignments) != 200 || !got.AssignmentsTruncated {
+			t.Errorf("201 matching assignments: got %d truncated=%v, want 200 and true", len(got.Assignments), got.AssignmentsTruncated)
+		}
+		if len(got.Relations) != 200 || !got.RelationsTruncated {
+			t.Errorf("201 matching relations: got %d truncated=%v, want 200 and true", len(got.Relations), got.RelationsTruncated)
+		}
+		if len(got.RecentChecks) != 10 {
+			t.Errorf("recentChecks = %d, want 10", len(got.RecentChecks))
+		}
+		s, _, _, _ = seed(t, 200)
+		got = run(t, s)
+		if len(got.Assignments) != 200 || got.AssignmentsTruncated || len(got.Relations) != 200 || got.RelationsTruncated {
+			t.Errorf("exactly 200 matching: assignments %d/%v relations %d/%v, want 200 and not truncated",
+				len(got.Assignments), got.AssignmentsTruncated, len(got.Relations), got.RelationsTruncated)
+		}
+	})
+}

@@ -70,8 +70,9 @@ type SubjectAssignment struct {
 	ResourceID    string `json:"resourceId,omitempty"`
 	ExpiresAt     string `json:"expiresAt,omitempty"`
 	Expired       bool   `json:"expired"`
-	// ExpiringSoon is true when ExpiresAt falls within the same horizon
-	// assignments.expiring uses.
+	// ExpiringSoon is true for a live assignment whose ExpiresAt falls within
+	// the horizon assignments.expiring uses. That feed also lists lapsed
+	// rows; this flag does not, because Expired already says so.
 	ExpiringSoon bool `json:"expiringSoon"`
 }
 
@@ -106,6 +107,44 @@ type SubjectDetailResponse struct {
 	RelationsTruncated   bool                `json:"relationsTruncated"`
 	Policies             []SubjectPolicy     `json:"policies"`
 	RecentChecks         []CheckLogSummary   `json:"recentChecks"`
+}
+
+// subjectScanPage is how many rows the empty-kind scan asks the store for at
+// a time.
+const subjectScanPage = 200
+
+// collectForKind returns up to want rows for one subject kind.
+//
+// A store's filter treats an empty SubjectKind or SubjectType as "any kind",
+// but the engine matches "" exactly (SubjectRoles, CheckDirectRelation). So
+// for a non-empty kind the filter is exact and one fetch of want rows is
+// enough. For "" the filter would also return user:alice, api_key:alice and
+// every other kind, so this pages through the store with an offset and keeps
+// only rows whose kind is exactly "", until it has want of them or the store
+// runs out. That keeps the callers' truncated flags true to the data.
+func collectForKind[T any](kind string, want int, kindOf func(T) string, fetch func(offset, limit int) ([]T, error)) ([]T, error) {
+	if kind != "" {
+		return fetch(0, want)
+	}
+	out := make([]T, 0, want)
+	for offset := 0; len(out) < want; offset += subjectScanPage {
+		page, err := fetch(offset, subjectScanPage)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range page {
+			if kindOf(row) == "" {
+				out = append(out, row)
+				if len(out) == want {
+					break
+				}
+			}
+		}
+		if len(page) < subjectScanPage {
+			break
+		}
+	}
+	return out, nil
 }
 
 // namespaceField refuses a malformed namespace and names the field, which
@@ -199,12 +238,17 @@ func subjectsDetailHandler(deps Deps) func(context.Context, SubjectDetailInput, 
 		// Assignments cover every namespace, not the one asked about: the
 		// roles above are what resolves here, and this is where each came
 		// from and what else the subject holds.
-		rows, err := s.ListAssignments(ctx, &assignment.ListFilter{
-			TenantID:    tenantID,
-			SubjectKind: in.SubjectKind,
-			SubjectID:   in.SubjectID,
-			Limit:       subjectListCap + 1,
-		})
+		rows, err := collectForKind(in.SubjectKind, subjectListCap+1,
+			func(a *assignment.Assignment) string { return a.SubjectKind },
+			func(offset, limit int) ([]*assignment.Assignment, error) {
+				return s.ListAssignments(ctx, &assignment.ListFilter{
+					TenantID:    tenantID,
+					SubjectKind: in.SubjectKind,
+					SubjectID:   in.SubjectID,
+					Limit:       limit,
+					Offset:      offset,
+				})
+			})
 		if err != nil {
 			return SubjectDetailResponse{}, mapWardenError(err)
 		}
@@ -235,12 +279,17 @@ func subjectsDetailHandler(deps Deps) func(context.Context, SubjectDetailInput, 
 			out.Assignments = append(out.Assignments, sa)
 		}
 
-		tuples, err := s.ListRelations(ctx, &relation.ListFilter{
-			TenantID:    tenantID,
-			SubjectType: in.SubjectKind,
-			SubjectID:   in.SubjectID,
-			Limit:       subjectListCap + 1,
-		})
+		tuples, err := collectForKind(in.SubjectKind, subjectListCap+1,
+			func(tp *relation.Tuple) string { return tp.SubjectType },
+			func(offset, limit int) ([]*relation.Tuple, error) {
+				return s.ListRelations(ctx, &relation.ListFilter{
+					TenantID:    tenantID,
+					SubjectType: in.SubjectKind,
+					SubjectID:   in.SubjectID,
+					Limit:       limit,
+					Offset:      offset,
+				})
+			})
 		if err != nil {
 			return SubjectDetailResponse{}, mapWardenError(err)
 		}
@@ -282,12 +331,17 @@ func subjectsDetailHandler(deps Deps) func(context.Context, SubjectDetailInput, 
 			})
 		}
 
-		entries, err := s.ListCheckLogs(ctx, &checklog.QueryFilter{
-			TenantID:    tenantID,
-			SubjectKind: in.SubjectKind,
-			SubjectID:   in.SubjectID,
-			Limit:       subjectRecentChecks,
-		})
+		entries, err := collectForKind(in.SubjectKind, subjectRecentChecks,
+			func(e *checklog.Entry) string { return e.SubjectKind },
+			func(offset, limit int) ([]*checklog.Entry, error) {
+				return s.ListCheckLogs(ctx, &checklog.QueryFilter{
+					TenantID:    tenantID,
+					SubjectKind: in.SubjectKind,
+					SubjectID:   in.SubjectID,
+					Limit:       limit,
+					Offset:      offset,
+				})
+			})
 		if err != nil {
 			return SubjectDetailResponse{}, mapWardenError(err)
 		}
