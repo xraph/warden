@@ -1243,6 +1243,16 @@ func TestPoliciesUpdateWindow(t *testing.T) {
 		if _, err := h(s)(ctx, PolicyUpdateInput{ID: orig.ID.String(), Description: strPtr("still editable")}, principalFor("t1")); err != nil {
 			t.Fatalf("update description: %v", err)
 		}
+		got := storedPolicy(t, s, orig.ID.String())
+		if got.Description != "still editable" {
+			t.Errorf("description = %q, want the patched value", got.Description)
+		}
+		if got.NotBefore == nil || !got.NotBefore.Equal(*orig.NotBefore) || got.NotAfter == nil || !got.NotAfter.Equal(*orig.NotAfter) {
+			t.Errorf("the untouched window changed: %v to %v, want %v to %v", got.NotBefore, got.NotAfter, orig.NotBefore, orig.NotAfter)
+		}
+		if got.Version != orig.Version+1 {
+			t.Errorf("version = %d, want %d", got.Version, orig.Version+1)
+		}
 	})
 }
 
@@ -1528,4 +1538,172 @@ func TestPoliciesWritesEmitAuditAndTheTypedHooks(t *testing.T) {
 	if !probe.hasTyped("policy.deleted") {
 		t.Error("the typed OnPolicyDeleted hook did not fire")
 	}
+}
+
+func TestPoliciesUpdateKeepsAnUnpatchedBoundExactlyAsStored(t *testing.T) {
+	// rfc3339 drops sub-seconds. A bound the patch does not name must come
+	// through as the stored time, not as a formatted and re-parsed copy.
+	s := memory.New()
+	nb := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	na := time.Date(2026, 12, 31, 17, 0, 0, 500_000_000, time.UTC)
+	orig := seedPolicy(t, s, "", "subsecond", func(p *policy.Policy) { p.NotBefore, p.NotAfter = &nb, &na })
+	h := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})
+	ctx := context.Background()
+
+	if _, err := h(ctx, PolicyUpdateInput{ID: orig.ID.String(), NotBefore: strPtr("2026-02-01T00:00:00Z")}, principalFor("t1")); err != nil {
+		t.Fatalf("update notBefore: %v", err)
+	}
+	got := storedPolicy(t, s, orig.ID.String())
+	if got.NotAfter == nil || !got.NotAfter.Equal(na) {
+		t.Errorf("notAfter = %v after patching only notBefore, want exactly %v", got.NotAfter, na)
+	}
+
+	// An update that names no bound leaves both alone.
+	if _, err := h(ctx, PolicyUpdateInput{ID: orig.ID.String(), Description: strPtr("x")}, principalFor("t1")); err != nil {
+		t.Fatalf("update description: %v", err)
+	}
+	if got := storedPolicy(t, s, orig.ID.String()); got.NotAfter == nil || !got.NotAfter.Equal(na) {
+		t.Errorf("notAfter = %v after an unrelated update, want exactly %v", got.NotAfter, na)
+	}
+
+	// Patching only notAfter leaves an exact notBefore alone too.
+	nb2 := time.Date(2026, 3, 1, 0, 0, 0, 250_000_000, time.UTC)
+	s2 := memory.New()
+	orig2 := seedPolicy(t, s2, "", "subsecond2", func(p *policy.Policy) { p.NotBefore = &nb2 })
+	if _, err := policiesUpdateHandler(Deps{Engine: engineOver(t, s2)})(ctx, PolicyUpdateInput{ID: orig2.ID.String(), NotAfter: strPtr("2026-09-01T00:00:00Z")}, principalFor("t1")); err != nil {
+		t.Fatalf("update notAfter: %v", err)
+	}
+	if got := storedPolicy(t, s2, orig2.ID.String()); got.NotBefore == nil || !got.NotBefore.Equal(nb2) {
+		t.Errorf("notBefore = %v after patching only notAfter, want exactly %v", got.NotBefore, nb2)
+	}
+}
+
+func TestPoliciesUpdateJudgesTheWindowOnTheExactStoredBound(t *testing.T) {
+	// The stored end is half a second past 2026-06-01T00:00:00Z. A start of
+	// exactly that second is before it, so it is valid. Judged on the
+	// truncated end it would be equal, and refused.
+	s := memory.New()
+	na := time.Date(2026, 6, 1, 0, 0, 0, 500_000_000, time.UTC)
+	orig := seedPolicy(t, s, "", "edge", func(p *policy.Policy) { p.NotAfter = &na })
+	h := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})
+	ctx := context.Background()
+
+	if _, err := h(ctx, PolicyUpdateInput{ID: orig.ID.String(), NotBefore: strPtr("2026-06-01T00:00:00Z")}, principalFor("t1")); err != nil {
+		t.Fatalf("a start half a second before the stored end was refused: %v", err)
+	}
+	got := storedPolicy(t, s, orig.ID.String())
+	if got.NotBefore == nil || !got.NotBefore.Equal(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)) || !got.NotAfter.Equal(na) {
+		t.Errorf("window = %v to %v", got.NotBefore, got.NotAfter)
+	}
+	_, err := h(ctx, PolicyUpdateInput{ID: orig.ID.String(), NotBefore: strPtr("2026-06-01T00:00:01Z")}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeBadRequest)
+}
+
+func TestPoliciesUpdateRefusesAWhitespaceOnlySubject(t *testing.T) {
+	s := memory.New()
+	orig := fullPolicy(t, s, "", "subj")
+	eng, probe := policyProbedEngine(t, s)
+	bad := []PolicySubject{{ID: "  "}}
+	_, err := policiesUpdateHandler(Deps{Engine: eng})(context.Background(), PolicyUpdateInput{ID: orig.ID.String(), Subjects: &bad}, principalFor("t1"))
+	ce := wantCode(t, err, dashcontract.CodeBadRequest)
+	if fields, _ := ce.Details["fields"].(map[string]string); fields["subjects"] == "" {
+		t.Errorf("details.fields = %#v, want a subjects entry", ce.Details["fields"])
+	}
+	got := storedPolicy(t, s, orig.ID.String())
+	if !reflect.DeepEqual(got.Subjects, orig.Subjects) || got.Version != orig.Version {
+		t.Errorf("a refused update changed the policy: %+v", got)
+	}
+	if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
+		t.Errorf("a refused update emitted %d audit events and %d hooks", ev, ty)
+	}
+}
+
+func TestPoliciesCreateGivesEveryConditionAFreshId(t *testing.T) {
+	s := memory.New()
+	h := policiesCreateHandler(Deps{Engine: engineOver(t, s)})
+	sent := id.NewConditionID()
+	d := cleanDraft()
+	d.Conditions = []PolicyCondition{
+		{ID: sent.String(), Field: "subject.level", Operator: "gte", Value: float64(1)},
+		{ID: sent.String(), Field: "subject.level", Operator: "lte", Value: float64(9)},
+		{Field: "subject.team", Operator: "eq", Value: "core"},
+	}
+	ack, err := h(context.Background(), PolicyCreateInput{PolicyDraft: d}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("policies.create: %v", err)
+	}
+	got := storedPolicy(t, s, ack.ID)
+	if len(got.Conditions) != 3 {
+		t.Fatalf("stored %d conditions, want 3", len(got.Conditions))
+	}
+	seen := map[id.ConditionID]bool{}
+	for i, c := range got.Conditions {
+		if c.ID.IsNil() {
+			t.Errorf("condition %d has no id", i)
+		}
+		if c.ID == sent {
+			t.Errorf("condition %d kept the caller-sent id %s on create", i, sent)
+		}
+		if seen[c.ID] {
+			t.Errorf("condition %d repeats id %s", i, c.ID)
+		}
+		seen[c.ID] = true
+	}
+}
+
+func TestPoliciesUpdateConditionIds(t *testing.T) {
+	ctx := context.Background()
+	run := func(t *testing.T, mk func(stored []policy.Condition) []PolicyCondition) (stored, got []policy.Condition) {
+		t.Helper()
+		s := memory.New()
+		orig := fullPolicy(t, s, "", "ids")
+		in := mk(orig.Conditions)
+		if _, err := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})(ctx, PolicyUpdateInput{ID: orig.ID.String(), Conditions: &in}, principalFor("t1")); err != nil {
+			t.Fatalf("policies.update: %v", err)
+		}
+		return orig.Conditions, storedPolicy(t, s, orig.ID.String()).Conditions
+	}
+
+	t.Run("a stored condition keeps its id", func(t *testing.T) {
+		stored, got := run(t, func(st []policy.Condition) []PolicyCondition {
+			return []PolicyCondition{
+				{ID: st[1].ID.String(), Field: "context.ip", Operator: "ip_in_cidr", Value: []any{"172.16.0.0/12"}},
+				{ID: st[0].ID.String(), Field: "subject.level", Operator: "gte", Value: float64(9)},
+			}
+		})
+		if len(got) != 2 || got[0].ID != stored[1].ID || got[1].ID != stored[0].ID {
+			t.Errorf("ids = %v, want %v and %v kept", got, stored[1].ID, stored[0].ID)
+		}
+		if got[1].Value != float64(9) {
+			t.Errorf("the edited value was not stored: %+v", got[1])
+		}
+	})
+	t.Run("a foreign valid id gets a fresh one", func(t *testing.T) {
+		foreign := id.NewConditionID()
+		stored, got := run(t, func([]policy.Condition) []PolicyCondition {
+			return []PolicyCondition{{ID: foreign.String(), Field: "subject.level", Operator: "gte", Value: float64(1)}}
+		})
+		if len(got) != 1 || got[0].ID == foreign || got[0].ID.IsNil() {
+			t.Errorf("id = %v, want a fresh one, not the foreign %v", got, foreign)
+		}
+		for _, c := range stored {
+			if got[0].ID == c.ID {
+				t.Errorf("the fresh id collides with a stored one")
+			}
+		}
+	})
+	t.Run("a stored id sent twice is kept once", func(t *testing.T) {
+		stored, got := run(t, func(st []policy.Condition) []PolicyCondition {
+			return []PolicyCondition{
+				{ID: st[0].ID.String(), Field: "subject.level", Operator: "gte", Value: float64(1)},
+				{ID: st[0].ID.String(), Field: "subject.level", Operator: "lte", Value: float64(9)},
+			}
+		})
+		if len(got) != 2 || got[0].ID != stored[0].ID {
+			t.Fatalf("ids = %v, want the first to keep %v", got, stored[0].ID)
+		}
+		if got[1].ID == stored[0].ID || got[1].ID.IsNil() {
+			t.Errorf("the repeat has id %v, want a fresh one", got[1].ID)
+		}
+	})
 }

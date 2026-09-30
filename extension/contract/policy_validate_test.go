@@ -329,12 +329,12 @@ func TestToPolicyConditions(t *testing.T) {
 		{Field: "context.ip", Operator: "in", Value: []any{"a"}},
 		{ID: "not-an-id", Field: "context.ip", Operator: "exists"},
 		{ID: id.NewRoleID().String(), Field: "context.ip", Operator: "exists"}, // wrong prefix
-	})
+	}, []policy.Condition{{ID: keep}})
 	if len(out) != 4 {
 		t.Fatalf("got %d conditions", len(out))
 	}
 	if out[0].ID != keep {
-		t.Fatalf("a valid condition id was replaced: %v", out[0].ID)
+		t.Fatalf("a sent id that belongs to a stored condition was replaced: %v", out[0].ID)
 	}
 	if out[0].Field != "subject.id" || out[0].Operator != policy.OpEquals {
 		t.Fatalf("field or operator not carried: %+v", out[0])
@@ -349,7 +349,7 @@ func TestToPolicyConditions(t *testing.T) {
 	if out[1].Value == nil {
 		t.Fatal("value dropped")
 	}
-	if got := toPolicyConditions(nil); got == nil || len(got) != 0 {
+	if got := toPolicyConditions(nil, nil); got == nil || len(got) != 0 {
 		t.Fatalf("nil in must give an empty, non-nil slice, got %#v", got)
 	}
 }
@@ -449,7 +449,7 @@ func TestConditionIssue_ValidatesExactlyWhatIsStored(t *testing.T) {
 	if msg := conditionIssue(good); msg != "" {
 		t.Fatalf("a padded action.name was refused: %q", msg)
 	}
-	stored := toPolicyConditions([]PolicyCondition{good})
+	stored := toPolicyConditions([]PolicyCondition{good}, nil)
 	if stored[0].Field != "action.name" {
 		t.Fatalf("stored %q", stored[0].Field)
 	}
@@ -458,7 +458,7 @@ func TestConditionIssue_ValidatesExactlyWhatIsStored(t *testing.T) {
 	// storage as it was validated.
 	for _, c := range []PolicyCondition{good, {Field: "context.ip\t", Operator: "exists"}, {Field: "\nsubject.level", Operator: "gt", Value: float64(2)}} {
 		validated, _ := classifyCondition(storedCondition(c))
-		s := toPolicyConditions([]PolicyCondition{c})[0]
+		s := toPolicyConditions([]PolicyCondition{c}, nil)[0]
 		again, _ := classifyCondition(policy.Condition{Field: s.Field, Operator: s.Operator, Value: s.Value})
 		if validated != again || conditionIssue(c) != "" {
 			t.Fatalf("%+v: validated %q, stored %q, issue %q", c, validated, again, conditionIssue(c))

@@ -149,21 +149,36 @@ func hasEmptyEntry(list []string) bool {
 	return false
 }
 
+const (
+	windowStartNotATime = "The start is not an RFC3339 time."
+	windowEndNotATime   = "The end is not an RFC3339 time."
+	windowEndNotAfter   = "The end must be after the start."
+)
+
 func windowIssue(notBefore, notAfter string) string {
-	var nb, na time.Time
-	var err error
+	var nb, na *time.Time
 	if notBefore != "" {
-		if nb, err = time.Parse(time.RFC3339, notBefore); err != nil {
-			return "The start is not an RFC3339 time."
+		t, err := time.Parse(time.RFC3339, notBefore)
+		if err != nil {
+			return windowStartNotATime
 		}
+		nb = &t
 	}
 	if notAfter != "" {
-		if na, err = time.Parse(time.RFC3339, notAfter); err != nil {
-			return "The end is not an RFC3339 time."
+		t, err := time.Parse(time.RFC3339, notAfter)
+		if err != nil {
+			return windowEndNotATime
 		}
+		na = &t
 	}
-	if notBefore != "" && notAfter != "" && !na.After(nb) {
-		return "The end must be after the start."
+	return windowOrderIssue(nb, na)
+}
+
+// windowOrderIssue judges a pair of exact times: an end at or before the
+// start is refused. An absent bound is no bound.
+func windowOrderIssue(nb, na *time.Time) string {
+	if nb != nil && na != nil && !na.After(*nb) {
+		return windowEndNotAfter
 	}
 	return ""
 }
@@ -300,14 +315,24 @@ func issuesError(i PolicyIssues) error {
 	}
 }
 
-// toPolicyConditions keeps a condition id the caller sent, and gives every
-// other condition a fresh one, as the REST create does.
-func toPolicyConditions(in []PolicyCondition) []policy.Condition {
+// toPolicyConditions is the one place wire conditions become stored ones.
+// Every condition gets a fresh id, except that a sent id is kept when it
+// belongs to one of the policy's currently stored conditions and this is its
+// first appearance in the new set. That keeps an edited condition's id
+// stable without letting a caller inject an arbitrary or repeated id. A
+// create passes no stored conditions, so every condition is fresh.
+func toPolicyConditions(in []PolicyCondition, stored []policy.Condition) []policy.Condition {
+	owned := make(map[id.ConditionID]bool, len(stored))
+	for _, c := range stored {
+		owned[c.ID] = true
+	}
+	used := make(map[id.ConditionID]bool, len(in))
 	out := make([]policy.Condition, 0, len(in))
 	for _, c := range in {
-		cid, err := id.ParseConditionID(c.ID)
-		if err != nil {
-			cid = id.NewConditionID()
+		cid := id.NewConditionID()
+		if sent, err := id.ParseConditionID(c.ID); err == nil && owned[sent] && !used[sent] {
+			cid = sent
+			used[sent] = true
 		}
 		sc := storedCondition(c)
 		sc.ID = cid

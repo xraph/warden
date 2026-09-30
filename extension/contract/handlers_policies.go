@@ -361,7 +361,7 @@ func policiesCreateHandler(deps Deps) func(context.Context, PolicyCreateInput, d
 			Subjects:    toPolicySubjects(in.Subjects),
 			Actions:     trimmedList(in.Actions),
 			Resources:   trimmedList(in.Resources),
-			Conditions:  toPolicyConditions(in.Conditions),
+			Conditions:  toPolicyConditions(in.Conditions, nil),
 			CreatedBy:   actor.ID,
 			UpdatedBy:   actor.ID,
 			CreatedAt:   now,
@@ -381,26 +381,17 @@ func policiesCreateHandler(deps Deps) func(context.Context, PolicyCreateInput, d
 }
 
 // draftAndParts describes a patch as the draft collectPolicyIssues judges:
-// the stored policy with each present field laid over it, and the parts that
-// are present. The window is a part if either bound is, and it is judged as
-// the merged pair, so a new start after the stored end is refused.
-func draftAndParts(before *policy.Policy, in PolicyUpdateInput) (PolicyDraft, draftParts) {
-	d := PolicyDraft{
-		NotBefore: rfc3339Ptr(before.NotBefore),
-		NotAfter:  rfc3339Ptr(before.NotAfter),
-	}
+// each present field, and the parts that are present. The window is not one
+// of them: it is judged by mergedWindow on exact times, because a string
+// round trip through rfc3339 drops sub-seconds.
+func draftAndParts(in PolicyUpdateInput) (PolicyDraft, draftParts) {
+	var d PolicyDraft
 	var parts draftParts
 	if in.Name != nil {
 		d.Name, parts.name = *in.Name, true
 	}
 	if in.Effect != nil {
 		d.Effect, parts.effect = *in.Effect, true
-	}
-	if in.NotBefore != nil {
-		d.NotBefore, parts.window = *in.NotBefore, true
-	}
-	if in.NotAfter != nil {
-		d.NotAfter, parts.window = *in.NotAfter, true
 	}
 	if in.Subjects != nil {
 		d.Subjects, parts.subjects = *in.Subjects, true
@@ -418,6 +409,35 @@ func draftAndParts(before *policy.Policy, in PolicyUpdateInput) (PolicyDraft, dr
 		d.Obligations, parts.obligations = *in.Obligations, true
 	}
 	return d, parts
+}
+
+// mergedWindow is the window after the patch, as exact times. A bound the
+// patch does not name is the stored *time.Time itself, never a formatted
+// copy, so an unrelated update cannot truncate it. An empty string clears a
+// bound. The message is why the pair cannot be saved, or "".
+func mergedWindow(before *policy.Policy, in PolicyUpdateInput) (nb, na *time.Time, msg string) {
+	nb, na = before.NotBefore, before.NotAfter
+	bound := func(raw *string, cur *time.Time, notATime string) (*time.Time, string) {
+		if raw == nil {
+			return cur, ""
+		}
+		if *raw == "" {
+			return nil, ""
+		}
+		t, err := time.Parse(time.RFC3339, *raw)
+		if err != nil {
+			return cur, notATime
+		}
+		t = t.UTC()
+		return &t, ""
+	}
+	if nb, msg = bound(in.NotBefore, nb, windowStartNotATime); msg != "" {
+		return nb, na, msg
+	}
+	if na, msg = bound(in.NotAfter, na, windowEndNotATime); msg != "" {
+		return nb, na, msg
+	}
+	return nb, na, windowOrderIssue(nb, na)
 }
 
 func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, dashcontract.Principal) (AckResponse, error) {
@@ -441,8 +461,16 @@ func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, d
 		// Only what the patch changes is validated, so a policy stored
 		// with a bad condition before this validation existed can still
 		// have its description edited.
-		merged, parts := draftAndParts(before, in)
-		if err := issuesError(collectPolicyIssues(merged, parts)); err != nil {
+		merged, parts := draftAndParts(in)
+		issues := collectPolicyIssues(merged, parts)
+		// The window is a part if either bound is patched, and is judged as
+		// the merged pair, so a new start after the stored end is refused.
+		windowPatched := in.NotBefore != nil || in.NotAfter != nil
+		nb, na, windowMsg := mergedWindow(before, in)
+		if windowPatched && windowMsg != "" {
+			issues.Fields["window"] = windowMsg
+		}
+		if err := issuesError(issues); err != nil {
 			return AckResponse{}, err
 		}
 
@@ -463,10 +491,8 @@ func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, d
 		if in.Priority != nil {
 			pol.Priority = *in.Priority
 		}
-		if parts.window {
-			if pol.NotBefore, pol.NotAfter, err = parseWindow(merged.NotBefore, merged.NotAfter); err != nil {
-				return AckResponse{}, err
-			}
+		if windowPatched {
+			pol.NotBefore, pol.NotAfter = nb, na
 		}
 		if in.Subjects != nil {
 			pol.Subjects = toPolicySubjects(*in.Subjects)
@@ -478,18 +504,21 @@ func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, d
 			pol.Resources = trimmedList(*in.Resources)
 		}
 		if in.Conditions != nil {
-			pol.Conditions = toPolicyConditions(*in.Conditions)
+			pol.Conditions = toPolicyConditions(*in.Conditions, before.Conditions)
 		}
 		if in.Obligations != nil {
 			pol.Obligations = trimmedList(*in.Obligations)
 		}
 
-		// A rename onto a name already in this namespace. Postgres refuses
-		// it with its unique index; the memory store does not, so ask.
+		// A rename onto a name already in this namespace. The guard is what
+		// excludes renaming a policy to its own name. Postgres and sqlite
+		// have the unique index but do not map its violation to
+		// ErrDuplicatePolicy from UpdatePolicy, and the memory store has no
+		// check at all, so ask first.
 		if in.Name != nil && pol.Name != before.Name {
-			other, err := s.GetPolicyByName(ctx, tenantID, before.NamespacePath, pol.Name)
+			_, err := s.GetPolicyByName(ctx, tenantID, before.NamespacePath, pol.Name)
 			switch {
-			case err == nil && other.ID != before.ID:
+			case err == nil:
 				return AckResponse{}, mapWardenError(fmt.Errorf("policy %q in ns %q: %w", pol.Name, before.NamespacePath, warden.ErrDuplicatePolicy))
 			case err != nil && !errors.Is(err, warden.ErrPolicyNotFound):
 				return AckResponse{}, mapWardenError(err)
