@@ -76,6 +76,8 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"resourceTypes.create":        dashcontract.IntentKindCommand,
 		"resourceTypes.update":        dashcontract.IntentKindCommand,
 		"resourceTypes.delete":        dashcontract.IntentKindCommand,
+		"policies.list":               dashcontract.IntentKindQuery,
+		"policies.detail":             dashcontract.IntentKindQuery,
 		"policies.validate":           dashcontract.IntentKindQuery,
 		"maintenance.run":             dashcontract.IntentKindCommand,
 		"maintenance.cacheInvalidate": dashcontract.IntentKindCommand,
@@ -369,6 +371,34 @@ func TestManifest_ResourceTypeQueriesAreDeclared(t *testing.T) {
 		}
 		if q.Intent != intent {
 			t.Errorf("%s points at %q, want %s", name, q.Intent, intent)
+		}
+	}
+}
+
+func TestManifest_PolicyReadQueriesAreDeclared(t *testing.T) {
+	m := loadManifest(t)
+	for name, intent := range map[string]string{
+		"policyList":   "policies.list",
+		"policyDetail": "policies.detail",
+	} {
+		q, ok := m.Queries[name]
+		if !ok {
+			t.Errorf("manifest declares no %s query", name)
+			continue
+		}
+		if q.Intent != intent {
+			t.Errorf("%s points at %q, want %s", name, q.Intent, intent)
+		}
+		if q.Cache.StaleTime != "30s" {
+			t.Errorf("%s staleTime = %q, want 30s", name, q.Cache.StaleTime)
+		}
+	}
+	for _, in := range m.Intents {
+		if in.Name != "policies.list" && in.Name != "policies.detail" {
+			continue
+		}
+		if in.Kind != dashcontract.IntentKindQuery || in.Capability != "read" {
+			t.Errorf("%s is %s/%s, want a read query", in.Name, in.Kind, in.Capability)
 		}
 	}
 }

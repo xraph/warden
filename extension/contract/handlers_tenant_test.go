@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/xraph/warden"
+	"github.com/xraph/warden/id"
 
 	dashauth "github.com/xraph/forge/extensions/dashboard/auth"
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
@@ -155,6 +156,14 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 	}},
 	{"resourceTypes.delete", func(deps Deps, p dashcontract.Principal) error {
 		_, err := resourceTypesDeleteHandler(deps)(context.Background(), ResourceTypeDeleteInput{}, p)
+		return err
+	}},
+	{"policies.list", func(deps Deps, p dashcontract.Principal) error {
+		_, err := policiesListHandler(deps)(context.Background(), PoliciesListInput{}, p)
+		return err
+	}},
+	{"policies.detail", func(deps Deps, p dashcontract.Principal) error {
+		_, err := policiesDetailHandler(deps)(context.Background(), PolicyDetailInput{ID: id.NewPolicyID().String()}, p)
 		return err
 	}},
 	{"policies.validate", func(deps Deps, p dashcontract.Principal) error {

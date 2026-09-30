@@ -92,8 +92,10 @@ var intentPolicies = map[string]intentPolicy{
 	"resourceTypes.update": {"manage", "warden:resourcetype"},
 	"resourceTypes.delete": {"manage", "warden:resourcetype"},
 
-	// Validating a draft writes nothing, so it is a read on the same resource
-	// the REST policy routes use, and the one grant covers both surfaces.
+	// Same resource the REST policy routes use, so one grant covers both
+	// surfaces. Validating a draft writes nothing, so it is a read too.
+	"policies.list":     {"read", "warden:policy"},
+	"policies.detail":   {"read", "warden:policy"},
 	"policies.validate": {"read", "warden:policy"},
 
 	"maintenance.run":             {"manage", "warden:maintenance"},

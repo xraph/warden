@@ -89,6 +89,8 @@ intents:
       invalidates: [resourceTypes.list, resourceTypes.detail] }
   - { name: resourceTypes.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
       invalidates: [resourceTypes.list, resourceTypes.detail, overview.stats, namespaces.list] }
+  - { name: policies.list, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
+  - { name: policies.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # policies.validate is a query because it writes nothing: it reports what a
   # draft would be refused for. It is a read, so a viewer can check a draft
   # they cannot save.
@@ -141,6 +143,12 @@ queries:
     cache: { staleTime: 30s }
   resourceTypeDetail:
     intent: resourceTypes.detail
+    cache: { staleTime: 30s }
+  policyList:
+    intent: policies.list
+    cache: { staleTime: 30s }
+  policyDetail:
+    intent: policies.detail
     cache: { staleTime: 30s }
   # A draft is validated as it is typed, and the answer depends on nothing
   # but the draft, so there is nothing to serve stale and nothing to reuse.

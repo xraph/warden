@@ -156,6 +156,12 @@ func Register(
 	if err := dispatcher.RegisterCommand(d, contributorName, "resourceTypes.delete", 1, resourceTypesDeleteHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register resourceTypes.delete: %w", err)
 	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "policies.list", 1, policiesListHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register policies.list: %w", err)
+	}
+	if err := dispatcher.RegisterQuery(d, contributorName, "policies.detail", 1, policiesDetailHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register policies.detail: %w", err)
+	}
 	if err := dispatcher.RegisterQuery(d, contributorName, "policies.validate", 1, policiesValidateHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register policies.validate: %w", err)
 	}
