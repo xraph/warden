@@ -16,10 +16,12 @@ package contract
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/policy"
 )
@@ -57,9 +59,16 @@ func populatedPolicy() *policy.Policy {
 			{ID: id.NewConditionID(), Field: "context.at", Operator: policy.OpTimeAfter, Value: "2026-06-01T09:00:00Z"},
 			{ID: id.NewConditionID(), Field: "subject.email", Operator: policy.OpRegex, Value: `^[a-z]+@example\.com$`},
 			{ID: id.NewConditionID(), Field: "action.name", Operator: policy.OpEquals, Value: "delete"},
+			// Shapes a JSON comparison cannot tell apart from a driver's: a
+			// mixed list, a bool, and a Go-written time.Time (a datetime on
+			// mongo, an RFC3339 string on the JSON backends; the evaluator
+			// accepts both).
+			{ID: id.NewConditionID(), Field: "context.tier", Operator: policy.OpIn, Value: []any{"gold", 2.0, true}},
+			{ID: id.NewConditionID(), Field: "subject.mfa", Operator: policy.OpEquals, Value: true},
+			{ID: id.NewConditionID(), Field: "context.at", Operator: policy.OpTimeBefore, Value: time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC)},
 		},
 		Obligations: []string{"notify-security", "require-mfa"},
-		Metadata:    map[string]any{"owner": "security", "ticket": 4412.0, "nested": map[string]any{"a": []any{"x", "y"}}},
+		Metadata:    map[string]any{"owner": "security", "ticket": 4412.0, "nested": map[string]any{"a": []any{"x", "y"}, "at": time.Date(2026, 6, 2, 3, 4, 5, 0, time.UTC)}},
 		CreatedBy:   "usr_creator",
 		UpdatedBy:   "usr_updater",
 	}
@@ -92,8 +101,138 @@ func canonical(t *testing.T, p *policy.Policy) map[string]any {
 	return out
 }
 
+// requirePlainValues fails if any condition value or metadata value, at any
+// depth, is a type the engine's evaluator does not handle. The evaluator
+// switches on exact types ([]any in inSlice and ipInCIDR, string and time.Time
+// in parseTime), so a driver's named types (mongo's bson.A, bson.D,
+// bson.DateTime) behave as "not a list" or "not a time" even though they
+// marshal to identical JSON. That is exactly what a JSON comparison cannot
+// see, so this walks the Go values themselves.
+func requirePlainValues(t *testing.T, path string, p *policy.Policy) {
+	t.Helper()
+	for i, c := range p.Conditions {
+		if bad := nonPlain(c.Value); bad != "" {
+			t.Errorf("%s: condition %d (%s %s) value is not plain Go: %s", path, i, c.Field, c.Operator, bad)
+		}
+	}
+	for k, v := range p.Metadata {
+		if bad := nonPlain(v); bad != "" {
+			t.Errorf("%s: metadata %q is not plain Go: %s", path, k, bad)
+		}
+	}
+}
+
+// nonPlain describes the first non-plain value inside v, or returns "".
+func nonPlain(v any) string {
+	switch x := v.(type) {
+	case nil, string, bool, float64, float32,
+		int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
+		time.Time:
+		return ""
+	case []any:
+		for i, item := range x {
+			if bad := nonPlain(item); bad != "" {
+				return fmt.Sprintf("[%d] %s", i, bad)
+			}
+		}
+		return ""
+	case map[string]any:
+		for k, item := range x {
+			if bad := nonPlain(item); bad != "" {
+				return fmt.Sprintf("[%q] %s", k, bad)
+			}
+		}
+		return ""
+	}
+	return fmt.Sprintf("%T", v)
+}
+
+// equivalenceRequests exercise every list, CIDR and time condition of
+// populatedPolicy both ways, and every attribute condition at least once.
+func equivalenceRequests() []*warden.CheckRequest {
+	mk := func(ip, at, tier string, level, size float64, mfa bool, email, action string) *warden.CheckRequest {
+		return &warden.CheckRequest{
+			Subject:  warden.Subject{Kind: "user", ID: "usr_2f8a", Attributes: map[string]any{"level": level, "mfa": mfa, "email": email}},
+			Action:   warden.Action{Name: action},
+			Resource: warden.Resource{Type: "document", ID: "d1", Attributes: map[string]any{"size": size}},
+			Context:  map[string]any{"ip": ip, "at": at, "tier": tier},
+		}
+	}
+	return []*warden.CheckRequest{
+		mk("10.0.0.1", "2026-06-10T00:00:00Z", "gold", 1, 10, true, "bob@example.com", "delete"),
+		mk("8.8.8.8", "2026-05-01T00:00:00Z", "bronze", 9007199254740992, 2048, false, "nobody", "read"),
+		mk("192.168.1.5", "2026-07-01T00:00:00Z", "2", 2, 2048, true, "eve@example.com", "delete"),
+		mk("10.0.0.2", "2026-06-20T12:00:00Z", "true", 1, 1, false, "x", "read"),
+		{Subject: warden.Subject{Kind: "user", ID: "usr_2f8a"}, Action: warden.Action{Name: "read"}, Resource: warden.Resource{Type: "document", ID: "d1"}},
+	}
+}
+
+// oneCondition is p reduced to a single condition and open matchers, so the
+// evaluator's answer is that condition's alone (it stops at the first false).
+func oneCondition(p *policy.Policy, i int, effect policy.Effect) *policy.Policy {
+	return &policy.Policy{Name: "one", Effect: effect, IsActive: true, Conditions: []policy.Condition{p.Conditions[i]}}
+}
+
+// applied runs one policy through warden's real evaluator, once per request.
+func applied(t *testing.T, p *policy.Policy, reqs []*warden.CheckRequest) []bool {
+	t.Helper()
+	eval := warden.NewConditionEvaluator(func() time.Time { return time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC) })
+	out := make([]bool, len(reqs))
+	for i, req := range reqs {
+		res, err := eval.Evaluate(context.Background(), []*policy.Policy{p}, req, nil)
+		if err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		out[i] = res != nil
+	}
+	return out
+}
+
+// requireSameBehaviour proves the read-back policy DOES what the original
+// does: each condition on its own, as an allow and as a deny, and then the
+// whole policy with its real matchers, against requests chosen so each
+// list, CIDR and time condition is exercised both ways.
+func requireSameBehaviour(t *testing.T, path string, want, got *policy.Policy) {
+	t.Helper()
+	if len(want.Conditions) != len(got.Conditions) {
+		t.Errorf("%s: %d conditions read back, want %d", path, len(got.Conditions), len(want.Conditions))
+		return
+	}
+	reqs := equivalenceRequests()
+	for i, c := range want.Conditions {
+		for _, effect := range []policy.Effect{policy.EffectAllow, policy.EffectDeny} {
+			w := applied(t, oneCondition(want, i, effect), reqs)
+			g := applied(t, oneCondition(got, i, effect), reqs)
+			if !reflect.DeepEqual(w, g) {
+				t.Errorf("%s: condition %d (%s %s %v) as %s behaves differently after a round trip\n want applies %v\n  got applies %v",
+					path, i, c.Field, c.Operator, c.Value, effect, w, g)
+			}
+			// The requests must tell a working condition from a broken one:
+			// list, CIDR and time conditions must both apply and not apply.
+			if effect == policy.EffectAllow {
+				switch c.Operator {
+				case policy.OpIn, policy.OpNotIn, policy.OpIPInCIDR, policy.OpTimeAfter, policy.OpTimeBefore:
+					yes, no := false, false
+					for _, a := range w {
+						yes, no = yes || a, no || !a
+					}
+					if !yes || !no {
+						t.Errorf("%s: the requests do not exercise condition %d (%s %s) both ways: %v", path, i, c.Field, c.Operator, w)
+					}
+				}
+			}
+		}
+	}
+	// Whole policy, as stored, with its real matchers and effect.
+	if w, g := applied(t, want, reqs), applied(t, got, reqs); !reflect.DeepEqual(w, g) {
+		t.Errorf("%s: the whole policy behaves differently after a round trip\n want %v\n  got %v", path, w, g)
+	}
+}
+
 func requireSamePolicy(t *testing.T, path string, want, got *policy.Policy) {
 	t.Helper()
+	requirePlainValues(t, path, got)
+	requireSameBehaviour(t, path, want, got)
 	w, g := canonical(t, want), canonical(t, got)
 	if !reflect.DeepEqual(w, g) {
 		for k, wv := range w {
