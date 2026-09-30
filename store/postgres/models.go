@@ -387,17 +387,20 @@ func policyToModel(p *policy.Policy) *policyModel {
 		IsActive:      p.IsActive,
 		NotBefore:     p.NotBefore,
 		NotAfter:      p.NotAfter,
-		Obligations:   jsonbSlice[string](p.Obligations),
-		Version:       p.Version,
-		Subjects:      jsonbSlice[policy.SubjectMatch](p.Subjects),
-		Actions:       jsonbSlice[string](p.Actions),
-		Resources:     jsonbSlice[string](p.Resources),
-		Conditions:    jsonbSlice[policy.Condition](p.Conditions),
-		Metadata:      md,
-		CreatedBy:     p.CreatedBy,
-		UpdatedBy:     p.UpdatedBy,
-		CreatedAt:     p.CreatedAt,
-		UpdatedAt:     p.UpdatedAt,
+		// The jsonb columns are NOT NULL, so a nil slice has to marshal as
+		// "[]" rather than NULL. A policy saved with no matchers or no
+		// conditions is a normal shape, not an error.
+		Obligations: jsonbSlice[string](orEmpty(p.Obligations)),
+		Version:     p.Version,
+		Subjects:    jsonbSlice[policy.SubjectMatch](orEmpty(p.Subjects)),
+		Actions:     jsonbSlice[string](orEmpty(p.Actions)),
+		Resources:   jsonbSlice[string](orEmpty(p.Resources)),
+		Conditions:  jsonbSlice[policy.Condition](orEmpty(p.Conditions)),
+		Metadata:    md,
+		CreatedBy:   p.CreatedBy,
+		UpdatedBy:   p.UpdatedBy,
+		CreatedAt:   p.CreatedAt,
+		UpdatedAt:   p.UpdatedAt,
 	}
 }
 
@@ -550,6 +553,15 @@ func checkLogToModel(e *checklog.Entry) *checkLogModel {
 		Metadata:    md,
 		CreatedAt:   e.CreatedAt,
 	}
+}
+
+// orEmpty returns v, or an empty non-nil slice when v is nil, so that
+// jsonbSlice.Value marshals "[]" instead of SQL NULL.
+func orEmpty[T any](v []T) []T {
+	if v == nil {
+		return []T{}
+	}
+	return v
 }
 
 func matchRefsOrEmpty(v []checklog.MatchRef) []checklog.MatchRef {
