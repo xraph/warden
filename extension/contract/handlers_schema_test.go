@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/xraph/warden"
@@ -18,6 +19,7 @@ import (
 	"github.com/xraph/warden/relation"
 	"github.com/xraph/warden/resourcetype"
 	"github.com/xraph/warden/role"
+	"github.com/xraph/warden/store"
 	"github.com/xraph/warden/store/memory"
 
 	"github.com/xraph/warden/dsl"
@@ -259,10 +261,13 @@ func storeSnapshot(t *testing.T, s *memory.Store) map[string]string {
 		if gErr != nil {
 			t.Fatalf("list grants: %v", gErr)
 		}
+		// Keyed by namespace and name: a slug or a permission name repeats
+		// across namespaces, and a bare key would merge them.
+		key := r.NamespacePath + "/" + r.Slug
 		for _, p := range ps {
-			grants[r.Slug] = append(grants[r.Slug], p.Name)
+			grants[key] = append(grants[key], p.NamespacePath+"/"+p.Name)
 		}
-		sort.Strings(grants[r.Slug])
+		sort.Strings(grants[key])
 	}
 	raw, _ := json.Marshal(grants)
 	out["grants"] = string(raw)
@@ -600,20 +605,41 @@ func TestSchemaPlanDigest(t *testing.T) {
 func TestPlanDigestIsUnambiguousAcrossListBoundaries(t *testing.T) {
 	// Length prefixes: moving a line from one list to the next must change
 	// the digest.
-	a := planDigest(false, &dsl.ApplyResult{Created: []string{"x"}, Updated: []string{"y"}})
-	b := planDigest(false, &dsl.ApplyResult{Created: []string{"x", "y"}})
-	c := planDigest(false, &dsl.ApplyResult{Created: []string{"xy"}})
+	a := planDigest(false, "src", &dsl.ApplyResult{Created: []string{"x"}, Updated: []string{"y"}})
+	b := planDigest(false, "src", &dsl.ApplyResult{Created: []string{"x", "y"}})
+	c := planDigest(false, "src", &dsl.ApplyResult{Created: []string{"xy"}})
 	if a == b || a == c || b == c {
 		t.Errorf("digests collide across list boundaries: %s %s %s", a, b, c)
 	}
 	// Order inside a list does not matter: the diff is a set.
-	d := planDigest(true, &dsl.ApplyResult{Created: []string{"b", "a"}, NoOps: 2})
-	e := planDigest(true, &dsl.ApplyResult{Created: []string{"a", "b"}, NoOps: 2})
+	d := planDigest(true, "src", &dsl.ApplyResult{Created: []string{"b", "a"}, NoOps: 2})
+	e := planDigest(true, "src", &dsl.ApplyResult{Created: []string{"a", "b"}, NoOps: 2})
 	if d != e {
 		t.Errorf("the digest depends on list order: %s vs %s", d, e)
 	}
-	if planDigest(true, &dsl.ApplyResult{NoOps: 1}) == planDigest(true, &dsl.ApplyResult{NoOps: 2}) {
+	if planDigest(true, "src", &dsl.ApplyResult{NoOps: 1}) == planDigest(true, "src", &dsl.ApplyResult{NoOps: 2}) {
 		t.Error("noOps is not in the digest")
+	}
+}
+
+func TestPlanDigestCoversTheSource(t *testing.T) {
+	// A `~` line names the fields that change, not their values, so two
+	// sources can give the same lines. The digest must still tell them apart.
+	r := &dsl.ApplyResult{Updated: []string{"~ policy//freeze (effect, resources)"}}
+	a := planDigest(false, "policy freeze { effect = deny }", r)
+	b := planDigest(false, "policy freeze { effect = allow }", r)
+	if a == b {
+		t.Error("two sources with the same diff lines share a digest")
+	}
+	if planDigest(false, "x", r) != planDigest(false, "x", r) {
+		t.Error("the same source does not give the same digest")
+	}
+	// The source hash is a fixed-width field, so text cannot slide into the
+	// lists that follow it.
+	c := planDigest(false, "ab", &dsl.ApplyResult{Created: []string{"c"}})
+	d := planDigest(false, "a", &dsl.ApplyResult{Created: []string{"bc"}})
+	if c == d {
+		t.Error("the source and the lists are not separated")
 	}
 }
 
@@ -1040,6 +1066,7 @@ func TestSchemaApplyAuditsOnceAsTheOperator(t *testing.T) {
 		t.Fatalf("entity is %T, want schemaAppliedEvent", ev.Entity)
 	}
 	want := schemaAppliedEvent{
+		Outcome: "succeeded",
 		Created: len(plan.Created), Updated: len(plan.Updated), Deleted: len(plan.Deleted), NoOps: plan.NoOps,
 	}
 	if got != want {
@@ -1076,15 +1103,50 @@ var errDiskFull = errors.New("disk full")
 func (failingPolicyStore) CreatePolicy(context.Context, *policy.Policy) error { return errDiskFull }
 func (failingPolicyStore) UpdatePolicy(context.Context, *policy.Policy) error { return errDiskFull }
 
-func TestSchemaApplyIsNotTransactional(t *testing.T) {
-	// The page tells the operator an apply can stop half way. This pins that
-	// as a fact: what was written before the failure stays written.
-	s := memory.New()
-	h := newSchemaHarness(t, s)
-	eng, err := warden.NewEngine(warden.WithStore(failingPolicyStore{s}))
+// racingStore runs once, just before the first role is written, what another
+// writer could have done between the dry run and the real apply.
+type racingStore struct {
+	*memory.Store
+	once sync.Once
+	race func()
+}
+
+func (r *racingStore) CreateRole(ctx context.Context, ro *role.Role) error {
+	r.once.Do(r.race)
+	return r.Store.CreateRole(ctx, ro)
+}
+
+// probedOver builds an engine over st with an audit probe attached.
+func probedOver(t *testing.T, st store.Store) (*warden.Engine, *auditProbe) {
+	t.Helper()
+	probe := &auditProbe{}
+	eng, err := warden.NewEngine(warden.WithStore(st), warden.WithPlugin(probe))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return eng, probe
+}
+
+// eventsNamed returns the recorded events with this action, in order.
+func (a *auditProbe) eventsNamed(action string) []plugin.Event {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []plugin.Event
+	for _, e := range a.events {
+		if e.Action == action {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestSchemaApplyIsNotTransactional(t *testing.T) {
+	// The page tells the operator an apply can stop half way. This pins that
+	// as a fact: what was written before the failure stays written. The
+	// audit trail must say who started it and what landed.
+	s := memory.New()
+	h := newSchemaHarness(t, s)
+	eng, probe := probedOver(t, failingPolicyStore{s})
 	h.deps.Engine = eng
 
 	src := `warden config 1
@@ -1113,9 +1175,10 @@ relation folder:root owner = user:alice
 	if !plan.Valid || len(plan.Created) != 5 {
 		t.Fatalf("setup: the plan should create five things, got %+v", plan)
 	}
-	_, err = h.applyRaw(src, false, plan.Digest)
-	if err == nil || !strings.Contains(err.Error(), "disk full") {
-		t.Fatalf("want the policy write failure, got %v", err)
+	_, err := h.applyRaw(src, false, plan.Digest)
+	ce := refusal(t, err, dashcontract.CodeInternal)
+	if ce.Message != "the apply stopped part way: create policy freeze: disk full" {
+		t.Errorf("message = %q", ce.Message)
 	}
 
 	ctx := context.Background()
@@ -1137,6 +1200,197 @@ relation folder:root owner = user:alice
 	}
 	if tuples, _ := s.ListRelations(ctx, &relation.ListFilter{TenantID: "t1", ObjectType: "folder", Limit: 10}); len(tuples) != 0 {
 		t.Errorf("a relation after the failed policy was written: %v", tuples)
+	}
+
+	// The audit trail: started names the operator with the planned counts,
+	// applied says it failed and counts what was actually written.
+	started := probe.eventsNamed("schema.apply.started")
+	applied := probe.eventsNamed("schema.applied")
+	if len(started) != 1 || len(applied) != 1 {
+		t.Fatalf("want one started and one applied event, got %d and %d (%v)", len(started), len(applied), probe.actions())
+	}
+	if started[0].Actor != wantActor || applied[0].Actor != wantActor {
+		t.Errorf("actors = %+v and %+v, want %+v", started[0].Actor, applied[0].Actor, wantActor)
+	}
+	if got, want := started[0].Entity, (schemaApplyStartedEvent{Created: 5}); got != want {
+		t.Errorf("started entity = %+v, want %+v", got, want)
+	}
+	gotApplied, ok := applied[0].Entity.(schemaAppliedEvent)
+	if !ok {
+		t.Fatalf("applied entity is %T", applied[0].Entity)
+	}
+	// Written before the failure: the resource type, the permission and the
+	// role. The policy failed and the relation never ran.
+	wantApplied := schemaAppliedEvent{Outcome: "failed", Error: "create policy freeze: disk full", Created: 3}
+	if gotApplied != wantApplied {
+		t.Errorf("applied entity = %+v, want %+v", gotApplied, wantApplied)
+	}
+	// started comes before any entity write and before applied.
+	probe.mu.Lock()
+	order := probe.actionsLocked()
+	probe.mu.Unlock()
+	if order[0] != "schema.apply.started" || order[len(order)-1] != "schema.applied" {
+		t.Errorf("event order = %v, want started first and applied last", order)
+	}
+}
+
+func TestSchemaApplyAuditsStartAndOutcomeOnSuccess(t *testing.T) {
+	s := seedApplyStore(t)
+	h := newSchemaHarness(t, s)
+	eng, probe := probedEngine(t, s)
+	h.deps.Engine = eng
+
+	plan, got := h.apply(applySource, false)
+	if got.Diverged {
+		t.Error("a quiet apply reports diverged")
+	}
+	started := probe.eventsNamed("schema.apply.started")
+	applied := probe.eventsNamed("schema.applied")
+	if len(started) != 1 || len(applied) != 1 {
+		t.Fatalf("want one started and one applied, got %d and %d", len(started), len(applied))
+	}
+	if started[0].Entity != (schemaApplyStartedEvent{Created: len(plan.Created), Updated: len(plan.Updated), Deleted: len(plan.Deleted), NoOps: plan.NoOps}) {
+		t.Errorf("started entity = %+v", started[0].Entity)
+	}
+	if applied[0].Entity != (schemaAppliedEvent{Outcome: "succeeded", Created: len(plan.Created), Updated: len(plan.Updated), Deleted: len(plan.Deleted), NoOps: plan.NoOps}) {
+		t.Errorf("applied entity = %+v", applied[0].Entity)
+	}
+}
+
+func TestSchemaApplyStopsPartWayWhenAGrantVanishesAfterThePlan(t *testing.T) {
+	// The dry run saw doc:read in the store. Another writer deletes it before
+	// the real apply reaches the role's grant. The role row is already
+	// written, so this is not a clean refusal: it is a half apply, INTERNAL,
+	// and audited as failed.
+	s := memory.New()
+	perm := seedPermission(t, s, "doc:read", "doc", "read")
+	h := newSchemaHarness(t, s)
+	racing := &racingStore{Store: s, race: func() {
+		if err := s.DeletePermission(context.Background(), "t1", perm.ID); err != nil {
+			t.Errorf("race: %v", err)
+		}
+	}}
+	eng, probe := probedOver(t, racing)
+	h.deps.Engine = eng
+
+	src := "warden config 1\n\nrole auditor {\n    name = \"Auditor\"\n    grants = [\"doc:read\"]\n}\n"
+	plan := h.plan(src, false)
+	if !plan.Valid || len(plan.Created) != 1 {
+		t.Fatalf("setup: %+v", plan)
+	}
+	_, err := h.applyRaw(src, false, plan.Digest)
+	ce := refusal(t, err, dashcontract.CodeInternal)
+	if !strings.HasPrefix(ce.Message, "the apply stopped part way: ") || !strings.Contains(ce.Message, `role auditor grants unknown permission "doc:read"`) {
+		t.Errorf("message = %q", ce.Message)
+	}
+	if _, gErr := s.GetRoleBySlug(context.Background(), "t1", "", "auditor"); gErr != nil {
+		t.Errorf("the role written before the failure is gone: %v", gErr)
+	}
+	applied := probe.eventsNamed("schema.applied")
+	if len(applied) != 1 {
+		t.Fatalf("want one schema.applied event, got %v", probe.actions())
+	}
+	ev, ok := applied[0].Entity.(schemaAppliedEvent)
+	if !ok || ev.Outcome != "failed" || ev.Created != 1 || !strings.Contains(ev.Error, "grants unknown permission") {
+		t.Errorf("applied entity = %+v, want failed with the one role created", applied[0].Entity)
+	}
+	if len(probe.eventsNamed("schema.apply.started")) != 1 {
+		t.Errorf("no started event: %v", probe.actions())
+	}
+}
+
+func TestSchemaApplyReportsDivergenceFromThePlan(t *testing.T) {
+	// Between the dry run and the write another writer creates the role the
+	// plan was about to create. The write goes ahead and finds a different
+	// diff than the one planned: diverged, on the response and the event.
+	s := memory.New()
+	h := newSchemaHarness(t, s)
+	eng, probe := probedOver(t, &raceOnPermission{Store: s, race: func() {
+		if err := s.CreateRole(context.Background(), &role.Role{TenantID: "t1", Name: "theirs", Slug: "auditor"}); err != nil {
+			t.Errorf("race: %v", err)
+		}
+	}})
+	h.deps.Engine = eng
+
+	src := "warden config 1\n\npermission \"doc:read\" (doc : read)\n\nrole auditor {\n    name = \"Auditor\"\n}\n"
+	plan := h.plan(src, false)
+	got, err := h.applyRaw(src, false, plan.Digest)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !got.Diverged {
+		t.Errorf("the real apply found a different diff than the plan but did not say so: %+v vs planned %+v", got, plan)
+	}
+	applied := probe.eventsNamed("schema.applied")
+	if len(applied) != 1 || applied[0].Entity.(schemaAppliedEvent).Diverged != true {
+		t.Errorf("the event does not say diverged: %v", applied)
+	}
+	raw, _ := json.Marshal(got)
+	if !strings.Contains(string(raw), `"diverged":true`) {
+		t.Errorf("wire form lacks diverged: %s", raw)
+	}
+
+	// Always present, including when false.
+	s2 := seedApplyStore(t)
+	h2 := newSchemaHarness(t, s2)
+	_, quiet := h2.apply(applySource, false)
+	raw, _ = json.Marshal(quiet)
+	if !strings.Contains(string(raw), `"diverged":false`) {
+		t.Errorf("wire form lacks diverged:false: %s", raw)
+	}
+}
+
+// raceOnPermission runs race once, just before the first permission write.
+type raceOnPermission struct {
+	*memory.Store
+	once sync.Once
+	race func()
+}
+
+func (r *raceOnPermission) CreatePermission(ctx context.Context, p *permission.Permission) error {
+	r.once.Do(r.race)
+	return r.Store.CreatePermission(ctx, p)
+}
+
+func TestSchemaApplyRefusesSameLinesDifferentValues(t *testing.T) {
+	// The plan's `~` line names the fields that change, not their values. The
+	// digest must still pin the values: a plan for a harmless edit must not
+	// authorize a dangerous one that changes the same fields.
+	seed := func() *memory.Store {
+		s := memory.New()
+		seedPolicy(t, s, "", "freeze", func(p *policy.Policy) {
+			p.Effect = policy.EffectDeny
+			p.Resources = []string{"doc"}
+		})
+		return s
+	}
+	const dangerous = "warden config 1\n\npolicy \"freeze\" {\n    effect = allow\n    active = true\n    resources = [\"*\"]\n}\n"
+	const scoped = "warden config 1\n\npolicy \"freeze\" {\n    effect = allow\n    active = true\n    resources = [\"report\"]\n}\n"
+
+	s := seed()
+	h := newSchemaHarness(t, s)
+	planned := h.plan(scoped, false)
+	other := h.plan(dangerous, false)
+	if !reflect.DeepEqual(planned.Updated, other.Updated) || len(planned.Updated) != 1 {
+		t.Fatalf("setup: the two sources must give the same single line, got %v and %v", planned.Updated, other.Updated)
+	}
+	if planned.Digest == other.Digest {
+		t.Fatal("the digest ignores the values: same lines, same digest")
+	}
+
+	before := storeSnapshot(t, s)
+	_, err := h.applyRaw(dangerous, false, planned.Digest)
+	ce := refusal(t, err, dashcontract.CodeConflict)
+	if ce.Message != "the schema changed since you planned: plan again" {
+		t.Errorf("message = %q", ce.Message)
+	}
+	if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
+		t.Error("a refused apply changed the store")
+	}
+
+	// The source that was planned still applies.
+	if _, err := h.applyRaw(scoped, false, planned.Digest); err != nil {
+		t.Errorf("the planned source was refused: %v", err)
 	}
 }
 

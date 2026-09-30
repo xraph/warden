@@ -70,17 +70,37 @@ type SchemaApplyResponse struct {
 	Updated []string `json:"updated"`
 	Deleted []string `json:"deleted"`
 	NoOps   int      `json:"noOps"`
+	// Diverged is true when what was written differs from the plan the
+	// digest vouched for. The digest is checked before the write and the
+	// write is a second read of the store, so a change in between can make
+	// the two differ. The lists are what was actually written.
+	Diverged bool `json:"diverged"`
 }
 
-// schemaAppliedEvent is the entity of the schema.applied audit event: the
-// four counts of an apply, and whether it pruned. The per-entity events the
-// applier emits are separate.
-type schemaAppliedEvent struct {
+// schemaApplyStartedEvent is the entity of the schema.apply.started audit
+// event: the counts the apply is about to attempt, as planned.
+type schemaApplyStartedEvent struct {
 	Created int  `json:"created"`
 	Updated int  `json:"updated"`
 	Deleted int  `json:"deleted"`
 	NoOps   int  `json:"noOps"`
 	Prune   bool `json:"prune"`
+}
+
+// schemaAppliedEvent is the entity of the schema.applied audit event: how
+// the apply ended and the counts actually written. The per-entity events the
+// applier emits under its own actor are separate; these two name the
+// operator.
+type schemaAppliedEvent struct {
+	// Outcome is "succeeded" or "failed".
+	Outcome  string `json:"outcome"`
+	Error    string `json:"error,omitempty"`
+	Created  int    `json:"created"`
+	Updated  int    `json:"updated"`
+	Deleted  int    `json:"deleted"`
+	NoOps    int    `json:"noOps"`
+	Prune    bool   `json:"prune"`
+	Diverged bool   `json:"diverged"`
 }
 
 // SchemaPlanInput is the schema.plan request.
@@ -195,7 +215,7 @@ func schemaPlanHandler(deps Deps) func(context.Context, SchemaPlanInput, dashcon
 			Updated:     nonNil(res.Updated),
 			Deleted:     nonNil(res.Deleted),
 			NoOps:       res.NoOps,
-			Digest:      planDigest(in.Prune, res),
+			Digest:      planDigest(in.Prune, in.Source, res),
 		}, nil
 	}
 }
@@ -260,42 +280,64 @@ func schemaApplyHandler(deps Deps) func(context.Context, SchemaApplyInput, dashc
 			return SchemaApplyResponse{}, badRequest(fmt.Sprintf(
 				"the source has an error at line %d, column %d: %s", d.Line, d.Col, d.Message))
 		}
-		// The operator applies the diff they saw or nothing. An empty digest
-		// never matches: planDigest is always 64 hex characters.
-		if in.Digest == "" || in.Digest != planDigest(in.Prune, planned) {
+		// The operator applies the diff they saw or nothing. The digest
+		// covers the source, so the same lines with different values do not
+		// match. An empty digest never matches: planDigest is always 64 hex
+		// characters.
+		plannedDigest := planDigest(in.Prune, in.Source, planned)
+		if in.Digest == "" || in.Digest != plannedDigest {
 			return SchemaApplyResponse{}, errSchemaChanged()
 		}
 
+		// Every check has passed. From here a failure leaves a partial apply,
+		// so the audit trail names the operator before the first write and
+		// again at the end, whichever way it ends.
 		ctx = withActor(ctx, p)
+		emitAudit(ctx, deps, p, "schema.apply.started", tenantID, tenantID, schemaApplyStartedEvent{
+			Created: len(planned.Created),
+			Updated: len(planned.Updated),
+			Deleted: len(planned.Deleted),
+			NoOps:   planned.NoOps,
+			Prune:   in.Prune,
+		}, nil)
+
 		res, err := dsl.Apply(ctx, deps.Engine, prog, dsl.ApplyOptions{
 			TenantID: tenantID,
 			Prune:    in.Prune,
 		})
 		if err != nil {
-			var derr *dsl.DiagnosticError
-			if errors.As(err, &derr) && len(derr.Diags) > 0 {
-				d := derr.Diags[0]
-				return SchemaApplyResponse{}, badRequest(fmt.Sprintf(
-					"the source has an error at line %d, column %d: %s", d.Pos.Line, d.Pos.Col, d.Msg))
+			// The dry run passed, so anything that fails now failed after
+			// other writes: what the applier wrote before it stays written
+			// (the store has no transaction). Every error, a diagnostic
+			// included (a grant whose permission vanished after the plan),
+			// is a half apply, not a clean refusal.
+			done := schemaAppliedEvent{Outcome: "failed", Error: err.Error(), Prune: in.Prune}
+			if res != nil {
+				done.Created, done.Updated, done.Deleted, done.NoOps = len(res.Created), len(res.Updated), len(res.Deleted), res.NoOps
 			}
-			// Not transactional: what the applier wrote before the failure
-			// stays written, and the per-entity audit events it emitted say
-			// which. No schema.applied event: the apply did not complete.
-			return SchemaApplyResponse{}, mapWardenError(err)
+			emitAudit(ctx, deps, p, "schema.applied", tenantID, tenantID, done, nil)
+			return SchemaApplyResponse{}, &dashcontract.Error{
+				Code:    dashcontract.CodeInternal,
+				Message: "the apply stopped part way: " + err.Error(),
+			}
 		}
 
+		diverged := planDigest(in.Prune, in.Source, res) != plannedDigest
 		emitAudit(ctx, deps, p, "schema.applied", tenantID, tenantID, schemaAppliedEvent{
-			Created: len(res.Created),
-			Updated: len(res.Updated),
-			Deleted: len(res.Deleted),
-			NoOps:   res.NoOps,
-			Prune:   in.Prune,
+			Outcome:  "succeeded",
+			Created:  len(res.Created),
+			Updated:  len(res.Updated),
+			Deleted:  len(res.Deleted),
+			NoOps:    res.NoOps,
+			Prune:    in.Prune,
+			Diverged: diverged,
 		}, nil)
 		return SchemaApplyResponse{
-			Created: nonNil(res.Created),
-			Updated: nonNil(res.Updated),
-			Deleted: nonNil(res.Deleted),
-			NoOps:   res.NoOps,
+			Created:  nonNil(res.Created),
+			Updated:  nonNil(res.Updated),
+			Deleted:  nonNil(res.Deleted),
+			NoOps:    res.NoOps,
+			Diverged: diverged,
 		}, nil
 	}
 }
@@ -388,17 +430,23 @@ func checkSource(src string, tenantID string) (*dsl.Program, []SchemaDiagnostic)
 	return prog, nil
 }
 
-// planDigest identifies one diff under one prune flag. It is SHA-256 over the
-// prune flag, then each of created, updated and deleted sorted and
-// length-prefixed (the count, then each line with its own length), then the
-// no-op count, hex-encoded. Sorting makes it independent of the order the
-// applier walked the store in; length prefixes keep ["x","y"] and ["xy"], or
-// a line moving from one list to the next, from colliding.
+// planDigest identifies one diff, for one source, under one prune flag. It is
+// SHA-256 over: the prune flag; the SHA-256 of the submitted source; then each
+// of created, updated and deleted sorted and length-prefixed (the count, then
+// each line with its own length); then the no-op count; hex-encoded.
+//
+// The source is in it because a `~` line names the fields that change and
+// not their values: two sources can give the same lines and mean very
+// different things, and the operator approved the one they saw. The source
+// hash is fixed width, so it cannot run into the lists after it. The lists
+// are sorted so the digest does not depend on the order the applier walked
+// the store in, and length prefixes keep ["x","y"] and ["xy"], or a line
+// moving from one list to the next, from colliding.
 //
 // schema.apply recomputes it against the store as it is then, so an edit, or
 // a change to the store since the plan was read, changes the digest and the
 // apply is refused.
-func planDigest(prune bool, r *dsl.ApplyResult) string {
+func planDigest(prune bool, source string, r *dsl.ApplyResult) string {
 	h := sha256.New()
 	var buf [8]byte
 	putUint := func(n uint64) {
@@ -410,6 +458,8 @@ func planDigest(prune bool, r *dsl.ApplyResult) string {
 	} else {
 		h.Write([]byte{0})
 	}
+	srcSum := sha256.Sum256([]byte(source))
+	h.Write(srcSum[:])
 	for _, list := range [][]string{r.Created, r.Updated, r.Deleted} {
 		lines := append([]string(nil), list...)
 		sort.Strings(lines)
