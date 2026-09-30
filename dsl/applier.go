@@ -36,6 +36,13 @@ type ApplyOptions struct {
 	// Prune, when true, deletes tenant entries (within the namespaces
 	// covered by the program) that are not declared in the program.
 	// kubectl-style apply with prune.
+	//
+	// A namespace is covered when the program declares something in it
+	// (an entity, or a `namespace` block, even an empty one). The tenant
+	// root is covered only when the program declares something at the root.
+	// Coverage is exact, not a prefix: covering "eng" does not cover
+	// "eng/platform". An entity in an uncovered namespace is never pruned,
+	// so a source that says nothing about a namespace cannot delete it.
 	Prune bool
 	// Now is the time used for CreatedAt/UpdatedAt timestamps. Defaults to
 	// time.Now().UTC().
@@ -82,6 +89,7 @@ func Apply(ctx context.Context, eng *warden.Engine, prog *Program, opts ApplyOpt
 		prune:    opts.Prune,
 		dryRun:   opts.DryRun,
 		result:   &ApplyResult{},
+		covered:  coveredNamespaces(prog),
 	}
 	if err := a.run(prog); err != nil {
 		return nil, err
@@ -136,7 +144,49 @@ type applier struct {
 	prune    bool
 	dryRun   bool
 
+	// covered is the set of namespace paths the program declares something
+	// in. Prune only considers entities whose namespace is in it.
+	covered map[string]struct{}
+
 	result *ApplyResult
+}
+
+// coveredNamespaces returns the namespace paths the program declares
+// something in: the path of every entity, and of every `namespace` block
+// (walked with the same joining rule the parser flattens with).
+func coveredNamespaces(prog *Program) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, rt := range prog.ResourceTypes {
+		out[rt.NamespacePath] = struct{}{}
+	}
+	for _, p := range prog.Permissions {
+		out[p.NamespacePath] = struct{}{}
+	}
+	for _, r := range prog.Roles {
+		out[r.NamespacePath] = struct{}{}
+	}
+	for _, p := range prog.Policies {
+		out[p.NamespacePath] = struct{}{}
+	}
+	for _, r := range prog.Relations {
+		out[r.NamespacePath] = struct{}{}
+	}
+	var walk func(parent string, nss []*NamespaceDecl)
+	walk = func(parent string, nss []*NamespaceDecl) {
+		for _, ns := range nss {
+			abs := joinNS(parent, ns.Name)
+			out[abs] = struct{}{}
+			walk(abs, ns.Namespaces)
+		}
+	}
+	walk("", prog.Namespaces)
+	return out
+}
+
+// covers reports whether prune may delete entities in namespacePath.
+func (a *applier) covers(namespacePath string) bool {
+	_, ok := a.covered[namespacePath]
+	return ok
 }
 
 // emitAudit records one audit event for a declarative mutation, through
@@ -299,6 +349,9 @@ func (a *applier) pruneResourceTypes(declared map[string]struct{}) error {
 		return err
 	}
 	for _, rt := range existing {
+		if !a.covers(rt.NamespacePath) {
+			continue
+		}
 		if _, ok := declared[keyOf(rt.NamespacePath, rt.Name)]; ok {
 			continue
 		}
@@ -376,6 +429,9 @@ func (a *applier) applyPermissions(prog *Program) error {
 			return err
 		}
 		for _, p := range existing {
+			if !a.covers(p.NamespacePath) {
+				continue
+			}
 			if _, ok := declared[keyOf(p.NamespacePath, p.Name)]; ok {
 				continue
 			}
@@ -462,6 +518,9 @@ func (a *applier) applyRoles(prog *Program) error {
 			return err
 		}
 		for _, r := range existing {
+			if !a.covers(r.NamespacePath) {
+				continue
+			}
 			if _, ok := declared[keyOf(r.NamespacePath, r.Slug)]; ok {
 				continue
 			}
@@ -637,6 +696,9 @@ func (a *applier) applyPolicies(prog *Program) error {
 			return err
 		}
 		for _, p := range existing {
+			if !a.covers(p.NamespacePath) {
+				continue
+			}
 			if _, ok := declared[keyOf(p.NamespacePath, p.Name)]; ok {
 				continue
 			}

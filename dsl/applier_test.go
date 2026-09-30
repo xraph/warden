@@ -2,6 +2,7 @@ package dsl
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 
@@ -446,5 +447,81 @@ role viewer {
 	}
 	if len(rec.events) != 0 {
 		t.Errorf("dry run must not emit audit events, got %d: %+v", len(rec.events), rec.events)
+	}
+}
+
+// TestApply_PruneIsScopedToCoveredNamespaces: a namespace is covered when
+// the program declares something in it (an entity or a block, even an empty
+// one). Prune never reaches an entity in a namespace the program does not
+// mention, and coverage is exact rather than a prefix.
+func TestApply_PruneIsScopedToCoveredNamespaces(t *testing.T) {
+	ctx := context.Background()
+	eng, s := newTestEngine(t)
+
+	seed, errs := Parse("seed.warden", []byte(`
+warden config 1
+tenant t1
+role root-keep { name = "root-keep" }
+role root-drop { name = "root-drop" }
+namespace "eng" {
+    role eng-keep { name = "eng-keep" }
+    role eng-drop { name = "eng-drop" }
+    namespace "platform" {
+        role platform-drop { name = "platform-drop" }
+    }
+}
+namespace "ops" {
+    role ops-drop { name = "ops-drop" }
+}
+namespace "legal" {
+    role legal-drop { name = "legal-drop" }
+}
+`))
+	if len(errs) > 0 {
+		t.Fatalf("parse seed: %v", errs)
+	}
+	if _, err := Apply(ctx, eng, seed, ApplyOptions{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Covers the root (root-keep), eng (eng-keep) and ops (an empty block).
+	// It says nothing about eng/platform or legal.
+	src, errs := Parse("edit.warden", []byte(`
+warden config 1
+tenant t1
+role root-keep { name = "root-keep" }
+namespace "eng" {
+    role eng-keep { name = "eng-keep" }
+}
+namespace "ops" {
+}
+`))
+	if len(errs) > 0 {
+		t.Fatalf("parse edit: %v", errs)
+	}
+
+	res, err := Apply(ctx, eng, src, ApplyOptions{Prune: true, DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	want := []string{"- role//root-drop", "- role/eng/eng-drop", "- role/ops/ops-drop"}
+	sort.Strings(res.Deleted)
+	sort.Strings(want)
+	if strings.Join(res.Deleted, "|") != strings.Join(want, "|") {
+		t.Errorf("deleted = %v, want %v", res.Deleted, want)
+	}
+
+	if _, err := Apply(ctx, eng, src, ApplyOptions{Prune: true}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	for _, gone := range []struct{ ns, slug string }{{"", "root-drop"}, {"eng", "eng-drop"}, {"ops", "ops-drop"}} {
+		if _, err := s.GetRoleBySlug(ctx, "t1", gone.ns, gone.slug); err == nil {
+			t.Errorf("role %s/%s survived the prune", gone.ns, gone.slug)
+		}
+	}
+	for _, kept := range []struct{ ns, slug string }{{"eng/platform", "platform-drop"}, {"legal", "legal-drop"}, {"", "root-keep"}, {"eng", "eng-keep"}} {
+		if _, err := s.GetRoleBySlug(ctx, "t1", kept.ns, kept.slug); err != nil {
+			t.Errorf("role %s/%s was pruned or lost: %v", kept.ns, kept.slug, err)
+		}
 	}
 }
