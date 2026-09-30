@@ -1312,6 +1312,9 @@ func (s *Store) filterCheckLogs(filter *checklog.QueryFilter) []*checklog.Entry 
 			if filter.Decision != "" && e.Decision != filter.Decision {
 				continue
 			}
+			if filter.Cached != nil && e.Cached != *filter.Cached {
+				continue
+			}
 			if filter.After != nil && e.CreatedAt.Before(*filter.After) {
 				continue
 			}

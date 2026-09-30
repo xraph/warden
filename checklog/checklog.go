@@ -48,17 +48,20 @@ type Entry struct {
 
 // QueryFilter contains filters for querying check logs.
 type QueryFilter struct {
-	TenantID        string     `json:"tenant_id,omitempty"`
-	NamespacePath   *string    `json:"namespace_path,omitempty"`
-	NamespacePrefix string     `json:"namespace_prefix,omitempty"`
-	SubjectKind     string     `json:"subject_kind,omitempty"`
-	SubjectID       string     `json:"subject_id,omitempty"`
-	Action          string     `json:"action,omitempty"`
-	ResourceType    string     `json:"resource_type,omitempty"`
-	ResourceID      string     `json:"resource_id,omitempty"`
-	Decision        string     `json:"decision,omitempty"`
-	After           *time.Time `json:"after,omitempty"`
-	Before          *time.Time `json:"before,omitempty"`
-	Limit           int        `json:"limit,omitempty"`
-	Offset          int        `json:"offset,omitempty"`
+	TenantID        string  `json:"tenant_id,omitempty"`
+	NamespacePath   *string `json:"namespace_path,omitempty"`
+	NamespacePrefix string  `json:"namespace_prefix,omitempty"`
+	SubjectKind     string  `json:"subject_kind,omitempty"`
+	SubjectID       string  `json:"subject_id,omitempty"`
+	Action          string  `json:"action,omitempty"`
+	ResourceType    string  `json:"resource_type,omitempty"`
+	ResourceID      string  `json:"resource_id,omitempty"`
+	Decision        string  `json:"decision,omitempty"`
+	// Cached narrows to rows served from the result cache (true) or rows
+	// the engine evaluated (false). Nil means either.
+	Cached *bool      `json:"cached,omitempty"`
+	After  *time.Time `json:"after,omitempty"`
+	Before *time.Time `json:"before,omitempty"`
+	Limit  int        `json:"limit,omitempty"`
+	Offset int        `json:"offset,omitempty"`
 }

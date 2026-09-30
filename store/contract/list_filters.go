@@ -232,26 +232,52 @@ func runListFilterCheckLogs(t *testing.T, mk MakeStore) {
 	defer cleanup()
 	ctx := context.Background()
 
-	mkLog := func(resourceID string) {
+	mkLog := func(resourceID, decision string, cached bool) {
 		e := &checklog.Entry{
 			ID: id.NewCheckLogID(), TenantID: "t1",
 			SubjectKind: "user", SubjectID: "alice", Action: "read",
-			ResourceType: "doc", ResourceID: resourceID, Decision: "allow",
+			ResourceType: "doc", ResourceID: resourceID, Decision: decision,
+			Cached: cached,
 		}
 		if err := s.CreateCheckLog(ctx, e); err != nil {
 			t.Fatalf("seed check log (resource_id=%q): %v", resourceID, err)
 		}
 	}
-	mkLog("d1")
-	mkLog("d2")
+	mkLog("d1", "allow", false)
+	mkLog("d2", "allow", true)
+	mkLog("d3", "deny_default", true)
+	mkLog("d4", "deny_default", false)
 
-	got, err := s.ListCheckLogs(ctx, &checklog.QueryFilter{TenantID: "t1", ResourceID: "d1"})
-	if err != nil {
-		t.Fatalf("ListCheckLogs ResourceID: %v", err)
+	resources := func(label string, f *checklog.QueryFilter, want ...string) {
+		t.Helper()
+		got, err := s.ListCheckLogs(ctx, f)
+		if err != nil {
+			t.Fatalf("%s: ListCheckLogs: %v", label, err)
+		}
+		gotIDs := make([]string, 0, len(got))
+		for _, e := range got {
+			gotIDs = append(gotIDs, e.ResourceID)
+		}
+		sort.Strings(gotIDs)
+		if !equalStrings(gotIDs, want) {
+			t.Errorf("%s: list want %v, got %v", label, want, gotIDs)
+		}
+		n, err := s.CountCheckLogs(ctx, f)
+		if err != nil {
+			t.Fatalf("%s: CountCheckLogs: %v", label, err)
+		}
+		if n != int64(len(want)) {
+			t.Errorf("%s: count want %d, got %d", label, len(want), n)
+		}
 	}
-	if len(got) != 1 || got[0].ResourceID != "d1" {
-		t.Errorf("ResourceID=d1: want 1 check log, got %d", len(got))
-	}
+
+	yes, no := true, false
+	resources("ResourceID=d1", &checklog.QueryFilter{TenantID: "t1", ResourceID: "d1"}, "d1")
+	resources("Cached=nil", &checklog.QueryFilter{TenantID: "t1"}, "d1", "d2", "d3", "d4")
+	resources("Cached=true", &checklog.QueryFilter{TenantID: "t1", Cached: &yes}, "d2", "d3")
+	resources("Cached=false", &checklog.QueryFilter{TenantID: "t1", Cached: &no}, "d1", "d4")
+	resources("Cached=true+Decision", &checklog.QueryFilter{TenantID: "t1", Cached: &yes, Decision: "deny_default"}, "d3")
+	resources("Cached=false+Decision", &checklog.QueryFilter{TenantID: "t1", Cached: &no, Decision: "allow"}, "d1")
 }
 
 func runCountIgnoresLimitOffset(t *testing.T, mk MakeStore) {

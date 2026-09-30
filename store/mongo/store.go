@@ -1784,43 +1784,62 @@ func (s *Store) GetCheckLog(ctx context.Context, tenantID string, logID id.Check
 	return checkLogFromModel(&m), nil
 }
 
-func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter) ([]*checklog.Entry, error) {
-	var models []checkLogModel
+// checkLogFilter builds the Mongo filter for a QueryFilter. ListCheckLogs and
+// CountCheckLogs both build from it, so a pager's total always counts the
+// rows the list would return.
+func checkLogFilter(filter *checklog.QueryFilter) bson.M {
 	f := bson.M{}
-	if filter != nil {
-		if filter.TenantID != "" {
-			f["tenant_id"] = filter.TenantID
+	if filter == nil {
+		return f
+	}
+	if filter.TenantID != "" {
+		f["tenant_id"] = filter.TenantID
+	}
+	applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
+	if filter.SubjectKind != "" {
+		f["subject_kind"] = filter.SubjectKind
+	}
+	if filter.SubjectID != "" {
+		f["subject_id"] = filter.SubjectID
+	}
+	if filter.Action != "" {
+		f["action"] = filter.Action
+	}
+	if filter.ResourceType != "" {
+		f["resource_type"] = filter.ResourceType
+	}
+	if filter.ResourceID != "" {
+		f["resource_id"] = filter.ResourceID
+	}
+	if filter.Decision != "" {
+		f["decision"] = filter.Decision
+	}
+	if filter.After != nil || filter.Before != nil {
+		dateFilter := bson.M{}
+		if filter.After != nil {
+			dateFilter["$gte"] = *filter.After
 		}
-		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
-		if filter.SubjectKind != "" {
-			f["subject_kind"] = filter.SubjectKind
+		if filter.Before != nil {
+			dateFilter["$lte"] = *filter.Before
 		}
-		if filter.SubjectID != "" {
-			f["subject_id"] = filter.SubjectID
-		}
-		if filter.Action != "" {
-			f["action"] = filter.Action
-		}
-		if filter.ResourceType != "" {
-			f["resource_type"] = filter.ResourceType
-		}
-		if filter.ResourceID != "" {
-			f["resource_id"] = filter.ResourceID
-		}
-		if filter.Decision != "" {
-			f["decision"] = filter.Decision
-		}
-		if filter.After != nil || filter.Before != nil {
-			dateFilter := bson.M{}
-			if filter.After != nil {
-				dateFilter["$gte"] = *filter.After
-			}
-			if filter.Before != nil {
-				dateFilter["$lte"] = *filter.Before
-			}
-			f["created_at"] = dateFilter
+		f["created_at"] = dateFilter
+	}
+	// A document written before the cached field existed has none, and
+	// it was evaluated, not served from cache. {$ne: true} matches it;
+	// {cached: false} would drop it from both answers.
+	if filter.Cached != nil {
+		if *filter.Cached {
+			f["cached"] = true
+		} else {
+			f["cached"] = bson.M{"$ne": true}
 		}
 	}
+	return f
+}
+
+func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter) ([]*checklog.Entry, error) {
+	var models []checkLogModel
+	f := checkLogFilter(filter)
 	q := s.mdb.NewFind(&models).
 		Filter(f).
 		Sort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}})
@@ -1843,41 +1862,7 @@ func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter)
 }
 
 func (s *Store) CountCheckLogs(ctx context.Context, filter *checklog.QueryFilter) (int64, error) {
-	f := bson.M{}
-	if filter != nil {
-		if filter.TenantID != "" {
-			f["tenant_id"] = filter.TenantID
-		}
-		applyNamespaceFilter(f, filter.NamespacePath, filter.NamespacePrefix)
-		if filter.SubjectKind != "" {
-			f["subject_kind"] = filter.SubjectKind
-		}
-		if filter.SubjectID != "" {
-			f["subject_id"] = filter.SubjectID
-		}
-		if filter.Action != "" {
-			f["action"] = filter.Action
-		}
-		if filter.ResourceType != "" {
-			f["resource_type"] = filter.ResourceType
-		}
-		if filter.ResourceID != "" {
-			f["resource_id"] = filter.ResourceID
-		}
-		if filter.Decision != "" {
-			f["decision"] = filter.Decision
-		}
-		if filter.After != nil || filter.Before != nil {
-			dateFilter := bson.M{}
-			if filter.After != nil {
-				dateFilter["$gte"] = *filter.After
-			}
-			if filter.Before != nil {
-				dateFilter["$lte"] = *filter.Before
-			}
-			f["created_at"] = dateFilter
-		}
-	}
+	f := checkLogFilter(filter)
 	count, err := s.mdb.NewFind((*checkLogModel)(nil)).
 		Filter(f).
 		Count(ctx)

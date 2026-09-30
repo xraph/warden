@@ -1878,45 +1878,60 @@ func (s *Store) GetCheckLog(ctx context.Context, tenantID string, logID id.Check
 	return e, nil
 }
 
-func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter) ([]*checklog.Entry, error) {
-	var models []checkLogModel
-	q := s.sdb.NewSelect(&models).OrderExpr("created_at DESC, id DESC")
-	if filter != nil {
-		if filter.TenantID != "" {
-			q = q.Where("tenant_id = ?", filter.TenantID)
-		}
-		if filter.NamespacePath != nil {
-			q = q.Where("namespace_path = ?", *filter.NamespacePath)
-		}
-		if filter.NamespacePrefix != "" {
-			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
-				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
-		}
-		if filter.SubjectKind != "" {
-			q = q.Where("subject_kind = ?", filter.SubjectKind)
-		}
-		if filter.SubjectID != "" {
-			q = q.Where("subject_id = ?", filter.SubjectID)
-		}
-		if filter.Action != "" {
-			q = q.Where("action = ?", filter.Action)
-		}
-		if filter.ResourceType != "" {
-			q = q.Where("resource_type = ?", filter.ResourceType)
-		}
-		if filter.ResourceID != "" {
-			q = q.Where("resource_id = ?", filter.ResourceID)
-		}
-		if filter.Decision != "" {
-			q = q.Where("decision = ?", filter.Decision)
-		}
-		if filter.After != nil {
-			q = q.Where("created_at >= ?", sqliteTime(*filter.After))
-		}
-		if filter.Before != nil {
-			q = q.Where("created_at <= ?", sqliteTime(*filter.Before))
+// whereCheckLogs applies a QueryFilter's predicates. ListCheckLogs and
+// CountCheckLogs both build from it, so a pager's total always counts the
+// rows the list would return.
+func whereCheckLogs(q *sqlitedriver.SelectQuery, filter *checklog.QueryFilter) *sqlitedriver.SelectQuery {
+	if filter == nil {
+		return q
+	}
+	if filter.TenantID != "" {
+		q = q.Where("tenant_id = ?", filter.TenantID)
+	}
+	if filter.NamespacePath != nil {
+		q = q.Where("namespace_path = ?", *filter.NamespacePath)
+	}
+	if filter.NamespacePrefix != "" {
+		q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+			filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+	}
+	if filter.SubjectKind != "" {
+		q = q.Where("subject_kind = ?", filter.SubjectKind)
+	}
+	if filter.SubjectID != "" {
+		q = q.Where("subject_id = ?", filter.SubjectID)
+	}
+	if filter.Action != "" {
+		q = q.Where("action = ?", filter.Action)
+	}
+	if filter.ResourceType != "" {
+		q = q.Where("resource_type = ?", filter.ResourceType)
+	}
+	if filter.ResourceID != "" {
+		q = q.Where("resource_id = ?", filter.ResourceID)
+	}
+	if filter.Decision != "" {
+		q = q.Where("decision = ?", filter.Decision)
+	}
+	if filter.After != nil {
+		q = q.Where("created_at >= ?", sqliteTime(*filter.After))
+	}
+	if filter.Before != nil {
+		q = q.Where("created_at <= ?", sqliteTime(*filter.Before))
+	}
+	if filter.Cached != nil {
+		if *filter.Cached {
+			q = q.Where("cached = 1")
+		} else {
+			q = q.Where("cached = 0")
 		}
 	}
+	return q
+}
+
+func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter) ([]*checklog.Entry, error) {
+	var models []checkLogModel
+	q := whereCheckLogs(s.sdb.NewSelect(&models).OrderExpr("created_at DESC, id DESC"), filter)
 	reqLimit, reqOffset := 0, 0
 	if filter != nil {
 		reqLimit, reqOffset = filter.Limit, filter.Offset
@@ -1940,43 +1955,7 @@ func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter)
 }
 
 func (s *Store) CountCheckLogs(ctx context.Context, filter *checklog.QueryFilter) (int64, error) {
-	q := s.sdb.NewSelect((*checkLogModel)(nil))
-	if filter != nil {
-		if filter.TenantID != "" {
-			q = q.Where("tenant_id = ?", filter.TenantID)
-		}
-		if filter.NamespacePath != nil {
-			q = q.Where("namespace_path = ?", *filter.NamespacePath)
-		}
-		if filter.NamespacePrefix != "" {
-			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
-				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
-		}
-		if filter.SubjectKind != "" {
-			q = q.Where("subject_kind = ?", filter.SubjectKind)
-		}
-		if filter.SubjectID != "" {
-			q = q.Where("subject_id = ?", filter.SubjectID)
-		}
-		if filter.Action != "" {
-			q = q.Where("action = ?", filter.Action)
-		}
-		if filter.ResourceType != "" {
-			q = q.Where("resource_type = ?", filter.ResourceType)
-		}
-		if filter.ResourceID != "" {
-			q = q.Where("resource_id = ?", filter.ResourceID)
-		}
-		if filter.Decision != "" {
-			q = q.Where("decision = ?", filter.Decision)
-		}
-		if filter.After != nil {
-			q = q.Where("created_at >= ?", sqliteTime(*filter.After))
-		}
-		if filter.Before != nil {
-			q = q.Where("created_at <= ?", sqliteTime(*filter.Before))
-		}
-	}
+	q := whereCheckLogs(s.sdb.NewSelect((*checkLogModel)(nil)), filter)
 	count, err := q.Count(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("warden: count check logs: %w", err)
