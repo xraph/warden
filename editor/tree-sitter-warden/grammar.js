@@ -219,12 +219,20 @@ module.exports = grammar({
       )),
     ),
 
+    // Every keyword the Go lexer knows (dsl/token.go), as dsl.isWord
+    // accepts them. Keep this list in step with that table. A leading
+    // all_of / any_of opens a group instead (the Go parser checks that first).
     _field_segment: $ => choice(
       $.identifier,
       alias(choice(
-        'resource', 'role', 'name', 'description', 'subjects', 'actions',
-        'resources', 'metadata', 'priority', 'active', 'effect', 'relation',
-        'permission', 'policy', 'namespace', 'tenant', 'app',
+        'warden', 'config', 'tenant', 'app', 'namespace', 'import', 'resource',
+        'relation', 'permission', 'role', 'policy', 'effect', 'allow', 'deny',
+        'actions', 'resources', 'subjects', 'when', 'negate', 'grants', 'name',
+        'description', 'priority', 'active', 'is_system', 'is_default',
+        'max_members', 'metadata', 'or', 'and', 'not', 'in', 'contains',
+        'starts_with', 'ends_with', 'exists', 'ip_in_cidr', 'time_after',
+        'time_before', 'all_of', 'any_of', 'not_before', 'not_after',
+        'obligations', 'true', 'false',
       ), $.identifier),
     ),
 

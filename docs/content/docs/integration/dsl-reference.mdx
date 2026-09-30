@@ -5,6 +5,13 @@ description: Complete reference for the Warden declarative DSL — every block, 
 
 This page is the canonical reference for the `.warden` declarative configuration language. For tooling (CLI, LSP, VS Code) see [DSL & Tooling](/docs/integration/dsl-tooling). For an introduction in context see [Authorization Models](/docs/concepts/authorization-models).
 
+## What changed
+
+- **`grants = []` now revokes every grant.** A role with a `grants` clause owns its whole grant set, so an empty list leaves it with none. Before, an empty list did nothing. If you leave the `grants` clause out entirely, the role keeps whatever grants it already has in the store. `warden export` writes `grants = []` for a role with no grants, so deleting a grant from exported source revokes it.
+- **Conditions the store can't hold are refused.** `negate`, an `any_of` with more than one condition, and an empty `any_of` are now diagnostics. Before, they were stored as something else without a word: `negate` was dropped (inverting the condition) and `any_of` kept only its first condition. See [`when` blocks](#when-blocks).
+- **Names follow the store.** Any name the store accepts is valid, quoted when a bare identifier can't spell it. See [Identifier conventions](#identifier-conventions).
+- **Plan lines name the fields that changed**, for example `~ role//viewer (grants)`.
+
 ## File anatomy
 
 A `.warden` file has three layers:
@@ -213,9 +220,9 @@ role viewer {
   metadata    = {} // optional, free-form
 }
 
-role editor : viewer {       // inherits from viewer
+role editor : viewer {       // inherits viewer's grants at check time
   name   = "Editor"
-  grants += ["doc:write"]    // appends to viewer's grants
+  grants += ["doc:write"]    // same as `=`: editor's own grants
 }
 
 role admin : editor {
@@ -232,8 +239,8 @@ role admin : editor {
 | `description` | `STRING` | `""` | Free-form. |
 | `is_system` | `BOOL` | `false` | System-managed role; `--prune` will not delete it. |
 | `is_default` | `BOOL` | `false` | Marks the role as the default for new subjects. |
-| `max_members` | `INT` | `0` (no limit) | Soft limit enforced at assignment time. |
-| `grants` | `grant_list` | unmanaged | Permission names, found in the role's namespace and then at the root. A permission anywhere else, or a root one shadowed by a same-named permission in the role's namespace, is written `{ namespace = "eng", name = "deploy:run" }`. A `grants` clause sets the role's whole grant set, so `grants = []` revokes every grant; a role with no `grants` clause keeps its stored grants. |
+| `max_members` | `INT` (may be negative) | `0` (no limit) | Soft limit enforced at assignment time. |
+| `grants` | `grant_list` | unmanaged | Permission names, found in the role's namespace and then at the root. A permission anywhere else, or a root one shadowed by a same-named permission in the role's namespace, is written `{ namespace = "eng", name = "deploy:run" }`. A `grants` clause sets the role's whole grant set, so `grants = []` revokes every grant; a role with no `grants` clause keeps its stored grants. `grants += [...]` does exactly what `grants = [...]` does: it sets the role's own grants, and a parent's grants reach the role through inheritance at check time either way. Several `grants` clauses in one role block are combined into one list. `warden fmt` keeps whichever spelling you wrote. |
 | `metadata` | `map` | `{}` | Arbitrary key/value pairs. |
 
 ### Inheritance
@@ -303,48 +310,50 @@ policy "business-hours-only" {
 
 ### `when` blocks
 
-The `when` block contains zero or more conditions. By default, conditions are AND-merged: all must hold for the policy to match. Use `all_of` / `any_of` to override:
+The `when` block contains zero or more conditions, and all of them must hold for the policy to match. That's also exactly what the store keeps: a flat list of predicates that must all hold, with no OR and no negation. So you can group conditions only in ways that flatten to that list without changing what they mean:
 
 ```warden
 when {
-  // AND: all three must hold
   context.ip ip_in_cidr "10.0.0.0/8"
-  context.time time_after "09:00:00Z"
-  subject.attributes.role == "admin"
-}
-
-when {
-  any_of {
-    subject.attributes.department == "engineering"
-    subject.attributes.department == "platform"
+  all_of {                               // an AND, at any depth
+    context.time time_after "09:00:00Z"
+    subject.attributes.role == "admin"
   }
-  context.time time_after "09:00:00Z"   // AND-ed with the any_of above
+  any_of {                               // one condition: just that condition
+    subject.attributes.department == "engineering"
+  }
 }
 ```
+
+Anything else is a diagnostic at the condition, because it would be stored as something it isn't:
+
+| Refused | Why | Write instead |
+|---|---|---|
+| `... negate` | A stored condition has no negation, so it would mean the opposite. | The opposite operator: `!=`, `not in`, `not exists`. |
+| `any_of` with two or more conditions | The store has no OR; only one would be kept. | One policy per alternative. |
+| `any_of {}` | It can never hold, and an empty list always does. | Remove it. |
 
 Conditions are atomic predicates of the form:
 
 ```text
-FIELD_PATH OPERATOR LITERAL [negate]
+FIELD_PATH OPERATOR [VALUE]
 ```
+
+`VALUE` is a string, a number (`0.75`, `-3`), a boolean, or a flat list of those. `exists` and `not exists` take none. A field a bare path can't spell is written as a string: `"subject.attributes[\"team name\"]" == "core"`.
 
 `FIELD_PATH` is a dotted path with optional bracketed segments:
 
 - `subject.id`
 - `subject.attributes.department`
-- `subject.attributes["dept"]`     (bracketed for keys with non-identifier chars)
+- `subject.attributes.["dept"]`    (bracketed for keys with non-identifier chars; note the dot)
 - `resource.attributes.tier`
 - `context.ip`
 - `context.time`
 - `action.name`
 
-`negate` flips the condition's result, useful when an operator's negation isn't a separate keyword:
+Path segments may be keywords, so `resource.name` and `subject.role` are fine as written.
 
-```warden
-when {
-  context.ip ip_in_cidr "10.0.0.0/8" negate   // IP NOT in 10.0.0.0/8
-}
-```
+The grammar still parses `negate` after a condition, so an old file gets a diagnostic that points at it instead of a syntax error.
 
 ### Condition operators
 
@@ -451,7 +460,7 @@ namespace "billing" {
 | Role at namespace `N` (assignment) | Visible from `N` and all descendants. |
 | Role parent (bare slug) | Resolves at the role's own namespace, then walks ancestors. |
 | Role parent (absolute `/.../...`) | Resolves at the named namespace, no walk. |
-| Permission referenced from a role's `grants` | Resolves at the role's namespace, then walks ancestors. |
+| Permission referenced from a role's `grants` | Resolves at the role's namespace, then at the root. Nothing in between: use a qualified grant `{ namespace = "...", name = "..." }` for any other namespace. |
 | Resource type referenced from a permission shorthand | Resolves at the permission's namespace, then walks ancestors. |
 | Policy at namespace `N` | Applies to checks in `N` and all descendants. |
 | Relation tuples | Located at a namespace; do **not** cascade. |
@@ -533,19 +542,17 @@ For multi-tenant repos, the recommended layout is **one directory per tenant** w
 
 ## Identifier conventions
 
-Validator-enforced (errors unless noted):
+A name is valid when the store and the dashboard would accept it, so anything a tenant holds can be exported and applied back.
 
 | Element | Rule |
 |---|---|
-| Role slug | `^[a-z][a-z0-9-]{0,62}$` (kebab-case, ≤63 chars) |
-| Permission name | `<resource>:<action>` — resource: `^[a-z][a-z0-9_-]*$`; action: `^[a-z0-9_*-]+$` |
-| Policy name | `^[a-z][a-z0-9-]{0,62}$` |
-| Resource type name | `^[a-z][a-z0-9_]{0,62}$` (snake_case) |
-| Resource-type relation name | `^[a-z][a-z0-9_]{0,32}$` |
-| Display `name = "..."` | non-empty, ≤64 chars |
-| Namespace segment | `^[a-z][a-z0-9-]{0,62}$` |
-| Reserved namespace segments | `system`, `admin`, `_root` |
-| `is_system = true` reserved on slugs containing `system` | warning otherwise |
+| Role slug | not empty |
+| Permission | a resource and an action, both not empty; the name is free text (`warden:role:read`, with resource `warden:role`, and `warden:*` are both valid) |
+| Policy name | not empty after trimming |
+| Resource type name | not empty |
+| Namespace path | `warden.ValidateNamespacePath`: lowercase segments, with `system`, `admin` and `_root` reserved |
+
+Wherever a name is expected, a string literal can stand in for an identifier. `warden fmt` and `warden export` quote a name when a bare identifier wouldn't read back as the same name: a keyword, a leading digit, a space, a colon, a glob or an empty name.
 
 ## Spec versioning
 
@@ -605,7 +612,7 @@ role_member   = "name"        "=" STRING
               | "description" "=" STRING
               | "is_system"   "=" BOOL
               | "is_default"  "=" BOOL
-              | "max_members" "=" INT
+              | "max_members" "=" [ "-" ] INT
               | "grants"      ("=" | "+=") grant_list
               | "metadata"    "=" map_lit
 
@@ -613,7 +620,7 @@ role_member   = "name"        "=" STRING
 policy_decl   = "policy" STRING "{" { policy_member } "}"
 policy_member = "description" "=" STRING
               | "effect"      "=" ("allow" | "deny")
-              | "priority"    "=" INT
+              | "priority"    "=" [ "-" ] INT
               | "active"      "=" BOOL
               | "not_before"  "=" STRING                    (* RFC3339 *)
               | "not_after"   "=" STRING
@@ -628,11 +635,13 @@ condition     = ( field_path | STRING ) operator [ value ] [ "negate" ]
               | "all_of" "{" { condition } "}"
               | "any_of" "{" { condition } "}"
               (* value is optional only for exists / not exists, and is read
-                 only when it starts on the operator's line *)
+                 only when it starts on the operator's line. The resolver
+                 refuses "negate", an any_of with two or more conditions,
+                 and an empty any_of: the store cannot hold them. *)
 
 field_path    = WORD { ("." WORD | "." "[" STRING "]") }   (* WORD: IDENT or a keyword *)
-value         = STRING | [ "-" ] ( INT | FLOAT ) | BOOL
-              | "[" [ value { "," value } ] "]"
+value         = scalar | "[" [ scalar { "," scalar } [ "," ] ] "]"   (* lists do not nest *)
+scalar        = STRING | [ "-" ] ( INT | FLOAT ) | BOOL
 
 subject_list  = "[" [ matcher { "," matcher } [ "," ] ] "]"
 matcher       = "{" { ( "kind" | "id" | "role" ) "=" STRING [ "," ] } "}"

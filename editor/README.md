@@ -127,6 +127,11 @@ Path segments may be keywords (`resource.name`, `subject.role`). If a field
 can't be spelled as a bare path, quote the whole thing:
 `"subject.attributes[\"team name\"]" == "core"`.
 
+`negate`, `all_of` and `any_of` still parse, so the grammars should keep
+them. The resolver refuses `negate` and any `any_of` that doesn't hold exactly
+one condition, since the store keeps conditions as one AND-ed list with no
+negation and no OR.
+
 ### Namespaces
 
 Format writes root entities first, then one flat block per namespace path,
