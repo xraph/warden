@@ -71,17 +71,20 @@ type CheckRequest struct {
 // PolicyObligationFired plugin hook per obligation, so existing plugin
 // pipelines (Chronicle audit, dispatchers) get them automatically.
 type CheckResult struct {
-	Allowed     bool        `json:"allowed"`
+	Allowed bool `json:"allowed"`
+
+	// truncated is set by the ReBAC evaluator when its graph walk stopped
+	// at a depth or budget limit. Check folds it into the reason of a
+	// denial. Unexported, so it never reaches the wire. It sits beside
+	// Allowed so the two bools share one word and the struct stays at
+	// 112 bytes (see TestCheckResultSize).
+	truncated bool
+
 	Decision    Decision    `json:"decision"`
 	Reason      string      `json:"reason,omitempty"`
 	MatchedBy   []MatchInfo `json:"matched_by,omitempty"`
 	Obligations []string    `json:"obligations,omitempty"`
 	EvalTimeNs  int64       `json:"eval_time_ns"`
-
-	// truncated is set by the ReBAC evaluator when its graph walk stopped
-	// at a depth or budget limit. Check folds it into the reason of a
-	// denial. Unexported, so it never reaches the wire.
-	truncated bool
 
 	// exprErr is set by the ReBAC evaluator when the resource type's
 	// permission expression failed and was treated as no match. Explain

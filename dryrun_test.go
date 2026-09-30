@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/checklog"
@@ -184,4 +185,14 @@ func TestDryRunFiresNoPluginHooks(t *testing.T) {
 // the address of a function call result.
 func checklogFilterForTenant(tenantID string) *checklog.QueryFilter {
 	return &checklog.QueryFilter{TenantID: tenantID}
+}
+
+// TestCheckResultSize keeps CheckResult out of the 128-byte allocation class.
+// Check returns one per call, so a field that grows the struct past 112 bytes
+// costs every check an extra 16 bytes. The unexported bools sit beside
+// Allowed so they share a word; add a field and this fails.
+func TestCheckResultSize(t *testing.T) {
+	if got := unsafe.Sizeof(CheckResult{}); got > 112 {
+		t.Fatalf("unsafe.Sizeof(CheckResult{}) = %d, want <= 112", got)
+	}
 }
