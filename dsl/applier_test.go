@@ -2,6 +2,7 @@ package dsl
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -523,5 +524,63 @@ namespace "ops" {
 		if _, err := s.GetRoleBySlug(ctx, "t1", kept.ns, kept.slug); err != nil {
 			t.Errorf("role %s/%s was pruned or lost: %v", kept.ns, kept.slug, err)
 		}
+	}
+}
+
+// TestApply_DryRunGrantsResolveLikeTheRealApply: a dry run must accept and
+// refuse the same grants the real apply does, and report an unknown grant as
+// a diagnostic at the role.
+func TestApply_DryRunGrantsResolveLikeTheRealApply(t *testing.T) {
+	ctx := context.Background()
+	const eng = `namespace "eng" {
+    role lead {
+        name = "lead"
+        grants = ["doc:read"]
+    }
+}
+`
+	parse := func(t *testing.T, src string) *Program {
+		t.Helper()
+		prog, errs := Parse("g.warden", []byte(src))
+		if len(errs) > 0 {
+			t.Fatalf("parse: %v", errs)
+		}
+		return prog
+	}
+
+	for _, tc := range []struct {
+		name string
+		src  string
+		ok   bool
+	}{
+		{"a typo", "warden config 1\ntenant t1\npermission \"doc:read\" (doc : read)\nrole r {\n    grants = [\"nope:x\"]\n}\n", false},
+		{"a child role granting a root permission", "warden config 1\ntenant t1\npermission \"doc:read\" (doc : read)\n" + eng, true},
+		{"a permission in a sibling namespace", "warden config 1\ntenant t1\nnamespace \"ops\" {\n    permission \"doc:read\" (doc : read)\n}\n" + eng, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prog := parse(t, tc.src)
+
+			e1, _ := newTestEngine(t)
+			_, dryErr := Apply(ctx, e1, prog, ApplyOptions{DryRun: true})
+			e2, _ := newTestEngine(t)
+			_, realErr := Apply(ctx, e2, prog, ApplyOptions{})
+
+			if (dryErr == nil) != tc.ok || (realErr == nil) != tc.ok {
+				t.Fatalf("dry run err = %v, real apply err = %v, want success = %v", dryErr, realErr, tc.ok)
+			}
+			if tc.ok {
+				return
+			}
+			for name, err := range map[string]error{"dry run": dryErr, "real apply": realErr} {
+				var derr *DiagnosticError
+				if !errors.As(err, &derr) || len(derr.Diags) != 1 || !strings.Contains(derr.Diags[0].Msg, "grants unknown permission") {
+					t.Errorf("%s: want one unknown-grant diagnostic, got %v", name, err)
+					continue
+				}
+				if derr.Diags[0].Pos.Line == 0 {
+					t.Errorf("%s: the diagnostic has no position", name)
+				}
+			}
+		})
 	}
 }

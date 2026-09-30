@@ -558,31 +558,31 @@ func parentSlugForStorage(parent string) string {
 // `grants` lists. Resolves permission name → ID at apply time.
 //
 // When DryRun is set, neither the role nor the permissions exist in the
-// store yet (we skipped the writes), so we can only validate that every
-// grant references a name that's also being declared in the same program.
+// store yet (we skipped the writes), so a grant resolves against the
+// program's own permissions first and the store second. Both follow the
+// same lookup the real apply uses (grantResolves): the role's own
+// namespace, then the tenant root. An unknown grant is a diagnostic at the
+// role's position, so a caller can show it next to the source.
 func (a *applier) applyRolePermissions(prog *Program) error {
 	if a.dryRun {
-		// Build a set of declared permission names so we can sanity-check
-		// grant references without touching the store.
+		// Permissions the program declares stand in for the writes a dry
+		// run skipped. Keyed by namespace and name, as the real apply finds
+		// them.
 		declared := make(map[string]struct{}, len(prog.Permissions))
 		for _, p := range prog.Permissions {
-			declared[p.Name] = struct{}{}
+			declared[keyOf(p.NamespacePath, p.Name)] = struct{}{}
 		}
+		var diags []*Diagnostic
 		for _, r := range prog.Roles {
 			for _, name := range r.Grants {
-				if _, ok := declared[name]; ok {
+				if a.grantResolves(r.NamespacePath, name, declared) {
 					continue
 				}
-				if isGlob(name) {
-					continue
-				}
-				// Fall back to checking the store — the perm may already exist.
-				// Grants are looked up in the role's namespace.
-				if perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, r.NamespacePath, name); err == nil && perm != nil {
-					continue
-				}
-				return fmt.Errorf("role %s grants unknown permission %q", r.Slug, name)
+				diags = append(diags, unknownGrant(r, name))
 			}
+		}
+		if len(diags) > 0 {
+			return &DiagnosticError{Diags: diags}
 		}
 		return nil
 	}
@@ -602,16 +602,9 @@ func (a *applier) applyRolePermissions(prog *Program) error {
 		// fast at apply time rather than silently writing an orphan grant.
 		refs := make([]permission.Ref, 0, len(r.Grants))
 		for _, name := range r.Grants {
-			// Look up the permission in the role's namespace first. If not
-			// found, fall back to the root namespace ("") so that roles in a
-			// child namespace (e.g. "platform") can reference permissions
-			// declared in the shared catalog at the root level.
-			perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, r.NamespacePath, name)
-			if (err != nil || perm == nil) && r.NamespacePath != "" {
-				perm, err = a.store.GetPermissionByName(a.ctx, a.tenantID, "", name)
-			}
-			if err != nil || perm == nil {
-				return fmt.Errorf("role %s grants unknown permission %q", r.Slug, name)
+			perm := a.lookupGrant(r.NamespacePath, name)
+			if perm == nil {
+				return &DiagnosticError{Diags: []*Diagnostic{unknownGrant(r, name)}}
 			}
 			refs = append(refs, permission.Ref{
 				NamespacePath: perm.NamespacePath,
@@ -625,8 +618,38 @@ func (a *applier) applyRolePermissions(prog *Program) error {
 	return nil
 }
 
-func isGlob(name string) bool {
-	return strings.Contains(name, "*")
+// lookupGrant finds the permission a role in namespacePath grants by name.
+// It looks in the role's namespace first. If not found, it falls back to the
+// root namespace ("") so that roles in a child namespace (e.g. "platform")
+// can reference permissions declared in the shared catalog at the root
+// level. It returns nil when neither has it.
+func (a *applier) lookupGrant(namespacePath, name string) *permission.Permission {
+	perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, namespacePath, name)
+	if (err != nil || perm == nil) && namespacePath != "" {
+		perm, err = a.store.GetPermissionByName(a.ctx, a.tenantID, "", name)
+	}
+	if err != nil || perm == nil {
+		return nil
+	}
+	return perm
+}
+
+// grantResolves is lookupGrant for a dry run: a permission the program
+// declares counts as present, under the same namespace-then-root rule.
+func (a *applier) grantResolves(namespacePath, name string, declared map[string]struct{}) bool {
+	if _, ok := declared[keyOf(namespacePath, name)]; ok {
+		return true
+	}
+	if namespacePath != "" {
+		if _, ok := declared[keyOf("", name)]; ok {
+			return true
+		}
+	}
+	return a.lookupGrant(namespacePath, name) != nil
+}
+
+func unknownGrant(r *RoleDecl, name string) *Diagnostic {
+	return &Diagnostic{Pos: r.Pos, Msg: fmt.Sprintf("role %s grants unknown permission %q", r.Slug, name)}
 }
 
 // ─────────────────────────────────────────────────────────────────────────

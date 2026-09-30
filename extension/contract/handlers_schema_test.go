@@ -74,7 +74,11 @@ func (h *schemaHarness) plan(src string, prune bool) SchemaPlanResponse {
 }
 
 // seedSchemaWorld stores one of every exported kind, each with populated
-// fields, in tenant t1 at the tenant root.
+// fields, in tenant t1 at the tenant root. It is root-only because Format
+// flattens namespaces: an export writes every entity without its namespace
+// path, so a namespaced world would not plan empty against itself. The next
+// task fixes that, and this seed should gain a namespaced entity of each
+// kind when it does.
 func seedSchemaWorld(t *testing.T, s *memory.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -315,9 +319,9 @@ namespace "eng" {
 	if strings.Contains(deleted, "kept-") {
 		t.Errorf("deleted names a declared role: %v", got.Deleted)
 	}
-	// The caller's own grant role and permissions live at the root, which the
-	// source covers and does not declare, so they are listed too. Nothing
-	// outside the root and eng may be.
+	// The caller's own grant is a policy, caller-reads-warden, at the root,
+	// which the source covers and does not declare, so it is listed too.
+	// Nothing in ops may be.
 	for _, line := range got.Deleted {
 		if strings.Contains(line, "/ops/") {
 			t.Errorf("deleted names something in ops: %s", line)
@@ -643,4 +647,62 @@ func TestSchemaIntentsRefuseWithoutATenant(t *testing.T) {
 	refusal(t, err, dashcontract.CodePermissionDenied)
 	_, err = schemaPlanHandler(Deps{Engine: eng})(context.Background(), SchemaPlanInput{Source: "warden config 1\n"}, signedInNoTenant())
 	refusal(t, err, dashcontract.CodePermissionDenied)
+}
+
+func TestSchemaPlanRefusesAGrantOfAnUnknownPermissionAtTheRole(t *testing.T) {
+	s := memory.New()
+	h := newSchemaHarness(t, s)
+
+	src := "warden config 1\n\npermission \"doc:read\" (doc : read)\n\nrole typo {\n    name = \"Typo\"\n    grants = [\"doc:read\", \"nope:x\"]\n}\n"
+	for _, prune := range []bool{false, true} {
+		got := h.plan(src, prune)
+		if got.Valid || len(got.Diagnostics) != 1 {
+			t.Fatalf("prune=%v: a grant of a permission that does not exist was not a single diagnostic: %+v", prune, got)
+		}
+		d := got.Diagnostics[0]
+		if d.Line != 5 || d.Col != 1 || d.Message != `role typo grants unknown permission "nope:x"` {
+			t.Errorf("prune=%v: diagnostic = %+v, want 5:1 at the role", prune, d)
+		}
+		if len(got.Created) != 0 || len(got.Updated) != 0 || len(got.Deleted) != 0 || got.Digest != "" {
+			t.Errorf("prune=%v: an invalid plan carries a diff: %+v", prune, got)
+		}
+	}
+}
+
+func TestSchemaPlanLetsANamespacedRoleGrantARootPermission(t *testing.T) {
+	// The real apply looks in the role's namespace, then at the root. The
+	// plan must accept what the apply accepts.
+	const role = "namespace \"eng\" {\n    role lead {\n        name = \"lead\"\n        grants = [\"doc:read\"]\n    }\n}\n"
+
+	t.Run("a root permission the source declares", func(t *testing.T) {
+		h := newSchemaHarness(t, memory.New())
+		got := h.plan("warden config 1\n\npermission \"doc:read\" (doc : read)\n\n"+role, false)
+		if !got.Valid {
+			t.Fatalf("diagnostics: %+v", got.Diagnostics)
+		}
+		if strings.Join(got.Created, "|") != "+ permission//doc:read|+ role/eng/lead" {
+			t.Errorf("created = %v", got.Created)
+		}
+	})
+
+	t.Run("a root permission only the store has", func(t *testing.T) {
+		s := memory.New()
+		seedPermission(t, s, "doc:read", "doc", "read")
+		h := newSchemaHarness(t, s)
+		got := h.plan("warden config 1\n\n"+role, false)
+		if !got.Valid {
+			t.Fatalf("diagnostics: %+v", got.Diagnostics)
+		}
+		if strings.Join(got.Created, "|") != "+ role/eng/lead" {
+			t.Errorf("created = %v", got.Created)
+		}
+	})
+
+	t.Run("a permission in a sibling namespace does not count", func(t *testing.T) {
+		h := newSchemaHarness(t, memory.New())
+		got := h.plan("warden config 1\n\nnamespace \"ops\" {\n    permission \"doc:read\" (doc : read)\n}\n\n"+role, false)
+		if got.Valid || len(got.Diagnostics) != 1 || !strings.Contains(got.Diagnostics[0].Message, `grants unknown permission "doc:read"`) {
+			t.Errorf("the real apply would refuse this, so the plan must: %+v", got)
+		}
+	})
 }
