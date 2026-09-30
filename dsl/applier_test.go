@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/store/memory"
 )
@@ -582,5 +583,175 @@ func TestApply_DryRunGrantsResolveLikeTheRealApply(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestApply_GrantsClauseOwnsTheGrantSet pins what a grants clause means: a
+// role with one (even `grants = []`) gets exactly that set, and a role
+// without one keeps whatever it had.
+func TestApply_GrantsClauseOwnsTheGrantSet(t *testing.T) {
+	ctx := context.Background()
+	eng, s := newTestEngine(t)
+	apply := func(src string) *ApplyResult {
+		t.Helper()
+		prog := mustParse(t, src)
+		res, err := Apply(ctx, eng, prog, ApplyOptions{TenantID: "t1"})
+		if err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		return res
+	}
+	grantsOf := func(slug string) []string {
+		t.Helper()
+		r, err := s.GetRoleBySlug(ctx, "t1", "", slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ps, err := s.ListRolePermissions(ctx, "t1", r.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, 0, len(ps))
+		for _, p := range ps {
+			out = append(out, p.Name)
+		}
+		sort.Strings(out)
+		return out
+	}
+	const perms = "warden config 1\npermission \"doc:read\" (doc : read)\npermission \"doc:write\" (doc : write)\n"
+
+	apply(perms + "role a {\n    grants = [\"doc:read\", \"doc:write\"]\n}\nrole b {\n    grants = [\"doc:read\"]\n}\n")
+
+	res := apply(perms + "role a {\n    grants = []\n}\nrole b {\n    name = \"b\"\n}\n")
+	if got := grantsOf("a"); len(got) != 0 {
+		t.Errorf("grants = [] left %v", got)
+	}
+	if got := grantsOf("b"); len(got) != 1 || got[0] != "doc:read" {
+		t.Errorf("a role without a grants clause lost its grants: %v", got)
+	}
+	if !contains(res.Updated, "~ role//a (grants)") {
+		t.Errorf("clearing the grants is not reported: %v", res.Updated)
+	}
+	for _, line := range res.Updated {
+		if strings.HasPrefix(line, "~ role//b") {
+			t.Errorf("a role without a grants clause is reported as changed: %s", line)
+		}
+	}
+}
+
+func contains(lines []string, want string) bool {
+	for _, l := range lines {
+		if l == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestApply_QualifiedGrantsReachWhatANameCannot checks a qualified grant
+// reaches a sibling namespace's permission and a shadowed root one, and
+// that one naming nothing is a diagnostic at the grant.
+func TestApply_QualifiedGrantsReachWhatANameCannot(t *testing.T) {
+	ctx := context.Background()
+	eng, s := newTestEngine(t)
+	prog := mustParse(t, `warden config 1
+permission "doc:read" (doc : read)
+namespace "eng" {
+    permission "doc:read" (doc : read)
+    role dev {
+        grants = ["doc:read", { namespace = "", name = "doc:read" }, { namespace = "ops", name = "page:send" }]
+    }
+}
+namespace "ops" {
+    permission "page:send" (page : send)
+}
+`)
+	if _, err := Apply(ctx, eng, prog, ApplyOptions{TenantID: "t1"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	dev, err := s.GetRoleBySlug(ctx, "t1", "eng", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps, err := s.ListRolePermissions(ctx, "t1", dev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(ps))
+	for _, p := range ps {
+		got = append(got, p.NamespacePath+"/"+p.Name)
+	}
+	sort.Strings(got)
+	want := []string{"/doc:read", "eng/doc:read", "ops/page:send"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("grants = %v, want %v", got, want)
+	}
+
+	bad := mustParse(t, "warden config 1\nrole r {\n    grants = [{ namespace = \"eng\", name = \"nope:x\" }]\n}\n")
+	for _, dry := range []bool{true, false} {
+		e2, _ := newTestEngine(t)
+		_, err := Apply(ctx, e2, bad, ApplyOptions{TenantID: "t1", DryRun: dry})
+		var derr *DiagnosticError
+		if !errors.As(err, &derr) || len(derr.Diags) != 1 ||
+			!strings.Contains(derr.Diags[0].Msg, `grants unknown permission "nope:x" in namespace "eng"`) || derr.Diags[0].Pos.Line != 3 {
+			t.Errorf("dry=%t: want one positioned diagnostic at the grant, got %v", dry, err)
+		}
+	}
+}
+
+// TestApply_UnknownGrantStopsBeforeAnyWrite checks a real apply refuses an
+// unknown grant before it writes anything, as the dry run does.
+func TestApply_UnknownGrantStopsBeforeAnyWrite(t *testing.T) {
+	ctx := context.Background()
+	eng, s := newTestEngine(t)
+	prog := mustParse(t, "warden config 1\npermission \"doc:read\" (doc : read)\nrole r {\n    grants = [\"typo:x\"]\n}\n")
+	if _, err := Apply(ctx, eng, prog, ApplyOptions{TenantID: "t1"}); err == nil {
+		t.Fatal("an unknown grant applied")
+	}
+	ps, err := s.ListPermissions(ctx, &permission.ListFilter{TenantID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ps) != 0 {
+		t.Errorf("the refused apply wrote %d permissions", len(ps))
+	}
+}
+
+// TestApply_UpdateKeepsWhatTheLanguageDoesNotExpress checks an update
+// leaves metadata and the app id alone when the source cannot mean to
+// change them.
+func TestApply_UpdateKeepsWhatTheLanguageDoesNotExpress(t *testing.T) {
+	ctx := context.Background()
+	eng, s := newTestEngine(t)
+	src := "warden config 1\npermission \"doc:read\" (doc : read)\nrole r {\n    name = \"R\"\n}\npolicy \"p\" {\n    effect = allow\n}\n"
+	if _, err := Apply(ctx, eng, mustParse(t, src), ApplyOptions{TenantID: "t1", AppID: "app1"}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := s.GetRoleBySlug(ctx, "t1", "", "r")
+	r.Metadata = map[string]any{"team": "core"}
+	if err := s.UpdateRole(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := s.GetPolicyByName(ctx, "t1", "", "p")
+	p.Metadata = map[string]any{"ticket": "SEC-1"}
+	if err := s.UpdatePolicy(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+
+	edited := strings.Replace(strings.Replace(src, `"R"`, `"Renamed"`, 1), "effect = allow", "effect = deny", 1)
+	res, err := Apply(ctx, eng, mustParse(t, edited), ApplyOptions{TenantID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(res.Updated, "~ role//r (name)") || !contains(res.Updated, "~ policy//p (effect)") {
+		t.Fatalf("updated = %v", res.Updated)
+	}
+	r, _ = s.GetRoleBySlug(ctx, "t1", "", "r")
+	if r.Name != "Renamed" || r.Metadata["team"] != "core" || r.AppID != "app1" {
+		t.Errorf("role after update: name %q metadata %v app %q", r.Name, r.Metadata, r.AppID)
+	}
+	p, _ = s.GetPolicyByName(ctx, "t1", "", "p")
+	if p.Effect != "deny" || p.Metadata["ticket"] != "SEC-1" || p.AppID != "app1" {
+		t.Errorf("policy after update: effect %q metadata %v app %q", p.Effect, p.Metadata, p.AppID)
 	}
 }

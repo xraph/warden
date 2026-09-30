@@ -39,14 +39,11 @@ type schemaHarness struct {
 
 func newSchemaHarness(t *testing.T, s *memory.Store) *schemaHarness {
 	t.Helper()
-	// The caller's reads come from an ABAC policy, not from roles. This
-	// store is exported, and the dsl cannot spell the roles and permissions
-	// the dashboard's own grants need: a permission whose resource contains a
-	// colon (warden:role:read) fails the dsl's name rule, and a wildcard
-	// action (warden:*) cannot be written in the shorthand Format emits.
-	// A policy exports as valid source, and its subject list, which the dsl
-	// does not carry, is not compared by a plan. The grants test below uses
-	// the five literal role grants, because it exports nothing.
+	// The caller's reads come from an ABAC policy, not from roles, so the
+	// exported store holds no role or permission the tests below did not
+	// seed themselves. The dsl carries the policy's subject list, and the
+	// plan compares it. The grants test below uses the five literal role
+	// grants.
 	seedPolicy(t, s, "", "caller-reads-warden", func(p *policy.Policy) {
 		p.Subjects = []policy.SubjectMatch{{Kind: "user", ID: "tester"}}
 		p.Actions = []string{"read"}
@@ -74,11 +71,8 @@ func (h *schemaHarness) plan(src string, prune bool) SchemaPlanResponse {
 }
 
 // seedSchemaWorld stores one of every exported kind, each with populated
-// fields, in tenant t1 at the tenant root. It is root-only because Format
-// flattens namespaces: an export writes every entity without its namespace
-// path, so a namespaced world would not plan empty against itself. The next
-// task fixes that, and this seed should gain a namespaced entity of each
-// kind when it does.
+// fields, in tenant t1, at the tenant root and again in the eng namespace,
+// so the round trip also proves Format keeps namespaces.
 func seedSchemaWorld(t *testing.T, s *memory.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -124,6 +118,39 @@ func seedSchemaWorld(t *testing.T, s *memory.Store) {
 
 	seedTuple(t, s, "", "document", "readme", "viewer", "user", "alice")
 	seedTuple(t, s, "", "document", "readme", "viewer", "group", "eng")
+
+	// The eng namespace: one of each kind again, with a permission the
+	// dashboard's own grants use (a colon in its resource) granted to an
+	// eng role.
+	if err := s.CreatePermission(ctx, &permission.Permission{
+		TenantID: "t1", NamespacePath: "eng", Name: "warden:role:read", Resource: "warden:role", Action: "read",
+		Description: "see roles",
+	}); err != nil {
+		t.Fatalf("create eng permission: %v", err)
+	}
+	lead := &role.Role{TenantID: "t1", NamespacePath: "eng", Name: "Lead", Slug: "lead", IsDefault: true}
+	if err := s.CreateRole(ctx, lead); err != nil {
+		t.Fatalf("create eng role: %v", err)
+	}
+	if err := s.SetRolePermissions(ctx, "t1", lead.ID, []permission.Ref{
+		{NamespacePath: "eng", Name: "warden:role:read"},
+		{NamespacePath: "", Name: "document:read"},
+	}); err != nil {
+		t.Fatalf("grant eng role: %v", err)
+	}
+	seedPolicy(t, s, "eng", "eng-only", func(p *policy.Policy) {
+		p.Subjects = []policy.SubjectMatch{{Kind: "user", Role: "lead"}, {ID: "bob"}}
+		p.Actions = []string{"read"}
+		p.Resources = []string{"document"}
+	})
+	if err := s.CreateResourceType(ctx, &resourcetype.ResourceType{
+		TenantID: "t1", NamespacePath: "eng", Name: "runbook",
+		Relations:   []resourcetype.RelationDef{{Name: "owner", AllowedSubjects: []string{"user"}}},
+		Permissions: []resourcetype.PermissionDef{{Name: "edit", Expression: "owner"}},
+	}); err != nil {
+		t.Fatalf("create eng resource type: %v", err)
+	}
+	seedTuple(t, s, "eng", "runbook", "deploys", "owner", "user", "bob")
 }
 
 func TestSchemaExportRoundTripsToAnEmptyPlan(t *testing.T) {
@@ -132,7 +159,7 @@ func TestSchemaExportRoundTripsToAnEmptyPlan(t *testing.T) {
 	h := newSchemaHarness(t, s)
 
 	exported := h.export(SchemaExportInput{})
-	for _, want := range []string{"role viewer", "role editor", "document:write", "business-hours", "resource document", "viewer or owner", "relation document:readme"} {
+	for _, want := range []string{"role viewer", "role editor", "document:write", "business-hours", "resource document", "viewer or owner", "relation document:readme", `namespace "eng" {`, "role lead", `resource = "warden:role"`, `{ kind = "user", role = "lead" }`} {
 		if !strings.Contains(exported.Source, want) {
 			t.Fatalf("the export lacks %q:\n%s", want, exported.Source)
 		}
@@ -256,8 +283,8 @@ role auditor {
 	if !reflect.DeepEqual(plan.Created, []string{"+ role//auditor"}) {
 		t.Errorf("created = %v, want [+ role//auditor]", plan.Created)
 	}
-	if !reflect.DeepEqual(plan.Updated, []string{"~ permission//doc:read"}) {
-		t.Errorf("updated = %v, want [~ permission//doc:read]", plan.Updated)
+	if !reflect.DeepEqual(plan.Updated, []string{"~ permission//doc:read (description)"}) {
+		t.Errorf("updated = %v, want [~ permission//doc:read (description)]", plan.Updated)
 	}
 	if len(plan.Deleted) != 0 {
 		t.Errorf("deleted = %v, want none without prune", plan.Deleted)

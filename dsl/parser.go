@@ -83,6 +83,30 @@ func (p *parser) accept(k TokenKind) bool {
 	return false
 }
 
+// name reads a name: a bare identifier, or a string literal for a name a
+// bare identifier cannot spell (a keyword, a leading digit, a space, a
+// colon, a glob). It reports ok=false, and consumes nothing, when the
+// current token is neither.
+func (p *parser) name() (string, bool) {
+	if p.cur.Kind == IDENT || p.cur.Kind == STRING {
+		v := p.cur.Value
+		p.advance()
+		return v, true
+	}
+	return "", false
+}
+
+// isWord reports whether t is a bare word: an identifier or a keyword.
+// A field path segment may be either, so `resource.name` and
+// `subject.role` read as paths.
+func isWord(t Token) bool {
+	if t.Kind == IDENT {
+		return true
+	}
+	_, ok := keywords[t.Value]
+	return ok && t.Kind != STRING
+}
+
 func (p *parser) errf(pos Pos, format string, args ...any) {
 	p.errs = append(p.errs, &Diagnostic{Pos: pos, Msg: fmt.Sprintf(format, args...)})
 }
@@ -109,17 +133,15 @@ func (p *parser) parseProgram() *Program {
 		switch p.cur.Kind {
 		case TENANT:
 			p.advance()
-			if p.cur.Kind == IDENT {
-				prog.Tenant = p.cur.Value
-				p.advance()
+			if v, ok := p.name(); ok {
+				prog.Tenant = v
 			} else {
 				p.errf(p.cur.Pos, "expected tenant identifier after `tenant`")
 			}
 		case APP:
 			p.advance()
-			if p.cur.Kind == IDENT {
-				prog.App = p.cur.Value
-				p.advance()
+			if v, ok := p.name(); ok {
+				prog.App = v
 			} else {
 				p.errf(p.cur.Pos, "expected app identifier after `app`")
 			}
@@ -271,12 +293,12 @@ func (p *parser) parseNamespace() *NamespaceDecl {
 func (p *parser) parseResource() *ResourceDecl {
 	pos := p.cur.Pos
 	p.advance() // consume `resource`
-	if p.cur.Kind != IDENT {
+	rtName, ok := p.name()
+	if !ok {
 		p.errf(p.cur.Pos, "expected resource type name")
 		return nil
 	}
-	d := &ResourceDecl{Name: p.cur.Value, Pos: pos}
-	p.advance()
+	d := &ResourceDecl{Name: rtName, Pos: pos}
 	if !p.accept(LBRACE) {
 		p.errf(p.cur.Pos, "expected `{` to open resource block")
 		return nil
@@ -314,29 +336,34 @@ func (p *parser) parseResource() *ResourceDecl {
 func (p *parser) parseRelationDef() *RelationDef {
 	pos := p.cur.Pos
 	p.advance() // consume `relation`
-	if p.cur.Kind != IDENT {
+	relName, ok := p.name()
+	if !ok {
 		p.errf(p.cur.Pos, "expected relation name")
 		return nil
 	}
-	def := &RelationDef{Name: p.cur.Value, Pos: pos}
-	p.advance()
+	def := &RelationDef{Name: relName, Pos: pos}
 	if !p.accept(COLON) {
 		p.errf(p.cur.Pos, "expected `:` after relation name")
 		return nil
 	}
+	// A relation may allow no subject type at all (`relation x:` with
+	// nothing after the colon); the store can hold one.
+	if p.cur.Kind != IDENT && p.cur.Kind != STRING {
+		return def
+	}
 	for {
-		if p.cur.Kind != IDENT {
+		stPos := p.cur.Pos
+		typ, ok := p.name()
+		if !ok {
 			p.errf(p.cur.Pos, "expected subject type identifier")
 			return def
 		}
-		st := SubjectType{Type: p.cur.Value, Pos: p.cur.Pos}
-		p.advance()
+		st := SubjectType{Type: typ, Pos: stPos}
 		if p.accept(HASH) {
-			if p.cur.Kind != IDENT {
-				p.errf(p.cur.Pos, "expected relation name after `#`")
+			if rel, ok := p.name(); ok {
+				st.Relation = rel
 			} else {
-				st.Relation = p.cur.Value
-				p.advance()
+				p.errf(p.cur.Pos, "expected relation name after `#`")
 			}
 		}
 		def.AllowedSubjects = append(def.AllowedSubjects, st)
@@ -350,12 +377,12 @@ func (p *parser) parseRelationDef() *RelationDef {
 func (p *parser) parseResourcePermission() *ResourcePermissionDecl {
 	pos := p.cur.Pos
 	p.advance() // consume `permission`
-	if p.cur.Kind != IDENT {
+	permName, ok := p.name()
+	if !ok {
 		p.errf(p.cur.Pos, "expected permission name (identifier)")
 		return nil
 	}
-	d := &ResourcePermissionDecl{Name: p.cur.Value, Pos: pos}
-	p.advance()
+	d := &ResourcePermissionDecl{Name: permName, Pos: pos}
 	if !p.accept(ASSIGN) {
 		p.errf(p.cur.Pos, "expected `=` after permission name")
 		return d
@@ -382,20 +409,18 @@ func (p *parser) parsePermission() *PermissionDecl {
 	switch p.cur.Kind {
 	case LPAREN:
 		p.advance()
-		if p.cur.Kind != IDENT {
-			p.errf(p.cur.Pos, "expected resource type identifier")
+		if v, ok := p.name(); ok {
+			d.Resource = v
 		} else {
-			d.Resource = p.cur.Value
-			p.advance()
+			p.errf(p.cur.Pos, "expected resource type identifier")
 		}
 		if !p.accept(COLON) {
 			p.errf(p.cur.Pos, "expected `:` between resource and action")
 		}
-		if p.cur.Kind != IDENT {
-			p.errf(p.cur.Pos, "expected action identifier")
+		if v, ok := p.name(); ok {
+			d.Action = v
 		} else {
-			d.Action = p.cur.Value
-			p.advance()
+			p.errf(p.cur.Pos, "expected action identifier")
 		}
 		if !p.accept(RPAREN) {
 			p.errf(p.cur.Pos, "expected `)` to close permission shorthand")
@@ -409,9 +434,10 @@ func (p *parser) parsePermission() *PermissionDecl {
 				if !p.accept(ASSIGN) {
 					p.errf(p.cur.Pos, "expected `=` after `resource`")
 				}
-				if p.cur.Kind == IDENT {
-					d.Resource = p.cur.Value
-					p.advance()
+				if v, ok := p.name(); ok {
+					d.Resource = v
+				} else {
+					p.errf(p.cur.Pos, "expected resource identifier")
 				}
 			case IDENT:
 				key := p.cur.Value
@@ -465,12 +491,12 @@ func (p *parser) parsePermission() *PermissionDecl {
 func (p *parser) parseRole() *RoleDecl {
 	pos := p.cur.Pos
 	p.advance() // consume `role`
-	if p.cur.Kind != IDENT {
+	slug, ok := p.name()
+	if !ok {
 		p.errf(p.cur.Pos, "expected role slug")
 		return nil
 	}
-	d := &RoleDecl{Slug: p.cur.Value, Pos: pos}
-	p.advance()
+	d := &RoleDecl{Slug: slug, Pos: pos}
 
 	// Optional parent: `: <slug>` or `: /seg/seg/.../slug`.
 	if p.accept(COLON) {
@@ -493,7 +519,7 @@ func (p *parser) parseRole() *RoleDecl {
 				sb.WriteString("/")
 			}
 			d.Parent = sb.String()
-		case IDENT:
+		case IDENT, STRING:
 			d.Parent = p.cur.Value
 			p.advance()
 		default:
@@ -564,7 +590,8 @@ func (p *parser) parseRole() *RoleDecl {
 			} else if !p.accept(ASSIGN) {
 				p.errf(p.cur.Pos, "expected `=` or `+=` after grants")
 			}
-			d.Grants = append(d.Grants, p.parseStringList()...)
+			d.GrantsSet = true
+			p.parseGrantList(d)
 		default:
 			p.errf(p.cur.Pos, "unexpected token in role block: %s %q", p.cur.Kind, p.cur.Value)
 			p.advance()
@@ -625,6 +652,12 @@ func (p *parser) parsePolicy() *PolicyDecl {
 				d.Active = p.cur.Value == "true"
 				p.advance()
 			}
+		case SUBJECTS:
+			p.advance()
+			if !p.accept(ASSIGN) {
+				p.errf(p.cur.Pos, "expected `=` after subjects")
+			}
+			d.Subjects = append(d.Subjects, p.parseSubjectList()...)
 		case ACTIONS:
 			p.advance()
 			if !p.accept(ASSIGN) {
@@ -738,21 +771,35 @@ func (p *parser) parseCondition() *Condition {
 		return c
 	}
 
-	// Atomic predicate: field-path operator value [negate].
-	field := p.parseFieldPath()
+	// Atomic predicate: field-path operator value [negate]. A field a bare
+	// path cannot spell is written as a string literal.
+	var field string
+	if p.cur.Kind == STRING {
+		field = p.cur.Value
+		p.advance()
+	} else {
+		field = p.parseFieldPath()
+	}
 	if field == "" {
 		p.advance() // ensure progress
 		return nil
 	}
 
+	opLine := p.cur.Pos.Line
 	op, ok := p.parseOperator()
 	if !ok {
 		return nil
 	}
 
-	value, ok := p.parseLiteralValue()
-	if !ok {
-		return nil
+	// exists and not_exists test presence, so their value is optional. One
+	// is read only when it starts on the operator's own line, so the next
+	// condition (which may start with a quoted field) is never taken for it.
+	var value any
+	if (op != "exists" && op != "not_exists") || (p.cur.Pos.Line == opLine && startsLiteral(p.cur.Kind)) {
+		value, ok = p.parseLiteralValue()
+		if !ok {
+			return nil
+		}
 	}
 
 	c := &Condition{Field: field, Operator: op, Value: value, Pos: pos}
@@ -762,8 +809,10 @@ func (p *parser) parseCondition() *Condition {
 	return c
 }
 
+// parseFieldPath reads a dotted field path. Each segment is a bare word,
+// and a keyword counts as one (`resource.name`, `subject.role`).
 func (p *parser) parseFieldPath() string {
-	if p.cur.Kind != IDENT && p.cur.Kind != SUBJECTS && p.cur.Kind != ACTIONS && p.cur.Kind != RESOURCES {
+	if !isWord(p.cur) {
 		p.errf(p.cur.Pos, "expected field path identifier, got %s %q", p.cur.Kind, p.cur.Value)
 		return ""
 	}
@@ -771,12 +820,12 @@ func (p *parser) parseFieldPath() string {
 	sb.WriteString(p.cur.Value)
 	p.advance()
 	for p.accept(DOT) {
-		switch p.cur.Kind {
-		case IDENT:
+		switch {
+		case isWord(p.cur):
 			sb.WriteString(".")
 			sb.WriteString(p.cur.Value)
 			p.advance()
-		case LBRACKET:
+		case p.cur.Kind == LBRACKET:
 			// .[...] for map access
 			p.advance()
 			if p.cur.Kind == STRING {
@@ -792,6 +841,15 @@ func (p *parser) parseFieldPath() string {
 		}
 	}
 	return sb.String()
+}
+
+// startsLiteral reports whether a token of kind k can open a literal value.
+func startsLiteral(k TokenKind) bool {
+	switch k {
+	case STRING, INT, FLOAT, BOOL, LBRACKET, MINUS:
+		return true
+	}
+	return false
 }
 
 // parseOperator reads one of the keyword/operator-spelled comparison ops.
@@ -862,32 +920,207 @@ func (p *parser) parseOperator() (string, bool) {
 	return "", false
 }
 
-// parseLiteralValue reads a string, int, bool, or string list as the right-hand
-// side of a condition.
+// parseLiteralValue reads the right-hand side of a condition: a string, a
+// number (an int, or a float64 for a decimal, either with an optional
+// leading `-`), a bool, or a list of these. A list of strings only is a
+// []string; any other list is a []any.
 func (p *parser) parseLiteralValue() (any, bool) {
 	switch p.cur.Kind {
 	case STRING:
 		v := p.cur.Value
 		p.advance()
 		return v, true
-	case INT:
-		i, err := strconv.Atoi(p.cur.Value)
-		if err != nil {
-			p.errf(p.cur.Pos, "invalid integer literal %q: %v", p.cur.Value, err)
-			p.advance()
-			return nil, false
-		}
-		p.advance()
-		return i, true
+	case INT, FLOAT, MINUS:
+		return p.parseNumber()
 	case BOOL:
 		v := p.cur.Value == "true"
 		p.advance()
 		return v, true
 	case LBRACKET:
-		return p.parseStringList(), true
+		return p.parseValueList()
 	}
 	p.errf(p.cur.Pos, "expected literal value, got %s %q", p.cur.Kind, p.cur.Value)
 	return nil, false
+}
+
+// parseNumber reads an INT or FLOAT with an optional leading `-`.
+func (p *parser) parseNumber() (any, bool) {
+	neg := p.accept(MINUS)
+	tok := p.cur
+	switch tok.Kind {
+	case INT:
+		p.advance()
+		raw := tok.Value
+		if neg {
+			raw = "-" + raw
+		}
+		i, err := strconv.Atoi(raw)
+		if err != nil {
+			// Too large for an int: read it as the float64 it came from
+			// (Format writes a large whole float64 without a decimal point).
+			f, ferr := strconv.ParseFloat(raw, 64)
+			if ferr != nil {
+				p.errf(tok.Pos, "invalid integer literal %q: %v", raw, err)
+				return nil, false
+			}
+			return f, true
+		}
+		return i, true
+	case FLOAT:
+		p.advance()
+		f, err := strconv.ParseFloat(tok.Value, 64)
+		if err != nil {
+			p.errf(tok.Pos, "invalid number literal %q: %v", tok.Value, err)
+			return nil, false
+		}
+		if neg {
+			f = -f
+		}
+		return f, true
+	}
+	p.errf(tok.Pos, "expected a number after `-`, got %s %q", tok.Kind, tok.Value)
+	return nil, false
+}
+
+// parseValueList reads `[` literal, ... `]` for a condition value.
+func (p *parser) parseValueList() (any, bool) {
+	if !p.accept(LBRACKET) {
+		p.errf(p.cur.Pos, "expected `[` to open list")
+		return nil, false
+	}
+	var items []any
+	var strs []string
+	allStrings := true
+	for p.cur.Kind != RBRACKET && p.cur.Kind != EOF {
+		if p.cur.Kind == LBRACKET {
+			p.errf(p.cur.Pos, "a list value cannot hold another list")
+			p.advance()
+			continue
+		}
+		v, ok := p.parseLiteralValue()
+		if !ok {
+			p.advance()
+			continue
+		}
+		if str, isStr := v.(string); isStr {
+			strs = append(strs, str)
+		} else {
+			allStrings = false
+		}
+		items = append(items, v)
+		if !p.accept(COMMA) {
+			break
+		}
+	}
+	p.expect(RBRACKET)
+	if allStrings {
+		return strs, true
+	}
+	return items, true
+}
+
+// parseSubjectList reads a policy's `subjects` value: a list of matchers,
+// each `{ kind = "...", id = "...", role = "..." }` with every field
+// optional. `{}` is the empty matcher.
+func (p *parser) parseSubjectList() []*SubjectMatchDecl {
+	if !p.accept(LBRACKET) {
+		p.errf(p.cur.Pos, "expected `[` to open the subjects list")
+		return nil
+	}
+	var out []*SubjectMatchDecl
+	for p.cur.Kind != RBRACKET && p.cur.Kind != EOF {
+		if p.cur.Kind != LBRACE {
+			p.errf(p.cur.Pos, "expected a subject matcher `{ kind = ..., id = ..., role = ... }`, got %s %q", p.cur.Kind, p.cur.Value)
+			p.advance()
+			continue
+		}
+		m := &SubjectMatchDecl{Pos: p.cur.Pos}
+		fields := p.parseObject("subject matcher", "kind", "id", "role")
+		m.Kind, m.ID, m.Role = fields["kind"], fields["id"], fields["role"]
+		out = append(out, m)
+		if !p.accept(COMMA) {
+			break
+		}
+	}
+	p.expect(RBRACKET)
+	return out
+}
+
+// parseGrantList reads a role's `grants` value: a list of permission names
+// and qualified grants `{ namespace = "...", name = "..." }`.
+func (p *parser) parseGrantList(d *RoleDecl) {
+	if !p.accept(LBRACKET) {
+		p.errf(p.cur.Pos, "expected `[` to open string list")
+		return
+	}
+	for p.cur.Kind != RBRACKET && p.cur.Kind != EOF {
+		switch p.cur.Kind {
+		case STRING:
+			d.Grants = append(d.Grants, p.cur.Value)
+			p.advance()
+		case LBRACE:
+			pos := p.cur.Pos
+			fields := p.parseObject("qualified grant", "namespace", "name")
+			if _, ok := fields["name"]; !ok {
+				p.errf(pos, "a qualified grant needs a name")
+			}
+			d.QualifiedGrants = append(d.QualifiedGrants, &GrantRef{
+				NamespacePath: fields["namespace"], Name: fields["name"], Pos: pos,
+			})
+		default:
+			p.errf(p.cur.Pos, "expected string literal or a qualified grant `{ namespace = ..., name = ... }`")
+			p.advance()
+			continue
+		}
+		if !p.accept(COMMA) {
+			break
+		}
+	}
+	p.expect(RBRACKET)
+}
+
+// parseObject reads `{ key = "value", ... }` where every value is a string
+// literal and every key is one of keys (bare, and a keyword may be one).
+// The commas between fields are optional. It returns the fields present.
+func (p *parser) parseObject(what string, keys ...string) map[string]string {
+	fields := make(map[string]string)
+	p.expect(LBRACE)
+	for p.cur.Kind != RBRACE && p.cur.Kind != EOF {
+		keyTok := p.cur
+		if !isWord(keyTok) {
+			p.errf(keyTok.Pos, "expected a %s field (%s), got %s %q", what, strings.Join(keys, ", "), keyTok.Kind, keyTok.Value)
+			p.advance()
+			continue
+		}
+		p.advance()
+		known := false
+		for _, k := range keys {
+			if k == keyTok.Value {
+				known = true
+				break
+			}
+		}
+		if !known {
+			p.errf(keyTok.Pos, "unknown %s field %q: expected %s", what, keyTok.Value, strings.Join(keys, ", "))
+		}
+		if !p.accept(ASSIGN) {
+			p.errf(p.cur.Pos, "expected `=` after %q", keyTok.Value)
+		}
+		if p.cur.Kind != STRING {
+			p.errf(p.cur.Pos, "expected a string after %s =", keyTok.Value)
+		} else {
+			if _, dup := fields[keyTok.Value]; dup {
+				p.errf(keyTok.Pos, "%s field %q is given twice", what, keyTok.Value)
+			}
+			if known {
+				fields[keyTok.Value] = p.cur.Value
+			}
+			p.advance()
+		}
+		p.accept(COMMA)
+	}
+	p.expect(RBRACE)
+	return fields
 }
 
 func (p *parser) parseStringList() []string {
@@ -916,53 +1149,41 @@ func (p *parser) parseTopLevelRelation() *RelationDecl {
 	pos := p.cur.Pos
 	p.advance() // consume `relation`
 	d := &RelationDecl{Pos: pos}
-	if p.cur.Kind != IDENT {
+	var ok bool
+	if d.ObjectType, ok = p.name(); !ok {
 		p.errf(p.cur.Pos, "expected object type")
 		return nil
 	}
-	d.ObjectType = p.cur.Value
-	p.advance()
 	if !p.accept(COLON) {
 		p.errf(p.cur.Pos, "expected `:` after object type")
 		return d
 	}
-	if p.cur.Kind != IDENT {
+	if d.ObjectID, ok = p.name(); !ok {
 		p.errf(p.cur.Pos, "expected object id")
 		return d
 	}
-	d.ObjectID = p.cur.Value
-	p.advance()
-	if p.cur.Kind != IDENT {
+	if d.Relation, ok = p.name(); !ok {
 		p.errf(p.cur.Pos, "expected relation name")
 		return d
 	}
-	d.Relation = p.cur.Value
-	p.advance()
 	if !p.accept(ASSIGN) {
 		p.errf(p.cur.Pos, "expected `=` after relation name")
 		return d
 	}
-	if p.cur.Kind != IDENT {
+	if d.SubjectType, ok = p.name(); !ok {
 		p.errf(p.cur.Pos, "expected subject type")
 		return d
 	}
-	d.SubjectType = p.cur.Value
-	p.advance()
 	if !p.accept(COLON) {
 		p.errf(p.cur.Pos, "expected `:` after subject type")
 		return d
 	}
-	if p.cur.Kind != IDENT {
+	if d.SubjectID, ok = p.name(); !ok {
 		p.errf(p.cur.Pos, "expected subject id")
 		return d
 	}
-	d.SubjectID = p.cur.Value
-	p.advance()
 	if p.accept(HASH) {
-		if p.cur.Kind == IDENT {
-			d.SubjectRelation = p.cur.Value
-			p.advance()
-		} else {
+		if d.SubjectRelation, ok = p.name(); !ok {
 			p.errf(p.cur.Pos, "expected relation name after `#`")
 		}
 	}

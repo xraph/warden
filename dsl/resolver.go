@@ -17,7 +17,8 @@ import (
 //   - resource-type permission expressions reference declared relations
 //   - traversal expressions hop through declared relation targets
 //   - condition operators are valid
-//   - identifier conventions (slug regex, name regex, namespace path)
+//   - identifier conventions (see conventions.go: names are whatever the
+//     store and the dashboard accept; namespace paths are validated)
 func Resolve(prog *Program) []*Diagnostic {
 	r := &resolver{
 		prog:        prog,
@@ -89,24 +90,32 @@ func (r *resolver) indexAndCheckDuplicates() {
 
 func (r *resolver) checkConventions() {
 	for _, role := range r.prog.Roles {
-		if !slugRegex.MatchString(role.Slug) {
-			r.errf(role.Pos, "role slug %q must match %s", role.Slug, slugRegex.String())
+		if !validSlug(role.Slug) {
+			r.errf(role.Pos, "role slug %q must not be empty", role.Slug)
 		}
 		if err := warden.ValidateNamespacePath(role.NamespacePath, 0); err != nil {
 			r.errf(role.Pos, "%v", err)
 		}
+		for _, g := range role.QualifiedGrants {
+			if g.Name == "" {
+				r.errf(g.Pos, "role %q has a qualified grant with no permission name", role.Slug)
+			}
+			if err := warden.ValidateNamespacePath(g.NamespacePath, 0); err != nil {
+				r.errf(g.Pos, "%v", err)
+			}
+		}
 	}
 	for _, perm := range r.prog.Permissions {
-		if !permNameRegex.MatchString(perm.Name) {
-			r.errf(perm.Pos, "permission name %q must be `<resource>:<action>` matching %s", perm.Name, permNameRegex.String())
+		if !validPermission(perm) {
+			r.errf(perm.Pos, "permission name %q must be `<resource>:<action>`, with a resource and an action that are not empty", perm.Name)
 		}
 		if err := warden.ValidateNamespacePath(perm.NamespacePath, 0); err != nil {
 			r.errf(perm.Pos, "%v", err)
 		}
 	}
 	for _, pol := range r.prog.Policies {
-		if !slugRegex.MatchString(pol.Name) {
-			r.errf(pol.Pos, "policy name %q must match %s", pol.Name, slugRegex.String())
+		if !validPolicyName(pol.Name) {
+			r.errf(pol.Pos, "policy name %q must not be empty", pol.Name)
 		}
 		if pol.Effect == "" {
 			r.errf(pol.Pos, "policy %q is missing `effect`", pol.Name)
@@ -120,8 +129,11 @@ func (r *resolver) checkConventions() {
 		}
 	}
 	for _, rt := range r.prog.ResourceTypes {
-		if !rtNameRegex.MatchString(rt.Name) {
-			r.errf(rt.Pos, "resource type %q must match %s", rt.Name, rtNameRegex.String())
+		if !validResourceTypeName(rt.Name) {
+			r.errf(rt.Pos, "resource type name %q must not be empty", rt.Name)
+		}
+		if err := warden.ValidateNamespacePath(rt.NamespacePath, 0); err != nil {
+			r.errf(rt.Pos, "%v", err)
 		}
 	}
 }
@@ -224,7 +236,10 @@ func (r *resolver) checkExpressions() {
 		for _, rel := range rt.Relations {
 			// The target type for traversal is the FIRST allowed subject's type.
 			// Multiple subjects are valid for direct grants but traversal needs
-			// a single concrete type; we conservatively use the first.
+			// a single concrete type; we conservatively use the first. A
+			// relation that allows no subject type is still declared, so a
+			// bare reference to it resolves; it has no target to traverse.
+			targets[rel.Name] = ""
 			if len(rel.AllowedSubjects) > 0 {
 				targets[rel.Name] = rel.AllowedSubjects[0].Type
 			}

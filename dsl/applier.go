@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -52,7 +53,7 @@ type ApplyOptions struct {
 // ApplyResult summarizes the outcome of an apply.
 type ApplyResult struct {
 	Created []string // human-readable summary lines: "+ kind/name"
-	Updated []string // "~ kind/name (field: old → new)"
+	Updated []string // "~ kind/ns/name (field, field)": the fields that differ
 	Deleted []string // "- kind/name"
 	NoOps   int      // count of unchanged entries
 }
@@ -90,6 +91,7 @@ func Apply(ctx context.Context, eng *warden.Engine, prog *Program, opts ApplyOpt
 		dryRun:   opts.DryRun,
 		result:   &ApplyResult{},
 		covered:  coveredNamespaces(prog),
+		declared: declaredPermissions(prog),
 	}
 	if err := a.run(prog); err != nil {
 		return nil, err
@@ -121,6 +123,7 @@ type applier struct {
 		DeletePermission(ctx context.Context, tenantID string, permID id.PermissionID) error
 		ListPermissions(ctx context.Context, filter *permission.ListFilter) ([]*permission.Permission, error)
 		SetRolePermissions(ctx context.Context, tenantID string, roleID id.RoleID, refs []permission.Ref) error
+		ListRolePermissions(ctx context.Context, tenantID string, roleID id.RoleID) ([]*permission.Permission, error)
 		// Policies
 		CreatePolicy(ctx context.Context, p *policy.Policy) error
 		GetPolicyByName(ctx context.Context, tenantID, namespacePath, name string) (*policy.Policy, error)
@@ -147,6 +150,10 @@ type applier struct {
 	// covered is the set of namespace paths the program declares something
 	// in. Prune only considers entities whose namespace is in it.
 	covered map[string]struct{}
+
+	// declared is the set of permissions the program declares, keyed by
+	// namespace and name. Grants resolve against it and the store.
+	declared map[string]struct{}
 
 	result *ApplyResult
 }
@@ -215,6 +222,11 @@ func (a *applier) emitAudit(action, entityID string, entity, before any) {
 }
 
 func (a *applier) run(prog *Program) error {
+	// Grants are checked before anything is written, so an unknown grant
+	// stops a real apply as early as it stops a dry run.
+	if err := a.checkGrants(prog); err != nil {
+		return err
+	}
 	if err := a.applyResourceTypes(prog); err != nil {
 		return err
 	}
@@ -269,11 +281,14 @@ func (a *applier) applyResourceTypes(prog *Program) error {
 		desired.ID = existing.ID
 		desired.CreatedAt = existing.CreatedAt
 		desired.CreatedBy = existing.CreatedBy
-		if rtEquivalent(existing, desired) {
+		desired.Metadata = existing.Metadata
+		desired.AppID = a.appFor(existing.AppID)
+		changed := rtChanges(existing, desired)
+		if len(changed) == 0 {
 			a.result.NoOps++
 			continue
 		}
-		a.result.Updated = append(a.result.Updated, fmt.Sprintf("~ resource_type/%s/%s", rt.NamespacePath, rt.Name))
+		a.result.Updated = append(a.result.Updated, updateLine("resource_type", rt.NamespacePath, rt.Name, changed))
 		if !a.dryRun {
 			if err := a.store.UpdateResourceType(a.ctx, desired); err != nil {
 				return fmt.Errorf("update resource type %s: %w", rt.Name, err)
@@ -316,27 +331,81 @@ func rtPermissions(rt *ResourceDecl) []resourcetype.PermissionDef {
 	return out
 }
 
-func rtEquivalent(a, b *resourcetype.ResourceType) bool {
+// rtChanges lists the fields of a resource type that differ, in the words
+// the language uses for them. Expressions compare in canonical form: the
+// store keeps an expression as it was typed, the language keeps its
+// meaning, so `(viewer or owner)` and `viewer or owner` are the same.
+func rtChanges(a, b *resourcetype.ResourceType) []string {
+	var out []string
 	if a.Description != b.Description {
+		out = append(out, "description")
+	}
+	if a.AppID != b.AppID {
+		out = append(out, "app")
+	}
+	relationsSame := len(a.Relations) == len(b.Relations)
+	for i := 0; relationsSame && i < len(a.Relations); i++ {
+		if a.Relations[i].Name != b.Relations[i].Name ||
+			!stringsEqual(a.Relations[i].AllowedSubjects, b.Relations[i].AllowedSubjects) {
+			relationsSame = false
+		}
+	}
+	if !relationsSame {
+		out = append(out, "relations")
+	}
+	permsSame := len(a.Permissions) == len(b.Permissions)
+	for i := 0; permsSame && i < len(a.Permissions); i++ {
+		if a.Permissions[i].Name != b.Permissions[i].Name ||
+			canonicalExpr(a.Permissions[i].Expression) != canonicalExpr(b.Permissions[i].Expression) {
+			permsSame = false
+		}
+	}
+	if !permsSame {
+		out = append(out, "permissions")
+	}
+	return out
+}
+
+// canonicalExpr is an expression's text as FormatExpr writes it, or the
+// text unchanged when it does not parse.
+func canonicalExpr(src string) string {
+	expr, diags := CompileExpr("<stored>", src)
+	if len(diags) > 0 {
+		return src
+	}
+	return FormatExpr(expr)
+}
+
+// stringsEqual compares two lists element by element; nil and empty are
+// the same list.
+func stringsEqual(a, b []string) bool {
+	if len(a) != len(b) {
 		return false
 	}
-	if len(a.Relations) != len(b.Relations) || len(a.Permissions) != len(b.Permissions) {
-		return false
-	}
-	for i := range a.Relations {
-		if a.Relations[i].Name != b.Relations[i].Name {
-			return false
-		}
-		if strings.Join(a.Relations[i].AllowedSubjects, ",") != strings.Join(b.Relations[i].AllowedSubjects, ",") {
-			return false
-		}
-	}
-	for i := range a.Permissions {
-		if a.Permissions[i].Name != b.Permissions[i].Name || a.Permissions[i].Expression != b.Permissions[i].Expression {
+	for i := range a {
+		if a[i] != b[i] {
 			return false
 		}
 	}
 	return true
+}
+
+// updateLine is one `~` line: the entity and the fields that differ.
+func updateLine(kind, ns, name string, fields []string) string {
+	return fmt.Sprintf("~ %s/%s/%s (%s)", kind, ns, name, strings.Join(fields, ", "))
+}
+
+// appFor is the app id an update writes: the apply's own when it names
+// one, and otherwise the stored one, so an apply that names no app leaves
+// it alone.
+//
+// Metadata is carried over on every update for the same reason: the
+// language has no syntax for it, so a source cannot mean to change it.
+func (a *applier) appFor(stored string) string {
+	if a.appID == "" {
+		return stored
+	}
+	return a.appID
 }
 
 func (a *applier) pruneResourceTypes(declared map[string]struct{}) error {
@@ -403,15 +472,29 @@ func (a *applier) applyPermissions(prog *Program) error {
 		desired.ID = existing.ID
 		desired.CreatedAt = existing.CreatedAt
 		desired.CreatedBy = existing.CreatedBy
-		if existing.Description == desired.Description &&
-			existing.Resource == desired.Resource &&
-			existing.Action == desired.Action &&
-			existing.IsSystem == desired.IsSystem &&
-			existing.NamespacePath == desired.NamespacePath {
+		desired.Metadata = existing.Metadata
+		desired.AppID = a.appFor(existing.AppID)
+		var changed []string
+		if existing.Resource != desired.Resource {
+			changed = append(changed, "resource")
+		}
+		if existing.Action != desired.Action {
+			changed = append(changed, "action")
+		}
+		if existing.Description != desired.Description {
+			changed = append(changed, "description")
+		}
+		if existing.IsSystem != desired.IsSystem {
+			changed = append(changed, "is_system")
+		}
+		if existing.AppID != desired.AppID {
+			changed = append(changed, "app")
+		}
+		if len(changed) == 0 {
 			a.result.NoOps++
 			continue
 		}
-		a.result.Updated = append(a.result.Updated, fmt.Sprintf("~ permission/%s/%s", p.NamespacePath, p.Name))
+		a.result.Updated = append(a.result.Updated, updateLine("permission", p.NamespacePath, p.Name, changed))
 		if !a.dryRun {
 			if err := a.store.UpdatePermission(a.ctx, desired); err != nil {
 				return fmt.Errorf("update permission %s: %w", p.Name, err)
@@ -490,18 +573,25 @@ func (a *applier) applyRoles(prog *Program) error {
 		desired.ID = existing.ID
 		desired.CreatedAt = existing.CreatedAt
 		desired.CreatedBy = existing.CreatedBy
-		if existing.Name == desired.Name &&
-			existing.Description == desired.Description &&
-			existing.IsSystem == desired.IsSystem &&
-			existing.IsDefault == desired.IsDefault &&
-			existing.ParentSlug == desired.ParentSlug &&
-			existing.MaxMembers == desired.MaxMembers &&
-			existing.NamespacePath == desired.NamespacePath {
+		desired.Metadata = existing.Metadata
+		desired.AppID = a.appFor(existing.AppID)
+		changed := roleChanges(existing, desired)
+		roleFieldsChanged := len(changed) > 0
+		grantsChanged, err := a.grantsDiffer(r, existing)
+		if err != nil {
+			return err
+		}
+		if grantsChanged {
+			changed = append(changed, "grants")
+		}
+		if len(changed) == 0 {
 			a.result.NoOps++
 			continue
 		}
-		a.result.Updated = append(a.result.Updated, fmt.Sprintf("~ role/%s/%s", r.NamespacePath, r.Slug))
-		if !a.dryRun {
+		a.result.Updated = append(a.result.Updated, updateLine("role", r.NamespacePath, r.Slug, changed))
+		// A grant-only change is written by applyRolePermissions; the role
+		// row itself is left alone.
+		if !a.dryRun && roleFieldsChanged {
 			if err := a.store.UpdateRole(a.ctx, desired); err != nil {
 				return fmt.Errorf("update role %s: %w", r.Slug, err)
 			}
@@ -539,6 +629,65 @@ func (a *applier) applyRoles(prog *Program) error {
 	return nil
 }
 
+// roleChanges lists the role's own fields that differ, grants aside.
+func roleChanges(a, b *role.Role) []string {
+	var out []string
+	if a.Name != b.Name {
+		out = append(out, "name")
+	}
+	if a.Description != b.Description {
+		out = append(out, "description")
+	}
+	if a.IsSystem != b.IsSystem {
+		out = append(out, "is_system")
+	}
+	if a.IsDefault != b.IsDefault {
+		out = append(out, "is_default")
+	}
+	if a.MaxMembers != b.MaxMembers {
+		out = append(out, "max_members")
+	}
+	if a.ParentSlug != b.ParentSlug {
+		out = append(out, "parent")
+	}
+	if a.AppID != b.AppID {
+		out = append(out, "app")
+	}
+	return out
+}
+
+// grantsDiffer reports whether applying r would change the stored role's
+// grant set. A role without a grants clause leaves its grants alone, so it
+// never differs.
+func (a *applier) grantsDiffer(r *RoleDecl, stored *role.Role) (bool, error) {
+	if !grantsManaged(r) {
+		return false, nil
+	}
+	current, err := a.store.ListRolePermissions(a.ctx, a.tenantID, stored.ID)
+	if err != nil {
+		return false, fmt.Errorf("list grants for role %s: %w", r.Slug, err)
+	}
+	have := make(map[string]struct{}, len(current))
+	for _, p := range current {
+		have[keyOf(p.NamespacePath, p.Name)] = struct{}{}
+	}
+	// Unknown grants were refused by checkGrants before anything ran.
+	refs, _ := a.desiredGrants(r)
+	want := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		want[keyOf(ref.NamespacePath, ref.Name)] = struct{}{}
+	}
+	if len(have) != len(want) {
+		return true, nil
+	}
+	for k := range want {
+		if _, ok := have[k]; !ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // parentSlugForStorage strips the absolute-path leading "/" from a parent
 // reference. Local-form refs are stored as-is since the storage column only
 // holds the slug, not the namespace.
@@ -554,41 +703,112 @@ func parentSlugForStorage(parent string) string {
 	return rest[idx+1:]
 }
 
-// applyRolePermissions sets each role's permission attachments from the DSL's
-// `grants` lists. Resolves permission name → ID at apply time.
-//
-// When DryRun is set, neither the role nor the permissions exist in the
-// store yet (we skipped the writes), so a grant resolves against the
-// program's own permissions first and the store second. Both follow the
-// same lookup the real apply uses (grantResolves): the role's own
-// namespace, then the tenant root. An unknown grant is a diagnostic at the
-// role's position, so a caller can show it next to the source.
+// grantsManaged reports whether the program sets the role's grants. A
+// role with a `grants` clause (even `grants = []`) owns its whole grant
+// set; a role without one leaves the stored grants alone.
+func grantsManaged(r *RoleDecl) bool {
+	return r.GrantsSet || r.GrantsAppend || len(r.Grants) > 0 || len(r.QualifiedGrants) > 0
+}
+
+// declaredPermissions indexes the program's permissions by namespace and
+// name.
+func declaredPermissions(prog *Program) map[string]struct{} {
+	out := make(map[string]struct{}, len(prog.Permissions))
+	for _, p := range prog.Permissions {
+		out[keyOf(p.NamespacePath, p.Name)] = struct{}{}
+	}
+	return out
+}
+
+// permExists reports whether a permission will exist once this apply has
+// written its permissions: the program declares it, or the store holds it
+// and prune will not delete it. A dry run and a real apply answer the same,
+// because neither depends on the permission writes having happened.
+func (a *applier) permExists(ns, name string) bool {
+	if _, ok := a.declared[keyOf(ns, name)]; ok {
+		return true
+	}
+	if a.prune && a.covers(ns) {
+		// Undeclared in a covered namespace: prune deletes it.
+		return false
+	}
+	perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, ns, name)
+	return err == nil && perm != nil
+}
+
+// resolveGrant finds the permission a bare grant names. It looks in the
+// role's namespace first. If not found, it falls back to the root namespace
+// ("") so that roles in a child namespace (e.g. "platform") can reference
+// permissions declared in the shared catalog at the root level. Only these
+// two are searched; a permission anywhere else needs a qualified grant.
+func (a *applier) resolveGrant(roleNS, name string) (permission.Ref, bool) {
+	if a.permExists(roleNS, name) {
+		return permission.Ref{NamespacePath: roleNS, Name: name}, true
+	}
+	if roleNS != "" && a.permExists("", name) {
+		return permission.Ref{NamespacePath: "", Name: name}, true
+	}
+	return permission.Ref{}, false
+}
+
+// desiredGrants resolves a role's grants to the permission refs the apply
+// writes, with one diagnostic per grant that names no permission.
+func (a *applier) desiredGrants(r *RoleDecl) ([]permission.Ref, []*Diagnostic) {
+	var diags []*Diagnostic
+	refs := make([]permission.Ref, 0, len(r.Grants)+len(r.QualifiedGrants))
+	seen := make(map[string]struct{})
+	add := func(ref permission.Ref) {
+		k := keyOf(ref.NamespacePath, ref.Name)
+		if _, dup := seen[k]; dup {
+			return
+		}
+		seen[k] = struct{}{}
+		refs = append(refs, ref)
+	}
+	for _, name := range r.Grants {
+		ref, ok := a.resolveGrant(r.NamespacePath, name)
+		if !ok {
+			diags = append(diags, unknownGrant(r, name))
+			continue
+		}
+		add(ref)
+	}
+	for _, g := range r.QualifiedGrants {
+		if !a.permExists(g.NamespacePath, g.Name) {
+			diags = append(diags, &Diagnostic{Pos: g.Pos, Msg: fmt.Sprintf(
+				"role %s grants unknown permission %q in namespace %q", r.Slug, g.Name, g.NamespacePath)})
+			continue
+		}
+		add(permission.Ref{NamespacePath: g.NamespacePath, Name: g.Name})
+	}
+	return refs, diags
+}
+
+// checkGrants refuses a program with a grant that names no permission, as
+// a diagnostic at the role, before the apply writes anything. A dry run and
+// a real apply report every bad grant the same way.
+func (a *applier) checkGrants(prog *Program) error {
+	var diags []*Diagnostic
+	for _, r := range prog.Roles {
+		_, ds := a.desiredGrants(r)
+		diags = append(diags, ds...)
+	}
+	if len(diags) > 0 {
+		return &DiagnosticError{Diags: diags}
+	}
+	return nil
+}
+
+// applyRolePermissions sets each role's grant set from its `grants`
+// clause. Grants were resolved and checked by checkGrants; a dry run
+// writes nothing, and the changes it would make are already reported on
+// the role's `~` line.
 func (a *applier) applyRolePermissions(prog *Program) error {
 	if a.dryRun {
-		// Permissions the program declares stand in for the writes a dry
-		// run skipped. Keyed by namespace and name, as the real apply finds
-		// them.
-		declared := make(map[string]struct{}, len(prog.Permissions))
-		for _, p := range prog.Permissions {
-			declared[keyOf(p.NamespacePath, p.Name)] = struct{}{}
-		}
-		var diags []*Diagnostic
-		for _, r := range prog.Roles {
-			for _, name := range r.Grants {
-				if a.grantResolves(r.NamespacePath, name, declared) {
-					continue
-				}
-				diags = append(diags, unknownGrant(r, name))
-			}
-		}
-		if len(diags) > 0 {
-			return &DiagnosticError{Diags: diags}
-		}
 		return nil
 	}
-
 	for _, r := range prog.Roles {
-		if len(r.Grants) == 0 && !r.GrantsAppend {
+		if !grantsManaged(r) {
 			continue
 		}
 		// Re-fetch the role to get its ID (just-created or pre-existing).
@@ -596,56 +816,15 @@ func (a *applier) applyRolePermissions(prog *Program) error {
 		if err != nil || stored == nil {
 			return fmt.Errorf("role %s not found after apply: %w", r.Slug, err)
 		}
-		// Phase A.5: junction is keyed by natural keys, so the applier no
-		// longer needs to resolve perm name → typeid. We still call
-		// GetPermissionByName as an existence check so a missing perm fails
-		// fast at apply time rather than silently writing an orphan grant.
-		refs := make([]permission.Ref, 0, len(r.Grants))
-		for _, name := range r.Grants {
-			perm := a.lookupGrant(r.NamespacePath, name)
-			if perm == nil {
-				return &DiagnosticError{Diags: []*Diagnostic{unknownGrant(r, name)}}
-			}
-			refs = append(refs, permission.Ref{
-				NamespacePath: perm.NamespacePath,
-				Name:          perm.Name,
-			})
+		refs, diags := a.desiredGrants(r)
+		if len(diags) > 0 {
+			return &DiagnosticError{Diags: diags}
 		}
 		if err := a.store.SetRolePermissions(a.ctx, a.tenantID, stored.ID, refs); err != nil {
 			return fmt.Errorf("set permissions for role %s: %w", r.Slug, err)
 		}
 	}
 	return nil
-}
-
-// lookupGrant finds the permission a role in namespacePath grants by name.
-// It looks in the role's namespace first. If not found, it falls back to the
-// root namespace ("") so that roles in a child namespace (e.g. "platform")
-// can reference permissions declared in the shared catalog at the root
-// level. It returns nil when neither has it.
-func (a *applier) lookupGrant(namespacePath, name string) *permission.Permission {
-	perm, err := a.store.GetPermissionByName(a.ctx, a.tenantID, namespacePath, name)
-	if (err != nil || perm == nil) && namespacePath != "" {
-		perm, err = a.store.GetPermissionByName(a.ctx, a.tenantID, "", name)
-	}
-	if err != nil || perm == nil {
-		return nil
-	}
-	return perm
-}
-
-// grantResolves is lookupGrant for a dry run: a permission the program
-// declares counts as present, under the same namespace-then-root rule.
-func (a *applier) grantResolves(namespacePath, name string, declared map[string]struct{}) bool {
-	if _, ok := declared[keyOf(namespacePath, name)]; ok {
-		return true
-	}
-	if namespacePath != "" {
-		if _, ok := declared[keyOf("", name)]; ok {
-			return true
-		}
-	}
-	return a.lookupGrant(namespacePath, name) != nil
 }
 
 func unknownGrant(r *RoleDecl, name string) *Diagnostic {
@@ -673,6 +852,7 @@ func (a *applier) applyPolicies(prog *Program) error {
 			NotAfter:      p.NotAfter,
 			Obligations:   p.Obligations,
 			Version:       1,
+			Subjects:      policySubjects(p.Subjects),
 			Actions:       p.Actions,
 			Resources:     p.Resources,
 			Conditions:    flattenConditions(p.Conditions),
@@ -697,11 +877,14 @@ func (a *applier) applyPolicies(prog *Program) error {
 		desired.CreatedAt = existing.CreatedAt
 		desired.CreatedBy = existing.CreatedBy
 		desired.Version = existing.Version + 1
-		if policyEquivalent(existing, desired) {
+		desired.Metadata = existing.Metadata
+		desired.AppID = a.appFor(existing.AppID)
+		changed := policyChanges(existing, desired)
+		if len(changed) == 0 {
 			a.result.NoOps++
 			continue
 		}
-		a.result.Updated = append(a.result.Updated, fmt.Sprintf("~ policy/%s/%s", p.NamespacePath, p.Name))
+		a.result.Updated = append(a.result.Updated, updateLine("policy", p.NamespacePath, p.Name, changed))
 		if !a.dryRun {
 			if err := a.store.UpdatePolicy(a.ctx, desired); err != nil {
 				return fmt.Errorf("update policy %s: %w", p.Name, err)
@@ -737,41 +920,137 @@ func (a *applier) applyPolicies(prog *Program) error {
 	return nil
 }
 
-func policyEquivalent(a, b *policy.Policy) bool {
-	if a.NamespacePath != b.NamespacePath {
+// policySubjects converts a policy's subject matchers for storage.
+func policySubjects(in []*SubjectMatchDecl) []policy.SubjectMatch {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]policy.SubjectMatch, 0, len(in))
+	for _, m := range in {
+		out = append(out, policy.SubjectMatch{Kind: m.Kind, ID: m.ID, Role: m.Role})
+	}
+	return out
+}
+
+// policyChanges lists the fields of a policy that differ, in the words the
+// language uses for them.
+func policyChanges(a, b *policy.Policy) []string {
+	var out []string
+	if a.Description != b.Description {
+		out = append(out, "description")
+	}
+	if a.Effect != b.Effect {
+		out = append(out, "effect")
+	}
+	if a.Priority != b.Priority {
+		out = append(out, "priority")
+	}
+	if a.IsActive != b.IsActive {
+		out = append(out, "active")
+	}
+	if !timePtrEqual(a.NotBefore, b.NotBefore) {
+		out = append(out, "not_before")
+	}
+	if !timePtrEqual(a.NotAfter, b.NotAfter) {
+		out = append(out, "not_after")
+	}
+	if !stringsEqual(a.Obligations, b.Obligations) {
+		out = append(out, "obligations")
+	}
+	if !subjectsEqual(a.Subjects, b.Subjects) {
+		out = append(out, "subjects")
+	}
+	if !stringsEqual(a.Actions, b.Actions) {
+		out = append(out, "actions")
+	}
+	if !stringsEqual(a.Resources, b.Resources) {
+		out = append(out, "resources")
+	}
+	if !conditionsEqual(a.Conditions, b.Conditions) {
+		out = append(out, "conditions")
+	}
+	if a.AppID != b.AppID {
+		out = append(out, "app")
+	}
+	return out
+}
+
+// subjectsEqual compares two matcher lists in order; nil and empty are the
+// same list.
+func subjectsEqual(a, b []policy.SubjectMatch) bool {
+	if len(a) != len(b) {
 		return false
 	}
-	if a.Description != b.Description || a.Effect != b.Effect ||
-		a.Priority != b.Priority || a.IsActive != b.IsActive {
-		return false
-	}
-	if !timePtrEqual(a.NotBefore, b.NotBefore) || !timePtrEqual(a.NotAfter, b.NotAfter) {
-		return false
-	}
-	if strings.Join(a.Obligations, ",") != strings.Join(b.Obligations, ",") {
-		return false
-	}
-	if strings.Join(a.Actions, ",") != strings.Join(b.Actions, ",") {
-		return false
-	}
-	if strings.Join(a.Resources, ",") != strings.Join(b.Resources, ",") {
-		return false
-	}
-	if len(a.Conditions) != len(b.Conditions) {
-		return false
-	}
-	for i := range a.Conditions {
-		if a.Conditions[i].Field != b.Conditions[i].Field ||
-			a.Conditions[i].Operator != b.Conditions[i].Operator {
-			return false
-		}
-		// Value comparison via fmt round-trip — covers most literal types
-		// without pulling in reflect.DeepEqual cost on the hot path.
-		if fmt.Sprintf("%v", a.Conditions[i].Value) != fmt.Sprintf("%v", b.Conditions[i].Value) {
+	for i := range a {
+		if a[i] != b[i] {
 			return false
 		}
 	}
 	return true
+}
+
+// conditionsEqual compares two condition lists in order, ids aside.
+func conditionsEqual(a, b []policy.Condition) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Field != b[i].Field || a[i].Operator != b[i].Operator {
+			return false
+		}
+		if !valuesEqual(a[i].Value, b[i].Value) {
+			return false
+		}
+	}
+	return true
+}
+
+// valuesEqual compares two condition values by what they say, not how the
+// store typed them: every number compares as a float64 (the store's JSON
+// gives float64, the parser gives int), and a []string equals a []any of
+// the same strings.
+func valuesEqual(a, b any) bool {
+	return reflect.DeepEqual(normalizeValue(a), normalizeValue(b))
+}
+
+func normalizeValue(v any) any {
+	switch x := v.(type) {
+	case int:
+		return float64(x)
+	case int8:
+		return float64(x)
+	case int16:
+		return float64(x)
+	case int32:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case uint:
+		return float64(x)
+	case uint8:
+		return float64(x)
+	case uint16:
+		return float64(x)
+	case uint32:
+		return float64(x)
+	case uint64:
+		return float64(x)
+	case float32:
+		return float64(x)
+	case []string:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = e
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = normalizeValue(e)
+		}
+		return out
+	}
+	return v
 }
 
 func timePtrEqual(a, b *time.Time) bool {

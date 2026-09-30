@@ -171,15 +171,49 @@ resource document {
 	}
 }
 
-func TestResolve_BadSlugRegex(t *testing.T) {
-	src := `
+// TestResolve_NamesFollowTheStore pins the relaxed name rules: a name is
+// valid when the store and the dashboard would accept it, so a tenant's
+// names always export to source that resolves.
+func TestResolve_NamesFollowTheStore(t *testing.T) {
+	accepted := `
 warden config 1
 role Viewer {
-    name = "Bad"
+    name = "Upper case slug"
+}
+role "Auditor Team" {
+    name = "A slug with a space"
+}
+permission "warden:role:read" {
+    resource = "warden:role"
+    action = read
+}
+permission "warden:*" {
+    resource = warden
+    action = "*"
+}
+resource "role" {
+    relation "name": user
+}
+policy "Deny Contractors" {
+    effect = deny
 }
 `
-	errs := resolveSrc(t, src)
-	wantDiagContaining(t, errs, "must match")
+	if errs := resolveSrc(t, accepted); len(errs) > 0 {
+		t.Fatalf("names the store accepts were refused: %v", errs)
+	}
+
+	for _, tc := range []struct {
+		name, src, want string
+	}{
+		{"empty role slug", "warden config 1\nrole \"\" {\n}\n", "role slug"},
+		{"empty resource type name", "warden config 1\nresource \"\" {\n}\n", "resource type name"},
+		{"blank policy name", "warden config 1\npolicy \"  \" {\n    effect = allow\n}\n", "policy name"},
+		{"permission without an action", "warden config 1\npermission \"doc\"\n", "`<resource>:<action>`"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wantDiagContaining(t, resolveSrc(t, tc.src), tc.want)
+		})
+	}
 }
 
 func TestResolve_BadNamespacePath(t *testing.T) {
