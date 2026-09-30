@@ -1,4 +1,4 @@
-// handlers_policies.go: the read side of the policy surface.
+// handlers_policies.go: the policy surface, reads and writes.
 //
 // A policy row carries two kinds of fact. The stored fields say what was
 // written. analysePolicy says what the policy will do, and the two disagree
@@ -7,12 +7,23 @@
 // check. So the state, failsClosed, neverApplies and matchesEverything flags
 // on every row come from the analysis, computed at read time, never stored
 // and never guessed by a page.
+//
+// The writes hold two rules the REST API does not. Every write is validated
+// by collectPolicyIssues, so the dashboard cannot store a condition that
+// cannot behave the way it reads. And a create is always stored inactive: a
+// new policy with no matchers matches every check in its namespace and
+// below, so storing it active would make an empty allow grant everything.
+// Activation is an explicit policies.setActive.
 package contract
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/policy"
 
@@ -245,5 +256,321 @@ func policiesDetailHandler(deps Deps) func(context.Context, PolicyDetailInput, d
 			return PolicyDetail{}, mapWardenError(err)
 		}
 		return projectPolicyDetail(pol, time.Now()), nil
+	}
+}
+
+// PolicyCreateInput creates a policy. It is always stored INACTIVE: a new
+// policy with no matchers matches every check in its namespace and below,
+// so storing it active would make an empty allow grant everything, or an
+// empty deny lock everyone out, the moment it is saved. Activation is an
+// explicit policies.setActive. The REST create honours isActive; this
+// contract deliberately does not.
+type PolicyCreateInput struct {
+	PolicyDraft
+	NamespacePath string `json:"namespacePath,omitempty"`
+}
+
+// PolicyUpdateInput patches a policy. Namespace is not patchable. An empty
+// string on NotBefore or NotAfter clears that bound.
+type PolicyUpdateInput struct {
+	ID          string             `json:"id"`
+	Name        *string            `json:"name,omitempty"`
+	Description *string            `json:"description,omitempty"`
+	Effect      *string            `json:"effect,omitempty"`
+	Priority    *int               `json:"priority,omitempty"`
+	NotBefore   *string            `json:"notBefore,omitempty"`
+	NotAfter    *string            `json:"notAfter,omitempty"`
+	Subjects    *[]PolicySubject   `json:"subjects,omitempty"`
+	Actions     *[]string          `json:"actions,omitempty"`
+	Resources   *[]string          `json:"resources,omitempty"`
+	Conditions  *[]PolicyCondition `json:"conditions,omitempty"`
+	Obligations *[]string          `json:"obligations,omitempty"`
+}
+
+// PolicySetActiveInput turns a policy on or off and changes nothing else.
+type PolicySetActiveInput struct {
+	ID     string `json:"id"`
+	Active bool   `json:"active"`
+}
+
+// PolicyDeleteInput names the policy to remove.
+type PolicyDeleteInput struct {
+	ID string `json:"id"`
+}
+
+// parseWindow turns the two wire bounds into stored times. An empty string
+// is no bound. The strings were already accepted by windowIssue, so an error
+// here means a caller skipped validation.
+func parseWindow(notBefore, notAfter string) (nb, na *time.Time, err error) {
+	parse := func(raw string) (*time.Time, error) {
+		if raw == "" {
+			return nil, nil
+		}
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, badRequest("not an RFC3339 time: " + raw)
+		}
+		t = t.UTC()
+		return &t, nil
+	}
+	if nb, err = parse(notBefore); err != nil {
+		return nil, nil, err
+	}
+	if na, err = parse(notAfter); err != nil {
+		return nil, nil, err
+	}
+	return nb, na, nil
+}
+
+func policiesCreateHandler(deps Deps) func(context.Context, PolicyCreateInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in PolicyCreateInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		if err := validateNamespace(in.NamespacePath); err != nil {
+			return AckResponse{}, err
+		}
+		if err := issuesError(collectPolicyIssues(in.PolicyDraft, allParts)); err != nil {
+			return AckResponse{}, err
+		}
+		nb, na, err := parseWindow(in.NotBefore, in.NotAfter)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		ctx = withActor(ctx, p)
+		actor := actorFor(p)
+		now := time.Now().UTC()
+		pol := &policy.Policy{
+			ID:            id.NewPolicyID(),
+			TenantID:      tenantID,
+			NamespacePath: in.NamespacePath,
+			Name:          strings.TrimSpace(in.Name),
+			Description:   in.Description,
+			Effect:        policy.Effect(in.Effect),
+			Priority:      in.Priority,
+			// Always inactive, see PolicyCreateInput.
+			IsActive:    false,
+			NotBefore:   nb,
+			NotAfter:    na,
+			Obligations: trimmedList(in.Obligations),
+			Version:     1,
+			Subjects:    toPolicySubjects(in.Subjects),
+			Actions:     trimmedList(in.Actions),
+			Resources:   trimmedList(in.Resources),
+			Conditions:  toPolicyConditions(in.Conditions),
+			CreatedBy:   actor.ID,
+			UpdatedBy:   actor.ID,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		if err := deps.Engine.Store().CreatePolicy(ctx, pol); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		// Same emissions as the REST handler (api/policy_handler.go). Only
+		// after the store accepted the write: a refused write emits nothing.
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitPolicyCreated(ctx, pol)
+		}
+		emitAudit(ctx, deps, p, "policy.created", tenantID, pol.ID.String(), pol, nil)
+		return AckResponse{ID: pol.ID.String()}, nil
+	}
+}
+
+// draftAndParts describes a patch as the draft collectPolicyIssues judges:
+// the stored policy with each present field laid over it, and the parts that
+// are present. The window is a part if either bound is, and it is judged as
+// the merged pair, so a new start after the stored end is refused.
+func draftAndParts(before *policy.Policy, in PolicyUpdateInput) (PolicyDraft, draftParts) {
+	d := PolicyDraft{
+		NotBefore: rfc3339Ptr(before.NotBefore),
+		NotAfter:  rfc3339Ptr(before.NotAfter),
+	}
+	var parts draftParts
+	if in.Name != nil {
+		d.Name, parts.name = *in.Name, true
+	}
+	if in.Effect != nil {
+		d.Effect, parts.effect = *in.Effect, true
+	}
+	if in.NotBefore != nil {
+		d.NotBefore, parts.window = *in.NotBefore, true
+	}
+	if in.NotAfter != nil {
+		d.NotAfter, parts.window = *in.NotAfter, true
+	}
+	if in.Subjects != nil {
+		d.Subjects, parts.subjects = *in.Subjects, true
+	}
+	if in.Actions != nil {
+		d.Actions, parts.actions = *in.Actions, true
+	}
+	if in.Resources != nil {
+		d.Resources, parts.resources = *in.Resources, true
+	}
+	if in.Conditions != nil {
+		d.Conditions, parts.conditions = *in.Conditions, true
+	}
+	if in.Obligations != nil {
+		d.Obligations, parts.obligations = *in.Obligations, true
+	}
+	return d, parts
+}
+
+func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in PolicyUpdateInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		pid, err := parsePolicyID(in.ID)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		s := deps.Engine.Store()
+		before, err := s.GetPolicy(ctx, tenantID, pid)
+		if err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		// Only what the patch changes is validated, so a policy stored
+		// with a bad condition before this validation existed can still
+		// have its description edited.
+		merged, parts := draftAndParts(before, in)
+		if err := issuesError(collectPolicyIssues(merged, parts)); err != nil {
+			return AckResponse{}, err
+		}
+
+		// UpdatePolicy persists the whole struct, so this is read, patch
+		// the present fields on a copy, write. The copy is shallow and every
+		// patched slice is replaced rather than edited, so before stays the
+		// stored policy the audit event reports.
+		pol := *before
+		if in.Name != nil {
+			pol.Name = strings.TrimSpace(*in.Name)
+		}
+		if in.Description != nil {
+			pol.Description = *in.Description
+		}
+		if in.Effect != nil {
+			pol.Effect = policy.Effect(*in.Effect)
+		}
+		if in.Priority != nil {
+			pol.Priority = *in.Priority
+		}
+		if parts.window {
+			if pol.NotBefore, pol.NotAfter, err = parseWindow(merged.NotBefore, merged.NotAfter); err != nil {
+				return AckResponse{}, err
+			}
+		}
+		if in.Subjects != nil {
+			pol.Subjects = toPolicySubjects(*in.Subjects)
+		}
+		if in.Actions != nil {
+			pol.Actions = trimmedList(*in.Actions)
+		}
+		if in.Resources != nil {
+			pol.Resources = trimmedList(*in.Resources)
+		}
+		if in.Conditions != nil {
+			pol.Conditions = toPolicyConditions(*in.Conditions)
+		}
+		if in.Obligations != nil {
+			pol.Obligations = trimmedList(*in.Obligations)
+		}
+
+		// A rename onto a name already in this namespace. Postgres refuses
+		// it with its unique index; the memory store does not, so ask.
+		if in.Name != nil && pol.Name != before.Name {
+			other, err := s.GetPolicyByName(ctx, tenantID, before.NamespacePath, pol.Name)
+			switch {
+			case err == nil && other.ID != before.ID:
+				return AckResponse{}, mapWardenError(fmt.Errorf("policy %q in ns %q: %w", pol.Name, before.NamespacePath, warden.ErrDuplicatePolicy))
+			case err != nil && !errors.Is(err, warden.ErrPolicyNotFound):
+				return AckResponse{}, mapWardenError(err)
+			}
+		}
+
+		ctx = withActor(ctx, p)
+		return writePolicy(ctx, deps, p, tenantID, before, &pol)
+	}
+}
+
+// writePolicy stamps and stores a patched copy and emits what the REST
+// update emits. Both policies.update and policies.setActive end here: REST
+// has no separate activate action, and an audit consumer keys on REST's
+// vocabulary, so both are "policy.updated".
+func writePolicy(ctx context.Context, deps Deps, p dashcontract.Principal, tenantID string, before, pol *policy.Policy) (AckResponse, error) {
+	pol.UpdatedBy = actorFor(p).ID
+	pol.Version = before.Version + 1
+	pol.UpdatedAt = time.Now().UTC()
+	if err := deps.Engine.Store().UpdatePolicy(ctx, pol); err != nil {
+		return AckResponse{}, mapWardenError(err)
+	}
+	if pl := deps.Engine.Plugins(); pl != nil {
+		pl.EmitPolicyUpdated(ctx, pol)
+	}
+	emitAudit(ctx, deps, p, "policy.updated", tenantID, pol.ID.String(), pol, before)
+	return AckResponse{}, nil
+}
+
+func policiesSetActiveHandler(deps Deps) func(context.Context, PolicySetActiveInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in PolicySetActiveInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		pid, err := parsePolicyID(in.ID)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		before, err := deps.Engine.Store().GetPolicy(ctx, tenantID, pid)
+		if err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		pol := *before
+		pol.IsActive = in.Active
+		ctx = withActor(ctx, p)
+		return writePolicy(ctx, deps, p, tenantID, before, &pol)
+	}
+}
+
+func policiesDeleteHandler(deps Deps) func(context.Context, PolicyDeleteInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in PolicyDeleteInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		pid, err := parsePolicyID(in.ID)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		s := deps.Engine.Store()
+		// Read first: it makes another tenant's policy NOT_FOUND and gives
+		// the audit event the row that is about to disappear.
+		before, err := s.GetPolicy(ctx, tenantID, pid)
+		if err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		ctx = withActor(ctx, p)
+		if err := s.DeletePolicy(ctx, tenantID, pid); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitPolicyDeleted(ctx, pid)
+		}
+		emitAudit(ctx, deps, p, "policy.deleted", tenantID, pid.String(), nil, before)
+		return AckResponse{}, nil
 	}
 }

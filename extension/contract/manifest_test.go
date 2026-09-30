@@ -79,6 +79,10 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"policies.list":               dashcontract.IntentKindQuery,
 		"policies.detail":             dashcontract.IntentKindQuery,
 		"policies.validate":           dashcontract.IntentKindQuery,
+		"policies.create":             dashcontract.IntentKindCommand,
+		"policies.update":             dashcontract.IntentKindCommand,
+		"policies.setActive":          dashcontract.IntentKindCommand,
+		"policies.delete":             dashcontract.IntentKindCommand,
 		"maintenance.run":             dashcontract.IntentKindCommand,
 		"maintenance.cacheInvalidate": dashcontract.IntentKindCommand,
 	}
@@ -285,6 +289,7 @@ func TestManifest_EveryCommandThatFeedsTheNamespaceListRefreshesIt(t *testing.T)
 		"assignments.create", "assignments.delete",
 		"relations.create", "relations.delete",
 		"resourceTypes.create", "resourceTypes.delete",
+		"policies.create", "policies.delete",
 		// maintenance.run deletes assignment rows, so it can drop a namespace
 		// whose only rows were expired assignments.
 		"maintenance.run",

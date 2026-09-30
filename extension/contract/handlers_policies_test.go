@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/policy"
 	"github.com/xraph/warden/store/memory"
 
@@ -702,5 +704,828 @@ func TestPoliciesDetailCarriesTheNewestReasonsOnTheWire(t *testing.T) {
 	// alwaysFalse one is the deciding condition.
 	if wire.DecidingCondition == nil || *wire.DecidingCondition != 2 {
 		t.Errorf("decidingCondition = %v, want 2", wire.DecidingCondition)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Writes: policies.create, policies.update, policies.setActive, policies.delete
+// ---------------------------------------------------------------------------
+
+// policyProbe adds the three policy hooks to auditProbe.
+type policyProbe struct{ *auditProbe }
+
+func (p policyProbe) OnPolicyCreated(context.Context, *policy.Policy) error {
+	p.note("policy.created")
+	return nil
+}
+
+func (p policyProbe) OnPolicyUpdated(context.Context, *policy.Policy) error {
+	p.note("policy.updated")
+	return nil
+}
+
+func (p policyProbe) OnPolicyDeleted(context.Context, id.PolicyID) error {
+	p.note("policy.deleted")
+	return nil
+}
+
+func (a *auditProbe) emitted() (events, typed int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.events), len(a.typed)
+}
+
+func policyProbedEngine(t *testing.T, s *memory.Store) (*warden.Engine, policyProbe) {
+	t.Helper()
+	probe := policyProbe{&auditProbe{}}
+	eng, err := warden.NewEngine(warden.WithStore(s), warden.WithPlugin(probe))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	return eng, probe
+}
+
+func wantCode(t *testing.T, err error, code dashcontract.ErrorCode) *dashcontract.Error {
+	t.Helper()
+	var ce *dashcontract.Error
+	if !errorsAs(err, &ce) || ce.Code != code {
+		t.Fatalf("want error code %v, got %v", code, err)
+	}
+	return ce
+}
+
+func storedPolicy(t *testing.T, s *memory.Store, pid string) *policy.Policy {
+	t.Helper()
+	parsed, err := id.ParsePolicyID(pid)
+	if err != nil {
+		t.Fatalf("parse policy id %q: %v", pid, err)
+	}
+	got, err := s.GetPolicy(context.Background(), "t1", parsed)
+	if err != nil {
+		t.Fatalf("stored policy %s: %v", pid, err)
+	}
+	return got
+}
+
+func policyCount(t *testing.T, s *memory.Store, tenant string) int {
+	t.Helper()
+	rows, err := s.ListPolicies(context.Background(), &policy.ListFilter{TenantID: tenant})
+	if err != nil {
+		t.Fatalf("list policies: %v", err)
+	}
+	return len(rows)
+}
+
+// diffPolicy names the fields two stored policies disagree on, ignoring the
+// three an update stamps (Version, UpdatedAt, UpdatedBy), which have their
+// own assertions.
+func diffPolicy(a, b *policy.Policy) []string {
+	var out []string
+	av, bv := reflect.ValueOf(*a), reflect.ValueOf(*b)
+	for i := 0; i < av.NumField(); i++ {
+		name := av.Type().Field(i).Name
+		switch name {
+		case "Version", "UpdatedAt", "UpdatedBy":
+			continue
+		}
+		if !reflect.DeepEqual(av.Field(i).Interface(), bv.Field(i).Interface()) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// fullPolicy seeds a policy with every field set, active, so an update test
+// can tell exactly which field moved.
+func fullPolicy(t *testing.T, s *memory.Store, namespace, name string) *policy.Policy {
+	t.Helper()
+	nb := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	na := time.Date(2026, 12, 31, 17, 0, 0, 0, time.UTC)
+	return seedPolicy(t, s, namespace, name, func(p *policy.Policy) {
+		p.Description = "the original description"
+		p.Effect = policy.EffectDeny
+		p.Priority = 7
+		p.IsActive = true
+		p.NotBefore = &nb
+		p.NotAfter = &na
+		p.Subjects = []policy.SubjectMatch{{Kind: "user", Role: "admin"}}
+		p.Actions = []string{"read", "write"}
+		p.Resources = []string{"document:*"}
+		p.Obligations = []string{"audit-log"}
+		p.Metadata = map[string]any{"owner": "platform"}
+		p.CreatedBy = "seeder"
+		p.UpdatedBy = "seeder"
+		p.Conditions = []policy.Condition{
+			{ID: id.NewConditionID(), Field: "subject.level", Operator: policy.OpGTE, Value: float64(3)},
+			{ID: id.NewConditionID(), Field: "context.ip", Operator: policy.OpIPInCIDR, Value: []any{"10.0.0.0/8"}},
+		}
+	})
+}
+
+func TestPoliciesCreateStoresInactiveWithEveryFieldTrimmedAndFresh(t *testing.T) {
+	s := memory.New()
+	h := policiesCreateHandler(Deps{Engine: engineOver(t, s)})
+
+	// The wire input carries isActive: true. There is no such input field,
+	// so it must be ignored and the policy stored inactive.
+	var in PolicyCreateInput
+	raw := `{"name":"  office hours  ","description":"d","effect":"deny","priority":4,
+		"notBefore":"2026-01-01T09:00:00Z","notAfter":"2026-06-01T17:00:00+02:00",
+		"subjects":[{"kind":" user ","id":" u1 ","role":" admin "}],
+		"actions":[" read "," write"],"resources":["document:* "],
+		"conditions":[{"id":"not-an-id","field":"  subject.level ","operator":"gte","value":3},
+		              {"field":"context.ip","operator":"ip_in_cidr","value":["10.0.0.0/8"]}],
+		"obligations":[" audit-log "],"namespacePath":"eng","isActive":true}`
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		t.Fatalf("decode input: %v", err)
+	}
+	ack, err := h(context.Background(), in, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("policies.create: %v", err)
+	}
+	if ack.ID == "" {
+		t.Fatal("create returned no id for the page to navigate to")
+	}
+	got := storedPolicy(t, s, ack.ID)
+
+	if got.IsActive {
+		t.Error("a created policy must be stored inactive")
+	}
+	if got.Version != 1 {
+		t.Errorf("version = %d, want 1", got.Version)
+	}
+	if got.TenantID != "t1" || got.NamespacePath != "eng" {
+		t.Errorf("tenant/namespace = %q/%q, want t1/eng", got.TenantID, got.NamespacePath)
+	}
+	if got.Name != "office hours" {
+		t.Errorf("name = %q, want it trimmed", got.Name)
+	}
+	if got.Description != "d" || got.Effect != policy.EffectDeny || got.Priority != 4 {
+		t.Errorf("description/effect/priority = %q/%q/%d", got.Description, got.Effect, got.Priority)
+	}
+	if got.NotBefore == nil || !got.NotBefore.Equal(time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)) {
+		t.Errorf("notBefore = %v", got.NotBefore)
+	}
+	if got.NotAfter == nil || !got.NotAfter.Equal(time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)) {
+		t.Errorf("notAfter = %v, want 2026-06-01T15:00:00Z", got.NotAfter)
+	}
+	if want := []policy.SubjectMatch{{Kind: "user", ID: "u1", Role: "admin"}}; !reflect.DeepEqual(got.Subjects, want) {
+		t.Errorf("subjects = %+v, want %+v", got.Subjects, want)
+	}
+	if want := []string{"read", "write"}; !reflect.DeepEqual(got.Actions, want) {
+		t.Errorf("actions = %q, want %q", got.Actions, want)
+	}
+	if want := []string{"document:*"}; !reflect.DeepEqual(got.Resources, want) {
+		t.Errorf("resources = %q, want %q", got.Resources, want)
+	}
+	if want := []string{"audit-log"}; !reflect.DeepEqual(got.Obligations, want) {
+		t.Errorf("obligations = %q, want %q", got.Obligations, want)
+	}
+	if len(got.Conditions) != 2 {
+		t.Fatalf("stored %d conditions, want 2", len(got.Conditions))
+	}
+	c0, c1 := got.Conditions[0], got.Conditions[1]
+	if c0.Field != "subject.level" || c0.Operator != policy.OpGTE || c0.Value != float64(3) {
+		t.Errorf("condition 0 = %+v, want the trimmed field stored", c0)
+	}
+	if c1.Field != "context.ip" || c1.Operator != policy.OpIPInCIDR || !reflect.DeepEqual(c1.Value, []any{"10.0.0.0/8"}) {
+		t.Errorf("condition 1 = %+v", c1)
+	}
+	if c0.ID.IsNil() || c1.ID.IsNil() || c0.ID == c1.ID {
+		t.Errorf("conditions must each get a fresh id, got %s and %s", c0.ID, c1.ID)
+	}
+	if got.CreatedBy != "tester" || got.UpdatedBy != "tester" {
+		t.Errorf("createdBy/updatedBy = %q/%q, want tester", got.CreatedBy, got.UpdatedBy)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Error("timestamps were not set")
+	}
+}
+
+func TestPoliciesCreateWithNoMatchersStoresEmptyListsAndStaysInactive(t *testing.T) {
+	// The reason a create is never active: with no matchers this policy
+	// matches every check in its namespace and below.
+	s := memory.New()
+	ack, err := policiesCreateHandler(Deps{Engine: engineOver(t, s)})(context.Background(),
+		PolicyCreateInput{PolicyDraft: PolicyDraft{Name: "everything", Effect: "allow"}}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("policies.create: %v", err)
+	}
+	got := storedPolicy(t, s, ack.ID)
+	if got.IsActive {
+		t.Fatal("an allow with no matchers was stored active: it would grant everything")
+	}
+	if got.Subjects == nil || got.Actions == nil || got.Resources == nil || got.Conditions == nil {
+		t.Errorf("empty lists must be stored as empty lists, not nil: %+v", got)
+	}
+	if got.NotBefore != nil || got.NotAfter != nil {
+		t.Errorf("no window was given, got %v %v", got.NotBefore, got.NotAfter)
+	}
+}
+
+func TestPolicyCreateInputHasNoIsActive(t *testing.T) {
+	typ := reflect.TypeOf(PolicyCreateInput{})
+	for i := 0; i < typ.NumField(); i++ {
+		if strings.Contains(strings.ToLower(typ.Field(i).Name), "active") {
+			t.Fatalf("PolicyCreateInput has field %s: a create must not choose to be active", typ.Field(i).Name)
+		}
+	}
+	draft := reflect.TypeOf(PolicyDraft{})
+	for i := 0; i < draft.NumField(); i++ {
+		if strings.Contains(strings.ToLower(draft.Field(i).Name), "active") {
+			t.Fatalf("PolicyDraft has field %s", draft.Field(i).Name)
+		}
+	}
+}
+
+func TestPoliciesCreateRefusesEachDraftIssueAndStoresNothing(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*PolicyDraft)
+		field  string
+	}{
+		{"no name", func(d *PolicyDraft) { d.Name = "  " }, "name"},
+		{"a bad effect", func(d *PolicyDraft) { d.Effect = "permit" }, "effect"},
+		{"a window that ends before it starts", func(d *PolicyDraft) {
+			d.NotBefore, d.NotAfter = "2026-06-01T00:00:00Z", "2026-01-01T00:00:00Z"
+		}, "window"},
+		{"an empty subject", func(d *PolicyDraft) { d.Subjects = []PolicySubject{{}} }, "subjects"},
+		{"a subject that is only whitespace", func(d *PolicyDraft) { d.Subjects = []PolicySubject{{ID: "  "}} }, "subjects"},
+		{"a blank action", func(d *PolicyDraft) { d.Actions = []string{"read", " "} }, "actions"},
+		{"a blank resource", func(d *PolicyDraft) { d.Resources = []string{""} }, "resources"},
+		{"a blank obligation", func(d *PolicyDraft) { d.Obligations = []string{" "} }, "obligations"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			s := memory.New()
+			eng, probe := policyProbedEngine(t, s)
+			d := cleanDraft()
+			tc.mutate(&d)
+			_, err := policiesCreateHandler(Deps{Engine: eng})(context.Background(), PolicyCreateInput{PolicyDraft: d}, principalFor("t1"))
+			ce := wantCode(t, err, dashcontract.CodeBadRequest)
+			fields, ok := ce.Details["fields"].(map[string]string)
+			if !ok || fields[tc.field] == "" {
+				t.Errorf("details.fields = %#v, want an entry for %q", ce.Details["fields"], tc.field)
+			}
+			if _, ok := ce.Details["conditions"]; !ok {
+				t.Error("details carries no conditions key")
+			}
+			if n := policyCount(t, s, "t1"); n != 0 {
+				t.Errorf("a refused create stored %d policies", n)
+			}
+			if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
+				t.Errorf("a refused create emitted %d audit events and %d hooks", ev, ty)
+			}
+		})
+	}
+}
+
+func TestPoliciesCreateNamesTheBadConditionByIndex(t *testing.T) {
+	s := memory.New()
+	eng, probe := policyProbedEngine(t, s)
+	d := cleanDraft()
+	d.Conditions = []PolicyCondition{
+		goodCondition(),
+		goodCondition(),
+		{Field: "subject.id", Operator: "regex", Value: "(unclosed"},
+	}
+	_, err := policiesCreateHandler(Deps{Engine: eng})(context.Background(), PolicyCreateInput{PolicyDraft: d}, principalFor("t1"))
+	ce := wantCode(t, err, dashcontract.CodeBadRequest)
+	conds, ok := ce.Details["conditions"].([]ConditionIssue)
+	if !ok || len(conds) != 1 {
+		t.Fatalf("details.conditions = %#v, want exactly one entry", ce.Details["conditions"])
+	}
+	if conds[0].Index != 2 || conds[0].Message == "" {
+		t.Errorf("condition issue = %+v, want index 2 with a message", conds[0])
+	}
+	if n := policyCount(t, s, "t1"); n != 0 {
+		t.Errorf("a refused create stored %d policies", n)
+	}
+	if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
+		t.Errorf("a refused create emitted %d audit events and %d hooks", ev, ty)
+	}
+}
+
+func TestPoliciesCreateRefusesADuplicateNameInTheSameNamespaceOnly(t *testing.T) {
+	s := memory.New()
+	eng, probe := policyProbedEngine(t, s)
+	h := policiesCreateHandler(Deps{Engine: eng})
+	ctx := context.Background()
+	mk := func(ns string) error {
+		_, err := h(ctx, PolicyCreateInput{PolicyDraft: cleanDraft(), NamespacePath: ns}, principalFor("t1"))
+		return err
+	}
+	if err := mk("eng"); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	evBefore, tyBefore := probe.emitted()
+	wantCode(t, mk("eng"), dashcontract.CodeConflict)
+	if ev, ty := probe.emitted(); ev != evBefore || ty != tyBefore {
+		t.Errorf("a refused duplicate emitted %d audit events and %d hooks", ev-evBefore, ty-tyBefore)
+	}
+	if err := mk("ops"); err != nil {
+		t.Errorf("the same name in another namespace must succeed: %v", err)
+	}
+	if n := policyCount(t, s, "t1"); n != 2 {
+		t.Errorf("stored %d policies, want 2", n)
+	}
+}
+
+func TestPoliciesCreateRefusesAnInvalidNamespace(t *testing.T) {
+	s := memory.New()
+	h := policiesCreateHandler(Deps{Engine: engineOver(t, s)})
+	for _, ns := range []string{"/eng", "eng/", "eng//platform", "Eng Platform"} {
+		_, err := h(context.Background(), PolicyCreateInput{PolicyDraft: cleanDraft(), NamespacePath: ns}, principalFor("t1"))
+		wantCode(t, err, dashcontract.CodeBadRequest)
+	}
+	if n := policyCount(t, s, "t1"); n != 0 {
+		t.Errorf("a refused create stored %d policies", n)
+	}
+}
+
+func TestPoliciesUpdatePatchesOnlyThePresentField(t *testing.T) {
+	newWindow := "2026-03-01T00:00:00Z"
+	cases := []struct {
+		name  string
+		patch func(*PolicyUpdateInput)
+		moved string
+	}{
+		{"name", func(in *PolicyUpdateInput) { in.Name = strPtr("renamed") }, "Name"},
+		{"description", func(in *PolicyUpdateInput) { in.Description = strPtr("new words") }, "Description"},
+		{"effect", func(in *PolicyUpdateInput) { in.Effect = strPtr("allow") }, "Effect"},
+		{"priority", func(in *PolicyUpdateInput) { n := 99; in.Priority = &n }, "Priority"},
+		{"notBefore", func(in *PolicyUpdateInput) { in.NotBefore = &newWindow }, "NotBefore"},
+		{"notAfter", func(in *PolicyUpdateInput) { v := "2027-01-01T00:00:00Z"; in.NotAfter = &v }, "NotAfter"},
+		{"subjects", func(in *PolicyUpdateInput) { v := []PolicySubject{{Kind: "service"}}; in.Subjects = &v }, "Subjects"},
+		{"actions", func(in *PolicyUpdateInput) { v := []string{"delete"}; in.Actions = &v }, "Actions"},
+		{"resources", func(in *PolicyUpdateInput) { v := []string{"invoice:*"}; in.Resources = &v }, "Resources"},
+		{"conditions", func(in *PolicyUpdateInput) { v := []PolicyCondition{goodCondition()}; in.Conditions = &v }, "Conditions"},
+		{"obligations", func(in *PolicyUpdateInput) { v := []string{"notify"}; in.Obligations = &v }, "Obligations"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			s := memory.New()
+			orig := fullPolicy(t, s, "eng", "target")
+			before := storedPolicy(t, s, orig.ID.String())
+			in := PolicyUpdateInput{ID: orig.ID.String()}
+			tc.patch(&in)
+			ack, err := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})(context.Background(), in, principalFor("t1"))
+			if err != nil {
+				t.Fatalf("policies.update: %v", err)
+			}
+			if ack != (AckResponse{}) {
+				t.Errorf("update returned %+v, want an empty ack", ack)
+			}
+			after := storedPolicy(t, s, orig.ID.String())
+			if got := diffPolicy(before, after); !reflect.DeepEqual(got, []string{tc.moved}) {
+				t.Errorf("update of %s moved %v, want only [%s]", tc.name, got, tc.moved)
+			}
+			if after.Version != before.Version+1 {
+				t.Errorf("version = %d, want %d", after.Version, before.Version+1)
+			}
+			if after.UpdatedBy != "tester" {
+				t.Errorf("updatedBy = %q, want tester", after.UpdatedBy)
+			}
+			if after.CreatedBy != "seeder" {
+				t.Errorf("createdBy = %q, must not change", after.CreatedBy)
+			}
+			if !after.IsActive {
+				t.Error("an update must not change whether the policy is active")
+			}
+		})
+	}
+}
+
+func TestPoliciesUpdateStoresTheNewValues(t *testing.T) {
+	s := memory.New()
+	orig := fullPolicy(t, s, "eng", "target")
+	keep := orig.Conditions[0].ID.String()
+	in := PolicyUpdateInput{
+		ID:          orig.ID.String(),
+		Name:        strPtr("  padded name  "),
+		Subjects:    &[]PolicySubject{{Kind: " user ", Role: " ops "}},
+		Actions:     &[]string{" a ", "b "},
+		Resources:   &[]string{" r"},
+		Obligations: &[]string{" o "},
+		Conditions: &[]PolicyCondition{
+			{ID: keep, Field: " subject.level ", Operator: "gte", Value: float64(5)},
+			{Field: "context.ip", Operator: "ip_in_cidr", Value: []any{"192.168.0.0/16"}},
+		},
+	}
+	if _, err := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})(context.Background(), in, principalFor("t1")); err != nil {
+		t.Fatalf("policies.update: %v", err)
+	}
+	got := storedPolicy(t, s, orig.ID.String())
+	if got.Name != "padded name" {
+		t.Errorf("name = %q, want it trimmed", got.Name)
+	}
+	if want := []policy.SubjectMatch{{Kind: "user", Role: "ops"}}; !reflect.DeepEqual(got.Subjects, want) {
+		t.Errorf("subjects = %+v, want %+v", got.Subjects, want)
+	}
+	if !reflect.DeepEqual(got.Actions, []string{"a", "b"}) || !reflect.DeepEqual(got.Resources, []string{"r"}) ||
+		!reflect.DeepEqual(got.Obligations, []string{"o"}) {
+		t.Errorf("lists = %q %q %q, want them trimmed", got.Actions, got.Resources, got.Obligations)
+	}
+	if len(got.Conditions) != 2 {
+		t.Fatalf("stored %d conditions, want 2", len(got.Conditions))
+	}
+	if got.Conditions[0].ID.String() != keep || got.Conditions[0].Field != "subject.level" || got.Conditions[0].Value != float64(5) {
+		t.Errorf("condition 0 = %+v, want the sent id kept, the field trimmed and the value updated", got.Conditions[0])
+	}
+	if got.Conditions[1].ID.IsNil() || got.Conditions[1].ID == got.Conditions[0].ID {
+		t.Errorf("condition 1 has id %s, want a fresh one", got.Conditions[1].ID)
+	}
+	// Untouched.
+	if got.Description != "the original description" || got.Priority != 7 || got.Effect != policy.EffectDeny ||
+		got.NotBefore == nil || got.NotAfter == nil || got.Metadata["owner"] != "platform" {
+		t.Errorf("fields the patch did not name changed: %+v", got)
+	}
+}
+
+func TestPoliciesUpdateEmptyConditionsClearsAndAbsentLeavesAlone(t *testing.T) {
+	s := memory.New()
+	orig := fullPolicy(t, s, "", "target")
+	h := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})
+	ctx := context.Background()
+
+	if _, err := h(ctx, PolicyUpdateInput{ID: orig.ID.String(), Description: strPtr("x")}, principalFor("t1")); err != nil {
+		t.Fatalf("update without conditions: %v", err)
+	}
+	if got := storedPolicy(t, s, orig.ID.String()); !reflect.DeepEqual(got.Conditions, orig.Conditions) {
+		t.Errorf("absent conditions changed the stored ones: %+v", got.Conditions)
+	}
+
+	empty := []PolicyCondition{}
+	if _, err := h(ctx, PolicyUpdateInput{ID: orig.ID.String(), Conditions: &empty}, principalFor("t1")); err != nil {
+		t.Fatalf("update with empty conditions: %v", err)
+	}
+	if got := storedPolicy(t, s, orig.ID.String()); len(got.Conditions) != 0 {
+		t.Errorf("conditions: [] left %d conditions", len(got.Conditions))
+	}
+
+	// The same over the wire: [] is a present, empty pointer, and absent is nil.
+	var in PolicyUpdateInput
+	if err := json.Unmarshal([]byte(`{"id":"x","conditions":[]}`), &in); err != nil || in.Conditions == nil {
+		t.Errorf("a wire [] must decode to a present pointer, got %v (err %v)", in.Conditions, err)
+	}
+	in = PolicyUpdateInput{}
+	if err := json.Unmarshal([]byte(`{"id":"x"}`), &in); err != nil || in.Conditions != nil {
+		t.Errorf("an absent field must decode to nil, got %v (err %v)", in.Conditions, err)
+	}
+}
+
+func TestPoliciesUpdateWindow(t *testing.T) {
+	// The stored window is 2026-01-01T09:00Z to 2026-12-31T17:00Z.
+	h := func(s *memory.Store) func(context.Context, PolicyUpdateInput, dashcontract.Principal) (AckResponse, error) {
+		return policiesUpdateHandler(Deps{Engine: engineOver(t, s)})
+	}
+	ctx := context.Background()
+
+	t.Run("a start after the stored end is refused", func(t *testing.T) {
+		s := memory.New()
+		orig := fullPolicy(t, s, "", "w")
+		_, err := h(s)(ctx, PolicyUpdateInput{ID: orig.ID.String(), NotBefore: strPtr("2027-06-01T00:00:00Z")}, principalFor("t1"))
+		ce := wantCode(t, err, dashcontract.CodeBadRequest)
+		if fields, _ := ce.Details["fields"].(map[string]string); fields["window"] == "" {
+			t.Errorf("details.fields = %#v, want a window entry", ce.Details["fields"])
+		}
+		if got := storedPolicy(t, s, orig.ID.String()); got.Version != orig.Version || !got.NotBefore.Equal(*orig.NotBefore) {
+			t.Errorf("a refused update changed the policy: %+v", got)
+		}
+	})
+	t.Run("an end before the stored start is refused", func(t *testing.T) {
+		s := memory.New()
+		orig := fullPolicy(t, s, "", "w")
+		_, err := h(s)(ctx, PolicyUpdateInput{ID: orig.ID.String(), NotAfter: strPtr("2025-01-01T00:00:00Z")}, principalFor("t1"))
+		wantCode(t, err, dashcontract.CodeBadRequest)
+	})
+	t.Run("a start that is not a time is refused", func(t *testing.T) {
+		s := memory.New()
+		orig := fullPolicy(t, s, "", "w")
+		_, err := h(s)(ctx, PolicyUpdateInput{ID: orig.ID.String(), NotBefore: strPtr("tomorrow")}, principalFor("t1"))
+		wantCode(t, err, dashcontract.CodeBadRequest)
+	})
+	t.Run("an empty string clears only that bound", func(t *testing.T) {
+		s := memory.New()
+		orig := fullPolicy(t, s, "", "w")
+		if _, err := h(s)(ctx, PolicyUpdateInput{ID: orig.ID.String(), NotBefore: strPtr("")}, principalFor("t1")); err != nil {
+			t.Fatalf("clear notBefore: %v", err)
+		}
+		got := storedPolicy(t, s, orig.ID.String())
+		if got.NotBefore != nil {
+			t.Errorf("notBefore = %v, want it cleared", got.NotBefore)
+		}
+		if got.NotAfter == nil || !got.NotAfter.Equal(*orig.NotAfter) {
+			t.Errorf("notAfter = %v, want it untouched", got.NotAfter)
+		}
+	})
+	t.Run("a start alone, before the stored end, is accepted", func(t *testing.T) {
+		s := memory.New()
+		orig := fullPolicy(t, s, "", "w")
+		if _, err := h(s)(ctx, PolicyUpdateInput{ID: orig.ID.String(), NotBefore: strPtr("2026-02-01T00:00:00Z")}, principalFor("t1")); err != nil {
+			t.Fatalf("update notBefore: %v", err)
+		}
+		got := storedPolicy(t, s, orig.ID.String())
+		if got.NotBefore == nil || !got.NotBefore.Equal(time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)) {
+			t.Errorf("notBefore = %v", got.NotBefore)
+		}
+	})
+	t.Run("a policy with a stored window that is already bad can change its description", func(t *testing.T) {
+		s := memory.New()
+		orig := fullPolicy(t, s, "", "w")
+		bad := orig.NotBefore.Add(-time.Hour)
+		orig.NotAfter = &bad
+		if err := s.UpdatePolicy(ctx, orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h(s)(ctx, PolicyUpdateInput{ID: orig.ID.String(), Description: strPtr("still editable")}, principalFor("t1")); err != nil {
+			t.Fatalf("update description: %v", err)
+		}
+	})
+}
+
+func TestPoliciesUpdateValidatesOnlyThePartsItChanges(t *testing.T) {
+	s := memory.New()
+	throwing := []policy.Condition{
+		{ID: id.NewConditionID(), Field: "subject.id", Operator: policy.OpRegex, Value: "(unclosed"},
+	}
+	// Written straight through the store, as a policy stored before this
+	// validation existed would have been.
+	orig := seedPolicy(t, s, "", "legacy", func(p *policy.Policy) { p.Conditions = throwing })
+	eng, probe := policyProbedEngine(t, s)
+	h := policiesUpdateHandler(Deps{Engine: eng})
+	ctx := context.Background()
+
+	if _, err := h(ctx, PolicyUpdateInput{ID: orig.ID.String(), Description: strPtr("now documented")}, principalFor("t1")); err != nil {
+		t.Fatalf("a policy with a stored bad condition could not have its description edited: %v", err)
+	}
+	got := storedPolicy(t, s, orig.ID.String())
+	if got.Description != "now documented" {
+		t.Errorf("description = %q", got.Description)
+	}
+	if !reflect.DeepEqual(got.Conditions, throwing) {
+		t.Errorf("the description edit changed the stored conditions: %+v", got.Conditions)
+	}
+	if got.Version != orig.Version+1 {
+		t.Errorf("version = %d, want %d", got.Version, orig.Version+1)
+	}
+
+	evBefore, tyBefore := probe.emitted()
+	bad := []PolicyCondition{{Field: "subject.id", Operator: "regex", Value: "(also unclosed"}}
+	_, err := h(ctx, PolicyUpdateInput{ID: orig.ID.String(), Conditions: &bad}, principalFor("t1"))
+	ce := wantCode(t, err, dashcontract.CodeBadRequest)
+	conds, ok := ce.Details["conditions"].([]ConditionIssue)
+	if !ok || len(conds) != 1 || conds[0].Index != 0 {
+		t.Errorf("details.conditions = %#v, want one entry at index 0", ce.Details["conditions"])
+	}
+	after := storedPolicy(t, s, orig.ID.String())
+	if !reflect.DeepEqual(after.Conditions, throwing) {
+		t.Errorf("a refused update changed the stored conditions: %+v", after.Conditions)
+	}
+	if after.Version != got.Version {
+		t.Errorf("a refused update bumped the version to %d", after.Version)
+	}
+	if ev, ty := probe.emitted(); ev != evBefore || ty != tyBefore {
+		t.Errorf("a refused update emitted %d audit events and %d hooks", ev-evBefore, ty-tyBefore)
+	}
+
+	// A bad name is still caught, in a patch that also has a fine field.
+	_, err = h(ctx, PolicyUpdateInput{ID: orig.ID.String(), Name: strPtr("  "), Description: strPtr("ok")}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeBadRequest)
+	if after := storedPolicy(t, s, orig.ID.String()); after.Description != "now documented" || after.Name != "legacy" {
+		t.Errorf("a refused patch was partly applied: %+v", after)
+	}
+}
+
+func TestPoliciesUpdateRenameOntoAnExistingNameIsAConflict(t *testing.T) {
+	s := memory.New()
+	seedPolicy(t, s, "eng", "taken", nil)
+	other := seedPolicy(t, s, "ops", "taken", nil)
+	mine := seedPolicy(t, s, "eng", "mine", nil)
+	eng, probe := policyProbedEngine(t, s)
+	h := policiesUpdateHandler(Deps{Engine: eng})
+	ctx := context.Background()
+
+	_, err := h(ctx, PolicyUpdateInput{ID: mine.ID.String(), Name: strPtr("taken")}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeConflict)
+	if got := storedPolicy(t, s, mine.ID.String()); got.Name != "mine" || got.Version != mine.Version {
+		t.Errorf("a refused rename changed the policy: %+v", got)
+	}
+	if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
+		t.Errorf("a refused rename emitted %d audit events and %d hooks", ev, ty)
+	}
+	// Renaming to its own name, and to a name only another namespace holds.
+	if _, err := h(ctx, PolicyUpdateInput{ID: mine.ID.String(), Name: strPtr("mine")}, principalFor("t1")); err != nil {
+		t.Errorf("renaming to its own name: %v", err)
+	}
+	if _, err := h(ctx, PolicyUpdateInput{ID: other.ID.String(), Name: strPtr("mine")}, principalFor("t1")); err != nil {
+		t.Errorf("a name held only by another namespace: %v", err)
+	}
+}
+
+func TestPoliciesUpdateOfAnotherTenantsOrUnknownPolicyIsNotFound(t *testing.T) {
+	s := memory.New()
+	theirs := seedPolicyFor(t, s, "t2", "", "theirs", nil)
+	eng, probe := policyProbedEngine(t, s)
+	h := policiesUpdateHandler(Deps{Engine: eng})
+	ctx := context.Background()
+
+	_, err := h(ctx, PolicyUpdateInput{ID: theirs.ID.String(), Description: strPtr("hijack")}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeNotFound)
+	_, err = h(ctx, PolicyUpdateInput{ID: id.NewPolicyID().String(), Description: strPtr("x")}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeNotFound)
+	_, err = h(ctx, PolicyUpdateInput{ID: "not-an-id"}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeBadRequest)
+
+	got, gerr := s.GetPolicy(ctx, "t2", theirs.ID)
+	if gerr != nil || got.Description != "" || got.Version != theirs.Version {
+		t.Errorf("another tenant's policy was touched: %+v (err %v)", got, gerr)
+	}
+	if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
+		t.Errorf("refused updates emitted %d audit events and %d hooks", ev, ty)
+	}
+}
+
+func TestPoliciesSetActiveChangesOnlyTheFlagAndTheVersion(t *testing.T) {
+	s := memory.New()
+	orig := seedPolicy(t, s, "eng", "target", func(p *policy.Policy) {
+		p.Description = "d"
+		p.Priority = 3
+		p.Actions = []string{"read"}
+		p.Conditions = []policy.Condition{{ID: id.NewConditionID(), Field: "subject.level", Operator: policy.OpGTE, Value: float64(2)}}
+		p.IsActive = false
+	})
+	before := storedPolicy(t, s, orig.ID.String())
+	h := policiesSetActiveHandler(Deps{Engine: engineOver(t, s)})
+	ctx := context.Background()
+
+	ack, err := h(ctx, PolicySetActiveInput{ID: orig.ID.String(), Active: true}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("policies.setActive: %v", err)
+	}
+	if ack != (AckResponse{}) {
+		t.Errorf("setActive returned %+v, want an empty ack", ack)
+	}
+	on := storedPolicy(t, s, orig.ID.String())
+	if !on.IsActive {
+		t.Error("the policy was not activated")
+	}
+	if got := diffPolicy(before, on); !reflect.DeepEqual(got, []string{"IsActive"}) {
+		t.Errorf("setActive moved %v, want only [IsActive]", got)
+	}
+	if on.Version != before.Version+1 || on.UpdatedBy != "tester" {
+		t.Errorf("version/updatedBy = %d/%q, want %d/tester", on.Version, on.UpdatedBy, before.Version+1)
+	}
+
+	if _, err := h(ctx, PolicySetActiveInput{ID: orig.ID.String(), Active: false}, principalFor("t1")); err != nil {
+		t.Fatalf("policies.setActive off: %v", err)
+	}
+	off := storedPolicy(t, s, orig.ID.String())
+	if off.IsActive || off.Version != before.Version+2 {
+		t.Errorf("after deactivating: active=%v version=%d", off.IsActive, off.Version)
+	}
+	if got := diffPolicy(before, off); len(got) != 0 {
+		t.Errorf("a round trip left %v changed", got)
+	}
+}
+
+func TestPoliciesSetActiveOfAnotherTenantsOrMalformedIsRefused(t *testing.T) {
+	s := memory.New()
+	theirs := seedPolicyFor(t, s, "t2", "", "theirs", func(p *policy.Policy) { p.IsActive = false })
+	eng, probe := policyProbedEngine(t, s)
+	h := policiesSetActiveHandler(Deps{Engine: eng})
+	ctx := context.Background()
+
+	_, err := h(ctx, PolicySetActiveInput{ID: theirs.ID.String(), Active: true}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeNotFound)
+	_, err = h(ctx, PolicySetActiveInput{ID: "nope", Active: true}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeBadRequest)
+	if got, _ := s.GetPolicy(ctx, "t2", theirs.ID); got.IsActive {
+		t.Error("another tenant's policy was activated")
+	}
+	if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
+		t.Errorf("refused activations emitted %d audit events and %d hooks", ev, ty)
+	}
+}
+
+func TestPoliciesDeleteRemovesItAndRefusesAnotherTenants(t *testing.T) {
+	s := memory.New()
+	mine := seedPolicy(t, s, "", "mine", nil)
+	theirs := seedPolicyFor(t, s, "t2", "", "theirs", nil)
+	eng, probe := policyProbedEngine(t, s)
+	h := policiesDeleteHandler(Deps{Engine: eng})
+	ctx := context.Background()
+
+	_, err := h(ctx, PolicyDeleteInput{ID: theirs.ID.String()}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeNotFound)
+	if _, gerr := s.GetPolicy(ctx, "t2", theirs.ID); gerr != nil {
+		t.Errorf("another tenant's policy was deleted: %v", gerr)
+	}
+	_, err = h(ctx, PolicyDeleteInput{ID: "nope"}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeBadRequest)
+	if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
+		t.Errorf("refused deletes emitted %d audit events and %d hooks", ev, ty)
+	}
+
+	ack, err := h(ctx, PolicyDeleteInput{ID: mine.ID.String()}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("policies.delete: %v", err)
+	}
+	if ack != (AckResponse{}) {
+		t.Errorf("delete returned %+v, want an empty ack", ack)
+	}
+	if _, gerr := s.GetPolicy(ctx, "t1", mine.ID); gerr == nil {
+		t.Error("the policy is still stored")
+	}
+	_, err = h(ctx, PolicyDeleteInput{ID: mine.ID.String()}, principalFor("t1"))
+	wantCode(t, err, dashcontract.CodeNotFound)
+}
+
+func TestPoliciesWritesEmitAuditAndTheTypedHooks(t *testing.T) {
+	// Each write drives the cache invalidator through both the typed hook and
+	// the audit event. The audit actions are REST's own vocabulary:
+	// setActive is "policy.updated", there is no "policy.activated".
+	s := memory.New()
+	eng, probe := policyProbedEngine(t, s)
+	deps := Deps{Engine: eng}
+	ctx := context.Background()
+	p := principalFor("t1")
+
+	ack, err := policiesCreateHandler(deps)(ctx, PolicyCreateInput{PolicyDraft: cleanDraft()}, p)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	created := probe.event(t, "policy.created")
+	if created.Actor != wantActor || created.TenantID != "t1" || created.EntityID != ack.ID || created.Before != nil {
+		t.Errorf("create event = %+v", created)
+	}
+	if ent, ok := created.Entity.(*policy.Policy); !ok || ent.ID.String() != ack.ID || ent.IsActive {
+		t.Errorf("create event entity = %#v, want the stored inactive policy", created.Entity)
+	}
+	if !probe.hasTyped("policy.created") || probe.ctxActor != wantActor {
+		t.Errorf("typed create hook missing or the context carries actor %+v", probe.ctxActor)
+	}
+
+	stored := storedPolicy(t, s, ack.ID)
+
+	if _, err := policiesUpdateHandler(deps)(ctx, PolicyUpdateInput{ID: ack.ID, Description: strPtr("edited")}, p); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	updated := probe.event(t, "policy.updated")
+	if updated.Actor != wantActor || updated.TenantID != "t1" || updated.EntityID != ack.ID {
+		t.Errorf("update event = %+v", updated)
+	}
+	if b, ok := updated.Before.(*policy.Policy); !ok || !reflect.DeepEqual(b, stored) {
+		t.Errorf("update before = %#v, want the stored policy %#v", updated.Before, stored)
+	}
+	if ent, ok := updated.Entity.(*policy.Policy); !ok || ent.Description != "edited" || ent.Version != stored.Version+1 {
+		t.Errorf("update entity = %#v", updated.Entity)
+	}
+	if !probe.hasTyped("policy.updated") {
+		t.Error("the typed OnPolicyUpdated hook did not fire")
+	}
+
+	afterUpdate := storedPolicy(t, s, ack.ID)
+	if _, err := policiesSetActiveHandler(deps)(ctx, PolicySetActiveInput{ID: ack.ID, Active: true}, p); err != nil {
+		t.Fatalf("setActive: %v", err)
+	}
+	// Two "policy.updated" events now; the second is setActive's.
+	probe.mu.Lock()
+	var updates []plugin.Event
+	for _, e := range probe.events {
+		if e.Action == "policy.updated" {
+			updates = append(updates, e)
+		}
+		if e.Action == "policy.activated" || e.Action == "policy.deactivated" {
+			t.Errorf("setActive emitted %q, which REST has no vocabulary for", e.Action)
+		}
+	}
+	probe.mu.Unlock()
+	if len(updates) != 2 {
+		t.Fatalf("got %d policy.updated events after setActive, want 2", len(updates))
+	}
+	act := updates[1]
+	if b, ok := act.Before.(*policy.Policy); !ok || !reflect.DeepEqual(b, afterUpdate) {
+		t.Errorf("setActive before = %#v, want the stored policy", act.Before)
+	}
+	if ent, ok := act.Entity.(*policy.Policy); !ok || !ent.IsActive {
+		t.Errorf("setActive entity = %#v, want the activated policy", act.Entity)
+	}
+
+	beforeDelete := storedPolicy(t, s, ack.ID)
+	if _, err := policiesDeleteHandler(deps)(ctx, PolicyDeleteInput{ID: ack.ID}, p); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	del := probe.event(t, "policy.deleted")
+	if del.Actor != wantActor || del.TenantID != "t1" || del.EntityID != ack.ID {
+		t.Errorf("delete event = %+v", del)
+	}
+	if b, ok := del.Before.(*policy.Policy); !ok || !reflect.DeepEqual(b, beforeDelete) {
+		t.Errorf("delete before = %#v, want the stored policy", del.Before)
+	}
+	if !probe.hasTyped("policy.deleted") {
+		t.Error("the typed OnPolicyDeleted hook did not fire")
 	}
 }

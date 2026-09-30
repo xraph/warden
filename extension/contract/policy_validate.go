@@ -104,7 +104,11 @@ func collectPolicyIssues(d PolicyDraft, parts draftParts) PolicyIssues {
 		}
 	}
 	if parts.subjects {
-		for _, s := range d.Subjects {
+		for _, raw := range d.Subjects {
+			// Trimmed as it is stored (storedSubject), so a subject that is
+			// only whitespace is refused rather than stored as the empty
+			// matcher that matches everyone.
+			s := storedSubject(raw)
 			if s.Kind == "" && s.ID == "" && s.Role == "" {
 				issues.Fields["subjects"] = "An empty subject matcher matches everyone. To mean everyone, remove every subject instead."
 				break
@@ -169,6 +173,32 @@ func windowIssue(notBefore, notAfter string) string {
 // validated is exactly what is stored: the field is trimmed here, once.
 func storedCondition(c PolicyCondition) policy.Condition {
 	return policy.Condition{Field: strings.TrimSpace(c.Field), Operator: policy.Operator(c.Operator), Value: c.Value}
+}
+
+// storedSubject is the one place a wire subject becomes the subject that is
+// stored, trimmed once, for the same reason storedCondition is.
+func storedSubject(s PolicySubject) policy.SubjectMatch {
+	return policy.SubjectMatch{Kind: strings.TrimSpace(s.Kind), ID: strings.TrimSpace(s.ID), Role: strings.TrimSpace(s.Role)}
+}
+
+// toPolicySubjects converts every subject through storedSubject. The result
+// is never nil, so an empty list is stored as one.
+func toPolicySubjects(in []PolicySubject) []policy.SubjectMatch {
+	out := make([]policy.SubjectMatch, 0, len(in))
+	for _, s := range in {
+		out = append(out, storedSubject(s))
+	}
+	return out
+}
+
+// trimmedList trims every entry, as hasEmptyEntry judged them. The result is
+// never nil.
+func trimmedList(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		out = append(out, strings.TrimSpace(v))
+	}
+	return out
 }
 
 // conditionIssue returns why one condition cannot be saved, or "".

@@ -170,6 +170,22 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := policiesValidateHandler(deps)(context.Background(), PolicyDraft{}, p)
 		return err
 	}},
+	{"policies.create", func(deps Deps, p dashcontract.Principal) error {
+		_, err := policiesCreateHandler(deps)(context.Background(), PolicyCreateInput{}, p)
+		return err
+	}},
+	{"policies.update", func(deps Deps, p dashcontract.Principal) error {
+		_, err := policiesUpdateHandler(deps)(context.Background(), PolicyUpdateInput{ID: id.NewPolicyID().String()}, p)
+		return err
+	}},
+	{"policies.setActive", func(deps Deps, p dashcontract.Principal) error {
+		_, err := policiesSetActiveHandler(deps)(context.Background(), PolicySetActiveInput{ID: id.NewPolicyID().String()}, p)
+		return err
+	}},
+	{"policies.delete", func(deps Deps, p dashcontract.Principal) error {
+		_, err := policiesDeleteHandler(deps)(context.Background(), PolicyDeleteInput{ID: id.NewPolicyID().String()}, p)
+		return err
+	}},
 	{"maintenance.run", func(deps Deps, p dashcontract.Principal) error {
 		_, err := maintenanceRunHandler(deps)(context.Background(), struct{}{}, p)
 		return err

@@ -165,6 +165,18 @@ func Register(
 	if err := dispatcher.RegisterQuery(d, contributorName, "policies.validate", 1, policiesValidateHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register policies.validate: %w", err)
 	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "policies.create", 1, policiesCreateHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register policies.create: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "policies.update", 1, policiesUpdateHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register policies.update: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "policies.setActive", 1, policiesSetActiveHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register policies.setActive: %w", err)
+	}
+	if err := dispatcher.RegisterCommand(d, contributorName, "policies.delete", 1, policiesDeleteHandler(deps)); err != nil {
+		return fmt.Errorf("warden/contract: register policies.delete: %w", err)
+	}
 	if err := dispatcher.RegisterCommand(d, contributorName, "maintenance.run", 1, maintenanceRunHandler(deps)); err != nil {
 		return fmt.Errorf("warden/contract: register maintenance.run: %w", err)
 	}

@@ -94,9 +94,13 @@ var intentPolicies = map[string]intentPolicy{
 
 	// Same resource the REST policy routes use, so one grant covers both
 	// surfaces. Validating a draft writes nothing, so it is a read too.
-	"policies.list":     {"read", "warden:policy"},
-	"policies.detail":   {"read", "warden:policy"},
-	"policies.validate": {"read", "warden:policy"},
+	"policies.list":      {"read", "warden:policy"},
+	"policies.detail":    {"read", "warden:policy"},
+	"policies.validate":  {"read", "warden:policy"},
+	"policies.create":    {"manage", "warden:policy"},
+	"policies.update":    {"manage", "warden:policy"},
+	"policies.setActive": {"manage", "warden:policy"},
+	"policies.delete":    {"manage", "warden:policy"},
 
 	"maintenance.run":             {"manage", "warden:maintenance"},
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
