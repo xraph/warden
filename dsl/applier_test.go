@@ -13,6 +13,7 @@ import (
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/plugin"
+	"github.com/xraph/warden/policy"
 	"github.com/xraph/warden/store/memory"
 )
 
@@ -830,5 +831,60 @@ func TestApply_RefusedConditionsWriteNothing(t *testing.T) {
 		if _, err := s.GetPolicyByName(ctx, "t1", "", "p"); err == nil {
 			t.Errorf("%q: the refused policy was stored", when)
 		}
+	}
+}
+
+// failPolicyStore fails every policy create and delegates the rest.
+type failPolicyStore struct{ *memory.Store }
+
+func (failPolicyStore) CreatePolicy(context.Context, *policy.Policy) error {
+	return errors.New("disk full")
+}
+
+// TestApply_FailureReturnsWhatWasWritten: the store has no transaction, so a
+// failure part way leaves earlier writes in place. Apply returns the partial
+// result with the error, and it lists only what was written: the entity whose
+// write failed, and everything after it, are not in it.
+func TestApply_FailureReturnsWhatWasWritten(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	eng, err := warden.NewEngine(warden.WithStore(failPolicyStore{s}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, errs := Parse("p.warden", []byte(`warden config 1
+tenant t1
+permission "doc:read" (doc : read)
+role reader {
+    name = "Reader"
+    grants = ["doc:read"]
+}
+policy "freeze" {
+    effect = deny
+    active = true
+}
+relation doc:readme viewer = user:alice
+`))
+	if len(errs) > 0 {
+		t.Fatalf("parse: %v", errs)
+	}
+	res, err := Apply(ctx, eng, prog, ApplyOptions{})
+	if err == nil {
+		t.Fatal("want the policy write to fail")
+	}
+	if res == nil {
+		t.Fatal("a failed write returned no partial result")
+	}
+	if strings.Join(res.Created, "|") != "+ permission//doc:read|+ role//reader" {
+		t.Errorf("created = %v, want the permission and the role only", res.Created)
+	}
+	if _, err := s.GetRoleBySlug(ctx, "t1", "", "reader"); err != nil {
+		t.Errorf("the role written before the failure is gone: %v", err)
+	}
+
+	// An error raised before any write carries no result.
+	bad, _ := Parse("b.warden", []byte("warden config 1\nrole r : ghost {\n}\n"))
+	if res, err := Apply(ctx, eng, bad, ApplyOptions{TenantID: "t1"}); err == nil || res != nil {
+		t.Errorf("a diagnostic should return (nil, err), got %v, %v", res, err)
 	}
 }

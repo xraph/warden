@@ -61,6 +61,10 @@ type ApplyResult struct {
 // Apply materializes the program against the engine's store. It is
 // idempotent — applying the same program twice produces the same state.
 //
+// On a failure while writing, Apply returns the partial result together
+// with the error. An error raised before anything is written (a missing
+// tenant for Prune, a diagnostic from Resolve) returns a nil result.
+//
 // Tenant scope is optional. When neither opts.TenantID nor `tenant`
 // in source is set, every entity is written with an empty `tenant_id`
 // — the **global scope**. Single-tenant apps that never call
@@ -94,7 +98,11 @@ func Apply(ctx context.Context, eng *warden.Engine, prog *Program, opts ApplyOpt
 		declared: declaredPermissions(prog),
 	}
 	if err := a.run(prog); err != nil {
-		return nil, err
+		// The store is not transactional, so what was written before the
+		// failure stays written. Return it with the error: each line is
+		// recorded after its write succeeds, so the result counts what
+		// actually changed.
+		return a.result, err
 	}
 	return a.result, nil
 }
@@ -269,13 +277,13 @@ func (a *applier) applyResourceTypes(prog *Program) error {
 		existing, _ := a.store.GetResourceTypeByName(a.ctx, a.tenantID, rt.NamespacePath, rt.Name) //nolint:errcheck // missing → create
 		if existing == nil {
 			// ID is auto-assigned by the store on CreateResourceType.
-			a.result.Created = append(a.result.Created, fmt.Sprintf("+ resource_type/%s/%s", rt.NamespacePath, rt.Name))
 			if !a.dryRun {
 				if err := a.store.CreateResourceType(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create resource type %s: %w", rt.Name, err)
 				}
 				a.emitAudit("resourcetype.created", desired.ID.String(), desired, nil)
 			}
+			a.result.Created = append(a.result.Created, fmt.Sprintf("+ resource_type/%s/%s", rt.NamespacePath, rt.Name))
 			continue
 		}
 		desired.ID = existing.ID
@@ -288,13 +296,13 @@ func (a *applier) applyResourceTypes(prog *Program) error {
 			a.result.NoOps++
 			continue
 		}
-		a.result.Updated = append(a.result.Updated, updateLine("resource_type", rt.NamespacePath, rt.Name, changed))
 		if !a.dryRun {
 			if err := a.store.UpdateResourceType(a.ctx, desired); err != nil {
 				return fmt.Errorf("update resource type %s: %w", rt.Name, err)
 			}
 			a.emitAudit("resourcetype.updated", desired.ID.String(), desired, existing)
 		}
+		a.result.Updated = append(a.result.Updated, updateLine("resource_type", rt.NamespacePath, rt.Name, changed))
 	}
 	if a.prune {
 		if err := a.pruneResourceTypes(declared); err != nil {
@@ -424,13 +432,13 @@ func (a *applier) pruneResourceTypes(declared map[string]struct{}) error {
 		if _, ok := declared[keyOf(rt.NamespacePath, rt.Name)]; ok {
 			continue
 		}
-		a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- resource_type/%s/%s", rt.NamespacePath, rt.Name))
 		if !a.dryRun {
 			if err := a.store.DeleteResourceType(a.ctx, a.tenantID, rt.ID); err != nil {
 				return fmt.Errorf("delete resource type %s: %w", rt.Name, err)
 			}
 			a.emitAudit("resourcetype.deleted", rt.ID.String(), nil, rt)
 		}
+		a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- resource_type/%s/%s", rt.NamespacePath, rt.Name))
 	}
 	return nil
 }
@@ -460,13 +468,13 @@ func (a *applier) applyPermissions(prog *Program) error {
 		existing, _ := a.store.GetPermissionByName(a.ctx, a.tenantID, p.NamespacePath, p.Name) //nolint:errcheck // missing → create
 		if existing == nil {
 			// ID is auto-assigned by the store on CreatePermission.
-			a.result.Created = append(a.result.Created, fmt.Sprintf("+ permission/%s/%s", p.NamespacePath, p.Name))
 			if !a.dryRun {
 				if err := a.store.CreatePermission(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create permission %s: %w", p.Name, err)
 				}
 				a.emitAudit("permission.created", desired.ID.String(), desired, nil)
 			}
+			a.result.Created = append(a.result.Created, fmt.Sprintf("+ permission/%s/%s", p.NamespacePath, p.Name))
 			continue
 		}
 		desired.ID = existing.ID
@@ -494,13 +502,13 @@ func (a *applier) applyPermissions(prog *Program) error {
 			a.result.NoOps++
 			continue
 		}
-		a.result.Updated = append(a.result.Updated, updateLine("permission", p.NamespacePath, p.Name, changed))
 		if !a.dryRun {
 			if err := a.store.UpdatePermission(a.ctx, desired); err != nil {
 				return fmt.Errorf("update permission %s: %w", p.Name, err)
 			}
 			a.emitAudit("permission.updated", desired.ID.String(), desired, existing)
 		}
+		a.result.Updated = append(a.result.Updated, updateLine("permission", p.NamespacePath, p.Name, changed))
 	}
 	if a.prune {
 		existing, err := collectPages(func(limit, offset int) ([]*permission.Permission, error) {
@@ -518,13 +526,13 @@ func (a *applier) applyPermissions(prog *Program) error {
 			if _, ok := declared[keyOf(p.NamespacePath, p.Name)]; ok {
 				continue
 			}
-			a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- permission/%s/%s", p.NamespacePath, p.Name))
 			if !a.dryRun {
 				if err := a.store.DeletePermission(a.ctx, a.tenantID, p.ID); err != nil {
 					return fmt.Errorf("delete permission %s: %w", p.Name, err)
 				}
 				a.emitAudit("permission.deleted", p.ID.String(), nil, p)
 			}
+			a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- permission/%s/%s", p.NamespacePath, p.Name))
 		}
 	}
 	return nil
@@ -561,13 +569,13 @@ func (a *applier) applyRoles(prog *Program) error {
 		existing, _ := a.store.GetRoleBySlug(a.ctx, a.tenantID, r.NamespacePath, r.Slug) //nolint:errcheck // missing → create
 		if existing == nil {
 			// ID is auto-assigned by the store on CreateRole.
-			a.result.Created = append(a.result.Created, fmt.Sprintf("+ role/%s/%s", r.NamespacePath, r.Slug))
 			if !a.dryRun {
 				if err := a.store.CreateRole(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create role %s: %w", r.Slug, err)
 				}
 				a.emitAudit("role.created", desired.ID.String(), desired, nil)
 			}
+			a.result.Created = append(a.result.Created, fmt.Sprintf("+ role/%s/%s", r.NamespacePath, r.Slug))
 			continue
 		}
 		desired.ID = existing.ID
@@ -588,15 +596,17 @@ func (a *applier) applyRoles(prog *Program) error {
 			a.result.NoOps++
 			continue
 		}
-		a.result.Updated = append(a.result.Updated, updateLine("role", r.NamespacePath, r.Slug, changed))
 		// A grant-only change is written by applyRolePermissions; the role
-		// row itself is left alone.
+		// row itself is left alone. The line is recorded once the row write,
+		// if there is one, has succeeded, so a failed apply reports what was
+		// written.
 		if !a.dryRun && roleFieldsChanged {
 			if err := a.store.UpdateRole(a.ctx, desired); err != nil {
 				return fmt.Errorf("update role %s: %w", r.Slug, err)
 			}
 			a.emitAudit("role.updated", desired.ID.String(), desired, existing)
 		}
+		a.result.Updated = append(a.result.Updated, updateLine("role", r.NamespacePath, r.Slug, changed))
 	}
 	if a.prune {
 		existing, err := collectPages(func(limit, offset int) ([]*role.Role, error) {
@@ -617,13 +627,13 @@ func (a *applier) applyRoles(prog *Program) error {
 			if r.IsSystem {
 				continue // system roles are protected from prune
 			}
-			a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- role/%s/%s", r.NamespacePath, r.Slug))
 			if !a.dryRun {
 				if err := a.store.DeleteRole(a.ctx, a.tenantID, r.ID); err != nil {
 					return fmt.Errorf("delete role %s: %w", r.Slug, err)
 				}
 				a.emitAudit("role.deleted", r.ID.String(), nil, r)
 			}
+			a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- role/%s/%s", r.NamespacePath, r.Slug))
 		}
 	}
 	return nil
@@ -864,13 +874,13 @@ func (a *applier) applyPolicies(prog *Program) error {
 		existing, _ := a.store.GetPolicyByName(a.ctx, a.tenantID, p.NamespacePath, p.Name) //nolint:errcheck // missing → create
 		if existing == nil {
 			// ID is auto-assigned by the store on CreatePolicy.
-			a.result.Created = append(a.result.Created, fmt.Sprintf("+ policy/%s/%s", p.NamespacePath, p.Name))
 			if !a.dryRun {
 				if err := a.store.CreatePolicy(a.ctx, desired); err != nil && !errors.Is(err, warden.ErrAlreadyExists) {
 					return fmt.Errorf("create policy %s: %w", p.Name, err)
 				}
 				a.emitAudit("policy.created", desired.ID.String(), desired, nil)
 			}
+			a.result.Created = append(a.result.Created, fmt.Sprintf("+ policy/%s/%s", p.NamespacePath, p.Name))
 			continue
 		}
 		desired.ID = existing.ID
@@ -884,13 +894,13 @@ func (a *applier) applyPolicies(prog *Program) error {
 			a.result.NoOps++
 			continue
 		}
-		a.result.Updated = append(a.result.Updated, updateLine("policy", p.NamespacePath, p.Name, changed))
 		if !a.dryRun {
 			if err := a.store.UpdatePolicy(a.ctx, desired); err != nil {
 				return fmt.Errorf("update policy %s: %w", p.Name, err)
 			}
 			a.emitAudit("policy.updated", desired.ID.String(), desired, existing)
 		}
+		a.result.Updated = append(a.result.Updated, updateLine("policy", p.NamespacePath, p.Name, changed))
 	}
 	if a.prune {
 		existing, err := collectPages(func(limit, offset int) ([]*policy.Policy, error) {
@@ -908,13 +918,13 @@ func (a *applier) applyPolicies(prog *Program) error {
 			if _, ok := declared[keyOf(p.NamespacePath, p.Name)]; ok {
 				continue
 			}
-			a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- policy/%s/%s", p.NamespacePath, p.Name))
 			if !a.dryRun {
 				if err := a.store.DeletePolicy(a.ctx, a.tenantID, p.ID); err != nil {
 					return fmt.Errorf("delete policy %s: %w", p.Name, err)
 				}
 				a.emitAudit("policy.deleted", p.ID.String(), nil, p)
 			}
+			a.result.Deleted = append(a.result.Deleted, fmt.Sprintf("- policy/%s/%s", p.NamespacePath, p.Name))
 		}
 	}
 	return nil
@@ -1148,13 +1158,13 @@ func (a *applier) applyRelations(prog *Program) error {
 			a.result.NoOps++
 			continue
 		}
-		a.result.Created = append(a.result.Created, fmt.Sprintf("+ relation/%s/%s:%s#%s", r.NamespacePath, r.ObjectType, r.ObjectID, r.Relation))
 		if !a.dryRun {
 			if err := a.store.CreateRelation(a.ctx, t); err != nil {
 				return fmt.Errorf("create relation: %w", err)
 			}
 			a.emitAudit("relation.written", t.ID.String(), t, nil)
 		}
+		a.result.Created = append(a.result.Created, fmt.Sprintf("+ relation/%s/%s:%s#%s", r.NamespacePath, r.ObjectType, r.ObjectID, r.Relation))
 	}
 	return nil
 }
