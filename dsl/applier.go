@@ -58,6 +58,12 @@ type ApplyOptions struct {
 	//   - creating a system role or permission;
 	//   - pruning a system role or permission.
 	//
+	// One change still reaches a system role: pruning a non-system
+	// permission removes it from every role that holds it, system roles
+	// included, because the store cascades the delete. The plan shows it,
+	// since the source must drop the grant for the role to plan cleanly,
+	// and the dashboard's permission delete behaves the same way.
+	//
 	// The dashboard sets it, matching the guard every other dashboard write
 	// goes through (extension/contract/immutable.go). The CLI and the
 	// declarative loader leave it off and keep their behaviour: they own
