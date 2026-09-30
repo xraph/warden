@@ -1,0 +1,349 @@
+// policy_analysis.go: what a policy will actually do, decided before any
+// check runs.
+//
+// Every rule here mirrors warden's evaluator (evaluator.go) and is tested
+// against it in policy_analysis_test.go by running each case through
+// warden.NewConditionEvaluator. If the engine changes, that test fails,
+// rather than a page quietly describing behaviour the engine no longer has.
+//
+// Why this exists: nothing validates a policy on write (policy.Validate has
+// no non-test caller, and the REST create stores whatever it is sent), and
+// several shapes store fine while doing something other than what they read
+// as. `context.ip not_in "10.0.0.0/8"` with a string instead of a list is
+// always true, so on a deny it denies everyone. `gt` against a non-number is
+// always false. `action.verb` never resolves, so `neq` on it is always true.
+package contract
+
+import (
+	"fmt"
+	"net"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/xraph/warden/policy"
+)
+
+// ConditionProblem is a condition's outcome when it does not depend on the
+// check being made.
+type ConditionProblem string
+
+const (
+	ProblemNone        ConditionProblem = ""
+	ProblemThrows      ConditionProblem = "throws"      // evaluation errors: a deny fails closed, an allow is skipped
+	ProblemAlwaysFalse ConditionProblem = "alwaysFalse" // the policy can never apply
+	ProblemAlwaysTrue  ConditionProblem = "alwaysTrue"  // the condition restricts nothing
+)
+
+// ConditionReason says why a condition's outcome is fixed.
+type ConditionReason string
+
+const (
+	ReasonNone              ConditionReason = ""
+	ReasonUnknownOperator   ConditionReason = "unknownOperator"
+	ReasonInvalidRegex      ConditionReason = "invalidRegex"
+	ReasonUnresolvableField ConditionReason = "unresolvableField"
+	ReasonNotAList          ConditionReason = "notAList"
+	ReasonEmptyList         ConditionReason = "emptyList"
+	ReasonNotANumber        ConditionReason = "notANumber"
+	ReasonNoValidCIDR       ConditionReason = "noValidCIDR"
+	ReasonNotATime          ConditionReason = "notATime"
+)
+
+// knownOperators is the evaluator's switch in evaluateCondition. Anything
+// else falls to its default case, which returns an error.
+var knownOperators = map[policy.Operator]struct{}{
+	policy.OpEquals: {}, policy.OpNotEquals: {}, policy.OpIn: {}, policy.OpNotIn: {},
+	policy.OpContains: {}, policy.OpStartsWith: {}, policy.OpEndsWith: {},
+	policy.OpGreaterThan: {}, policy.OpLessThan: {}, policy.OpGTE: {}, policy.OpLTE: {},
+	policy.OpExists: {}, policy.OpNotExists: {}, policy.OpIPInCIDR: {},
+	policy.OpTimeAfter: {}, policy.OpTimeBefore: {}, policy.OpRegex: {},
+}
+
+// fieldResolves mirrors resolveField: only subject.<x>, resource.<x>,
+// action.name and context.<x> ever produce a value. Bare "action" and
+// "action.<anything but name>" pass policy.ValidateCondition and never
+// resolve, which is a disagreement inside warden this contract compensates
+// for. An empty suffix ("context.") is treated as unresolvable too: it would
+// look up the attribute named "", which nothing sets.
+func fieldResolves(field string) bool {
+	prefix, suffix, ok := strings.Cut(field, ".")
+	if !ok || suffix == "" {
+		return false
+	}
+	switch prefix {
+	case "subject", "resource", "context":
+		return true
+	case "action":
+		return suffix == "name"
+	}
+	return false
+}
+
+// listOf mirrors inSlice's accepted shapes: []string and []any, nothing
+// else.
+func listOf(v any) (items []string, isList bool) {
+	switch t := v.(type) {
+	case []string:
+		return t, true
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			out = append(out, fmt.Sprint(item))
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// asNumber mirrors toFloat64 exactly, including the integer widths it does
+// NOT accept (uint8, uint16).
+func asNumber(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case string:
+		f, err := strconv.ParseFloat(n, 64)
+		return f, err == nil
+	}
+	return 0, false
+}
+
+// anyCIDRParses mirrors ipInCIDR: a string or list is accepted, an
+// unparseable CIDR is skipped, and if none parse nothing can match.
+func anyCIDRParses(v any) bool {
+	var cidrs []string
+	switch t := v.(type) {
+	case string:
+		cidrs = []string{t}
+	default:
+		items, ok := listOf(v)
+		if !ok {
+			return false
+		}
+		cidrs = items
+	}
+	for _, c := range cidrs {
+		if _, _, err := net.ParseCIDR(c); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// timeParses mirrors parseTime: a time.Time, or an RFC3339 string.
+func timeParses(v any) bool {
+	switch t := v.(type) {
+	case time.Time:
+		return true
+	case string:
+		_, err := time.Parse(time.RFC3339, t)
+		return err == nil
+	}
+	return false
+}
+
+// nilOutcome is what evaluateCondition returns when the field resolved to
+// nil, for the operators whose result then depends only on the stored
+// value. It mirrors each case of evaluateCondition with actual = nil, where
+// fmt.Sprint(nil) is "<nil>".
+func nilOutcome(c policy.Condition) bool {
+	actual := fmt.Sprint(nil)
+	expected := fmt.Sprint(c.Value)
+	switch c.Operator {
+	case policy.OpEquals:
+		return actual == expected
+	case policy.OpNotEquals:
+		return actual != expected
+	case policy.OpIn, policy.OpNotIn:
+		items, _ := listOf(c.Value)
+		found := false
+		for _, item := range items {
+			if item == actual {
+				found = true
+			}
+		}
+		if c.Operator == policy.OpIn {
+			return found
+		}
+		return !found
+	case policy.OpContains:
+		return strings.Contains(actual, expected)
+	case policy.OpStartsWith:
+		return strings.HasPrefix(actual, expected)
+	case policy.OpEndsWith:
+		return strings.HasSuffix(actual, expected)
+	case policy.OpNotExists:
+		return true
+	case policy.OpRegex:
+		re := regexp.MustCompile(expected) // callers check it compiles first
+		return re.MatchString(actual)
+	}
+	// exists, gt, lt, gte, lte, ip_in_cidr, time_after, time_before are all
+	// false for a nil actual.
+	return false
+}
+
+// classifyCondition reports whether a condition's outcome is fixed, and why.
+// The order matters: an unknown operator or an uncompilable regex throws
+// regardless of the field, so those are checked first.
+func classifyCondition(c policy.Condition) (ConditionProblem, ConditionReason) {
+	if _, ok := knownOperators[c.Operator]; !ok {
+		return ProblemThrows, ReasonUnknownOperator
+	}
+	if c.Operator == policy.OpRegex {
+		if _, err := regexp.Compile(fmt.Sprint(c.Value)); err != nil {
+			return ProblemThrows, ReasonInvalidRegex
+		}
+	}
+	if !fieldResolves(c.Field) {
+		if nilOutcome(c) {
+			return ProblemAlwaysTrue, ReasonUnresolvableField
+		}
+		return ProblemAlwaysFalse, ReasonUnresolvableField
+	}
+	switch c.Operator {
+	case policy.OpIn, policy.OpNotIn:
+		items, isList := listOf(c.Value)
+		reason := ReasonNotAList
+		if isList {
+			if len(items) > 0 {
+				return ProblemNone, ReasonNone
+			}
+			reason = ReasonEmptyList
+		}
+		if c.Operator == policy.OpIn {
+			return ProblemAlwaysFalse, reason
+		}
+		return ProblemAlwaysTrue, reason
+	case policy.OpGreaterThan, policy.OpLessThan, policy.OpGTE, policy.OpLTE:
+		if _, ok := asNumber(c.Value); !ok {
+			return ProblemAlwaysFalse, ReasonNotANumber
+		}
+	case policy.OpIPInCIDR:
+		if !anyCIDRParses(c.Value) {
+			return ProblemAlwaysFalse, ReasonNoValidCIDR
+		}
+	case policy.OpTimeAfter, policy.OpTimeBefore:
+		if !timeParses(c.Value) {
+			return ProblemAlwaysFalse, ReasonNotATime
+		}
+	}
+	return ProblemNone, ReasonNone
+}
+
+// Policy states. "never" is a window whose end precedes its start: under
+// EffectiveAt it cannot be in effect at any instant.
+const (
+	StateActive    = "active"
+	StateInactive  = "inactive"
+	StateScheduled = "scheduled"
+	StateExpired   = "expired"
+	StateNever     = "never"
+)
+
+func policyState(p *policy.Policy, now time.Time) string {
+	switch {
+	case !p.IsActive:
+		return StateInactive
+	case p.NotBefore != nil && p.NotAfter != nil && p.NotAfter.Before(*p.NotBefore):
+		return StateNever
+	case p.NotBefore != nil && now.Before(*p.NotBefore):
+		return StateScheduled
+	case p.NotAfter != nil && now.After(*p.NotAfter):
+		return StateExpired
+	}
+	return StateActive
+}
+
+// policyAnalysis is everything the dashboard shows about a policy that the
+// stored fields do not say directly.
+type policyAnalysis struct {
+	State        string
+	FailsClosed  bool // a deny that applies as if its conditions from DecidingCondition on were met
+	NeverApplies bool
+	// DecidingCondition is the index of the condition that makes the policy
+	// fail closed or never apply, or -1.
+	DecidingCondition     int
+	Problems              []ConditionProblem
+	Reasons               []ConditionReason
+	SubjectsUnrestricted  bool
+	ActionsUnrestricted   bool
+	ResourcesUnrestricted bool
+	MatchesEverything     bool
+	HasRoleMatcher        bool
+}
+
+// analysePolicy walks the conditions in evaluation order.
+// evaluateConditions stops at the first false and at the first error, so
+// the FIRST condition with a fixed false or error outcome decides, and a
+// condition that merely depends on the check cannot rescue a later one.
+func analysePolicy(p *policy.Policy, now time.Time) policyAnalysis {
+	a := policyAnalysis{
+		State:             policyState(p, now),
+		DecidingCondition: -1,
+		Problems:          make([]ConditionProblem, len(p.Conditions)),
+		Reasons:           make([]ConditionReason, len(p.Conditions)),
+	}
+	for i, c := range p.Conditions {
+		a.Problems[i], a.Reasons[i] = classifyCondition(c)
+	}
+	for i, pr := range a.Problems {
+		if pr == ProblemThrows {
+			a.DecidingCondition = i
+			if p.Effect == policy.EffectAllow {
+				a.NeverApplies = true
+			} else {
+				a.FailsClosed = true // anything but exactly "allow" is a deny
+			}
+			break
+		}
+		if pr == ProblemAlwaysFalse {
+			a.DecidingCondition = i
+			a.NeverApplies = true
+			break
+		}
+	}
+
+	a.SubjectsUnrestricted = len(p.Subjects) == 0
+	for _, s := range p.Subjects {
+		if s.Kind == "" && s.ID == "" && s.Role == "" {
+			a.SubjectsUnrestricted = true
+		}
+		if s.Role != "" {
+			a.HasRoleMatcher = true
+		}
+	}
+	a.ActionsUnrestricted = len(p.Actions) == 0 || containsString(p.Actions, "*")
+	a.ResourcesUnrestricted = len(p.Resources) == 0 || containsString(p.Resources, "*")
+	a.MatchesEverything = a.SubjectsUnrestricted && a.ActionsUnrestricted && a.ResourcesUnrestricted
+	return a
+}
+
+func containsString(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}

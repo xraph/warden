@@ -157,6 +157,10 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := resourceTypesDeleteHandler(deps)(context.Background(), ResourceTypeDeleteInput{}, p)
 		return err
 	}},
+	{"policies.validate", func(deps Deps, p dashcontract.Principal) error {
+		_, err := policiesValidateHandler(deps)(context.Background(), PolicyDraft{}, p)
+		return err
+	}},
 	{"maintenance.run", func(deps Deps, p dashcontract.Principal) error {
 		_, err := maintenanceRunHandler(deps)(context.Background(), struct{}{}, p)
 		return err

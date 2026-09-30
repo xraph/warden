@@ -76,6 +76,7 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"resourceTypes.create":        dashcontract.IntentKindCommand,
 		"resourceTypes.update":        dashcontract.IntentKindCommand,
 		"resourceTypes.delete":        dashcontract.IntentKindCommand,
+		"policies.validate":           dashcontract.IntentKindQuery,
 		"maintenance.run":             dashcontract.IntentKindCommand,
 		"maintenance.cacheInvalidate": dashcontract.IntentKindCommand,
 	}
@@ -368,6 +369,30 @@ func TestManifest_ResourceTypeQueriesAreDeclared(t *testing.T) {
 		}
 		if q.Intent != intent {
 			t.Errorf("%s points at %q, want %s", name, q.Intent, intent)
+		}
+	}
+}
+
+func TestManifest_PolicyValidationIsAQueryThatIsNeverServedStale(t *testing.T) {
+	m := loadManifest(t)
+	q, ok := m.Queries["policyValidation"]
+	if !ok {
+		t.Fatal("manifest declares no policyValidation query")
+	}
+	if q.Intent != "policies.validate" {
+		t.Errorf("policyValidation points at %q, want policies.validate", q.Intent)
+	}
+	if q.Cache.StaleTime != "0s" {
+		t.Errorf("policyValidation staleTime = %q, want 0s: a draft answer cannot be reused", q.Cache.StaleTime)
+	}
+	for _, in := range m.Intents {
+		if in.Name == "policies.validate" {
+			if in.Kind != dashcontract.IntentKindQuery || in.Capability != "read" {
+				t.Errorf("policies.validate is %s/%s, want a read query", in.Kind, in.Capability)
+			}
+			if len(in.Invalidates) != 0 {
+				t.Errorf("a query invalidates nothing, got %v", in.Invalidates)
+			}
 		}
 	}
 }
