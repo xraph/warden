@@ -8,7 +8,8 @@ This page is the canonical reference for the `.warden` declarative configuration
 ## What changed
 
 - **`grants = []` now revokes every grant.** A role with a `grants` clause owns its whole grant set, so an empty list leaves it with none. Before, an empty list did nothing. If you leave the `grants` clause out entirely, the role keeps whatever grants it already has in the store. `warden export` writes `grants = []` for a role with no grants, so deleting a grant from exported source revokes it.
-- **Conditions the store can't hold are refused.** `negate`, an `any_of` with more than one condition, and an empty `any_of` are now diagnostics. Before, they were stored as something else without a word: `negate` was dropped (inverting the condition) and `any_of` kept only its first condition. See [`when` blocks](#when-blocks).
+- **Conditions the store can't hold are refused.** `negate`, an `any_of` with more than one condition, and an empty `any_of` are now diagnostics. Before, they were stored as something else without a word: `negate` was dropped (inverting the condition) and `any_of` kept only its first condition. See [`when` blocks](#when-blocks). A `DeclarativeOnStart` deployment whose files use `negate` or an `any_of` with more than one condition now fails at startup. With `DeclarativeStrict` set the extension won't start; without it you get a warning in the log, and nothing from those files is applied.
+- **A relation written twice is refused.** The store holds one row per tuple, so the second line never wrote anything, but a plan counted it as a write. It's now a diagnostic at the second line, and a `DeclarativeOnStart` deployment that repeats a tuple fails at startup the same way.
 - **Names follow the store.** Any name the store accepts is valid, quoted when a bare identifier can't spell it. See [Identifier conventions](#identifier-conventions).
 - **Plan lines name the fields that changed**, for example `~ role//viewer (grants)`.
 
