@@ -115,6 +115,15 @@ func (e *Engine) SetExpressionEvaluator(ev ExpressionEvaluator) { e.exprEval = e
 // Config returns the engine configuration.
 func (e *Engine) Config() Config { return e.config }
 
+// CheckLogLoss reports how many decided checks left no check log row since
+// this engine started. ok is false when check logging is off.
+func (e *Engine) CheckLogLoss() (CheckLogLoss, bool) {
+	if e.checkLogWriter == nil {
+		return CheckLogLoss{}, false
+	}
+	return e.checkLogWriter.loss(), true
+}
+
 // Plugins returns the plugin registry (may be nil).
 func (e *Engine) Plugins() *plugin.Registry { return e.plugins }
 

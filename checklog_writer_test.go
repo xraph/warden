@@ -151,6 +151,20 @@ func TestCheckLogWriter_DropsWhenQueueFull(t *testing.T) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+	if got := w.loss().QueueFull; got < 1 {
+		t.Fatalf("expected loss().QueueFull >= 1 for a saturated queue, got %d", got)
+	}
+
+	// Both count the same events, so once the writer has stopped they agree.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := w.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	dropped, _ := metrics.snapshot()
+	if got := w.loss().QueueFull; got != uint64(dropped) {
+		t.Fatalf("loss().QueueFull = %d, want it to equal the metrics dropped count %d", got, dropped)
+	}
 }
 
 func TestCheckLogWriter_EnqueueAfterStopIsDropped(t *testing.T) {
@@ -169,6 +183,9 @@ func TestCheckLogWriter_EnqueueAfterStopIsDropped(t *testing.T) {
 	dropped, _ := metrics.snapshot()
 	if dropped != 1 {
 		t.Fatalf("expected the post-Stop Enqueue to be dropped and counted, got dropped=%d", dropped)
+	}
+	if got := w.loss().QueueFull; got != 1 {
+		t.Fatalf("expected loss().QueueFull == 1 after a post-Stop Enqueue, got %d", got)
 	}
 }
 
@@ -193,5 +210,24 @@ func TestCheckLogWriter_WriteErrorDoesNotBlockOtherEntries(t *testing.T) {
 	_, written := metrics.snapshot()
 	if written != 0 {
 		t.Fatalf("expected CheckLogWritten to not be called for an all-failing batch, got %d", written)
+	}
+	if got := w.loss().WriteFailed; got != 3 {
+		t.Fatalf("expected loss().WriteFailed == 3, got %d", got)
+	}
+	if got := w.loss().QueueFull; got != 0 {
+		t.Fatalf("expected loss().QueueFull == 0 when only writes failed, got %d", got)
+	}
+}
+
+func TestCheckLogWriter_LossStartsAtZeroWithAStartTime(t *testing.T) {
+	before := time.Now()
+	w := newCheckLogWriter(&recordingCheckLogStore{}, 10, log.NewNoopLogger(), &fakeWriterMetrics{})
+	defer func() { _ = w.Stop(context.Background()) }()
+	got := w.loss()
+	if got.QueueFull != 0 || got.WriteFailed != 0 {
+		t.Fatalf("fresh writer: want zero loss, got %+v", got)
+	}
+	if got.Since.Before(before) || got.Since.After(time.Now()) {
+		t.Fatalf("Since %v is not when the writer started", got.Since)
 	}
 }
