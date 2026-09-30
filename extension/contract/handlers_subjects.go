@@ -9,7 +9,6 @@ import (
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
-	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/policy"
@@ -23,9 +22,6 @@ import (
 // The store is asked for one more, so a full page proves there is more
 // rather than guessing from a total.
 const subjectListCap = 200
-
-// subjectRecentChecks is how many check log rows the view returns.
-const subjectRecentChecks = 10
 
 // SubjectDetailInput names one subject at one namespace.
 //
@@ -83,6 +79,9 @@ type SubjectRelation struct {
 	ObjectType    string `json:"objectType"`
 	ObjectID      string `json:"objectId"`
 	Relation      string `json:"relation"`
+	// SubjectRelation is the tuple's subject relation, set when the tuple
+	// grants a userset (group:eng#member) rather than the subject itself.
+	SubjectRelation string `json:"subjectRelation,omitempty"`
 }
 
 // SubjectPolicy is one policy in effect that selects the subject.
@@ -99,6 +98,14 @@ type SubjectPolicy struct {
 }
 
 // SubjectDetailResponse is the subjects.detail reply.
+//
+// The intent's own grant (read on warden:assignment) covers Assignments. The
+// other sections need their own read grant, checked in the handler: Roles
+// needs warden:role, Relations warden:relation and Policies warden:policy.
+// A section the caller may not read is an empty array, its truncated flag is
+// false, and its name ("roles", "relations" or "policies") is in Withheld.
+// The check log is not here: it needs read_audit, and the page reads it
+// through checkLogs.list.
 type SubjectDetailResponse struct {
 	Roles                []SubjectRole       `json:"roles"`
 	Assignments          []SubjectAssignment `json:"assignments"`
@@ -106,7 +113,24 @@ type SubjectDetailResponse struct {
 	Relations            []SubjectRelation   `json:"relations"`
 	RelationsTruncated   bool                `json:"relationsTruncated"`
 	Policies             []SubjectPolicy     `json:"policies"`
-	RecentChecks         []CheckLogSummary   `json:"recentChecks"`
+	// Withheld names the sections left empty because the caller lacks their
+	// read grant. Always an array, empty when nothing is withheld.
+	Withheld []string `json:"withheld"`
+}
+
+// subjectSection is one section of the subject view that needs a read grant
+// beyond the intent's own.
+type subjectSection struct {
+	name     string
+	resource string
+}
+
+// subjectSections are checked in the order the page shows them, which is
+// also the order of Withheld.
+var subjectSections = []subjectSection{
+	{"roles", "warden:role"},
+	{"relations", "warden:relation"},
+	{"policies", "warden:policy"},
 }
 
 // subjectScanPage is how many rows the empty-kind scan asks the store for at
@@ -218,21 +242,50 @@ func subjectsDetailHandler(deps Deps) func(context.Context, SubjectDetailInput, 
 		s := eng.Store()
 		now := time.Now()
 
-		direct, all, err := eng.SubjectRoles(ctx, warden.SubjectKind(in.SubjectKind), in.SubjectID,
-			warden.WithCallTenantID(tenantID), warden.WithCallNamespacePath(in.NamespacePath))
-		if err != nil {
-			return SubjectDetailResponse{}, mapWardenError(err)
-		}
-		roles, slugs, err := subjectRoles(ctx, deps, tenantID, direct, all)
-		if err != nil {
-			return SubjectDetailResponse{}, err
-		}
 		out := SubjectDetailResponse{
-			Roles:        roles,
-			Assignments:  make([]SubjectAssignment, 0),
-			Relations:    make([]SubjectRelation, 0),
-			Policies:     make([]SubjectPolicy, 0),
-			RecentChecks: make([]CheckLogSummary, 0),
+			Roles:       make([]SubjectRole, 0),
+			Assignments: make([]SubjectAssignment, 0),
+			Relations:   make([]SubjectRelation, 0),
+			Policies:    make([]SubjectPolicy, 0),
+			Withheld:    make([]string, 0),
+		}
+
+		// The intent's grant covers assignments only. Every other section is
+		// checked here, the same way Authorize checks the intent, and one the
+		// caller may not read is withheld rather than refused, so the rest of
+		// the page still answers. An engine that cannot decide fails the
+		// request, as the authorizer does.
+		granted := make(map[string]bool, len(subjectSections))
+		for _, sec := range subjectSections {
+			held, err := principalHolds(ctx, eng, p, tenantID, "read", sec.resource)
+			if err != nil {
+				return SubjectDetailResponse{}, mapWardenError(err)
+			}
+			granted[sec.name] = held
+			if !held {
+				out.Withheld = append(out.Withheld, sec.name)
+			}
+		}
+
+		// The resolved roles feed both the roles section and the policies
+		// section, whose role matchers select by slug.
+		var slugs []string
+		if granted["roles"] || granted["policies"] {
+			direct, all, err := eng.SubjectRoles(ctx, warden.SubjectKind(in.SubjectKind), in.SubjectID,
+				warden.WithCallTenantID(tenantID), warden.WithCallNamespacePath(in.NamespacePath))
+			if err != nil {
+				return SubjectDetailResponse{}, mapWardenError(err)
+			}
+			slugs = make([]string, 0, len(all))
+			for _, r := range all {
+				slugs = append(slugs, r.Slug)
+			}
+			if granted["roles"] {
+				out.Roles, err = subjectRoles(ctx, deps, tenantID, direct, all)
+				if err != nil {
+					return SubjectDetailResponse{}, err
+				}
+			}
 		}
 
 		// Assignments cover every namespace, not the one asked about: the
@@ -279,74 +332,61 @@ func subjectsDetailHandler(deps Deps) func(context.Context, SubjectDetailInput, 
 			out.Assignments = append(out.Assignments, sa)
 		}
 
-		tuples, err := collectForKind(in.SubjectKind, subjectListCap+1,
-			func(tp *relation.Tuple) string { return tp.SubjectType },
-			func(offset, limit int) ([]*relation.Tuple, error) {
-				return s.ListRelations(ctx, &relation.ListFilter{
-					TenantID:    tenantID,
-					SubjectType: in.SubjectKind,
-					SubjectID:   in.SubjectID,
-					Limit:       limit,
-					Offset:      offset,
+		if granted["relations"] {
+			tuples, err := collectForKind(in.SubjectKind, subjectListCap+1,
+				func(tp *relation.Tuple) string { return tp.SubjectType },
+				func(offset, limit int) ([]*relation.Tuple, error) {
+					return s.ListRelations(ctx, &relation.ListFilter{
+						TenantID:    tenantID,
+						SubjectType: in.SubjectKind,
+						SubjectID:   in.SubjectID,
+						Limit:       limit,
+						Offset:      offset,
+					})
 				})
-			})
-		if err != nil {
-			return SubjectDetailResponse{}, mapWardenError(err)
-		}
-		if len(tuples) > subjectListCap {
-			tuples, out.RelationsTruncated = tuples[:subjectListCap], true
-		}
-		for _, tp := range tuples {
-			out.Relations = append(out.Relations, SubjectRelation{
-				ID:            tp.ID.String(),
-				NamespacePath: tp.NamespacePath,
-				ObjectType:    tp.ObjectType,
-				ObjectID:      tp.ObjectID,
-				Relation:      tp.Relation,
-			})
+			if err != nil {
+				return SubjectDetailResponse{}, mapWardenError(err)
+			}
+			if len(tuples) > subjectListCap {
+				tuples, out.RelationsTruncated = tuples[:subjectListCap], true
+			}
+			for _, tp := range tuples {
+				out.Relations = append(out.Relations, SubjectRelation{
+					ID:              tp.ID.String(),
+					NamespacePath:   tp.NamespacePath,
+					ObjectType:      tp.ObjectType,
+					ObjectID:        tp.ObjectID,
+					Relation:        tp.Relation,
+					SubjectRelation: tp.SubjectRelation,
+				})
+			}
 		}
 
-		// A policy is a candidate when it is stored at this namespace or an
-		// ancestor, in effect right now, and its matchers select a subject
-		// holding these roles. Selecting is not applying: its actions,
-		// resources and conditions still decide each check.
-		candidates, err := s.ListActivePolicies(ctx, tenantID, warden.AncestorNamespaces(in.NamespacePath))
-		if err != nil {
-			return SubjectDetailResponse{}, mapWardenError(err)
-		}
-		for _, pol := range candidates {
-			if !pol.EffectiveAt(now) {
-				continue
+		if granted["policies"] {
+			// A policy is a candidate when it is stored at this namespace or
+			// an ancestor, in effect right now, and its matchers select a
+			// subject holding these roles. Selecting is not applying: its
+			// actions, resources and conditions still decide each check.
+			candidates, err := s.ListActivePolicies(ctx, tenantID, warden.AncestorNamespaces(in.NamespacePath))
+			if err != nil {
+				return SubjectDetailResponse{}, mapWardenError(err)
 			}
-			if !warden.PolicySelectsSubject(pol, warden.SubjectKind(in.SubjectKind), in.SubjectID, slugs) {
-				continue
-			}
-			out.Policies = append(out.Policies, SubjectPolicy{
-				ID:            pol.ID.String(),
-				Name:          pol.Name,
-				Effect:        string(pol.Effect),
-				Priority:      pol.Priority,
-				NamespacePath: pol.NamespacePath,
-				SelectedBy:    subjectPolicySelection(pol, in.SubjectKind, in.SubjectID, slugs),
-			})
-		}
-
-		entries, err := collectForKind(in.SubjectKind, subjectRecentChecks,
-			func(e *checklog.Entry) string { return e.SubjectKind },
-			func(offset, limit int) ([]*checklog.Entry, error) {
-				return s.ListCheckLogs(ctx, &checklog.QueryFilter{
-					TenantID:    tenantID,
-					SubjectKind: in.SubjectKind,
-					SubjectID:   in.SubjectID,
-					Limit:       limit,
-					Offset:      offset,
+			for _, pol := range candidates {
+				if !pol.EffectiveAt(now) {
+					continue
+				}
+				if !warden.PolicySelectsSubject(pol, warden.SubjectKind(in.SubjectKind), in.SubjectID, slugs) {
+					continue
+				}
+				out.Policies = append(out.Policies, SubjectPolicy{
+					ID:            pol.ID.String(),
+					Name:          pol.Name,
+					Effect:        string(pol.Effect),
+					Priority:      pol.Priority,
+					NamespacePath: pol.NamespacePath,
+					SelectedBy:    subjectPolicySelection(pol, in.SubjectKind, in.SubjectID, slugs),
 				})
-			})
-		if err != nil {
-			return SubjectDetailResponse{}, mapWardenError(err)
-		}
-		for _, e := range entries {
-			out.RecentChecks = append(out.RecentChecks, projectCheckLog(e))
+			}
 		}
 		return out, nil
 	}
@@ -355,23 +395,21 @@ func subjectsDetailHandler(deps Deps) func(context.Context, SubjectDetailInput, 
 // subjectRoles projects the resolved roles. all is already deduplicated;
 // direct is a set exactly as the store gave it (a role assigned at two
 // ancestor namespaces can repeat), so it only decides each role's Via.
-func subjectRoles(ctx context.Context, deps Deps, tenantID string, direct, all []*role.Role) ([]SubjectRole, []string, error) {
+func subjectRoles(ctx context.Context, deps Deps, tenantID string, direct, all []*role.Role) ([]SubjectRole, error) {
 	assigned := make(map[id.RoleID]struct{}, len(direct))
 	for _, r := range direct {
 		assigned[r.ID] = struct{}{}
 	}
 	ids := make([]id.RoleID, 0, len(all))
-	slugs := make([]string, 0, len(all))
 	for _, r := range all {
 		ids = append(ids, r.ID)
-		slugs = append(slugs, r.Slug)
 	}
 	grants := map[id.RoleID][]*permission.Permission{}
 	if len(ids) > 0 {
 		var err error
 		grants, err = deps.Engine.Store().ListRolePermissionsForRoles(ctx, tenantID, ids)
 		if err != nil {
-			return nil, nil, mapWardenError(err)
+			return nil, mapWardenError(err)
 		}
 	}
 	out := make([]SubjectRole, 0, len(all))
@@ -405,5 +443,5 @@ func subjectRoles(ctx context.Context, deps Deps, tenantID string, direct, all [
 			Permissions:   perms,
 		})
 	}
-	return out, slugs, nil
+	return out, nil
 }

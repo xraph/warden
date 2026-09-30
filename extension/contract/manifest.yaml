@@ -126,8 +126,11 @@ intents:
   # A batch of the same dry-run checks at one namespace, capped by
   # Config.MaxBatchChecks. A query for the same reasons.
   - { name: playground.batchCheck, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
-  # One subject's roles, grants, assignments, relations, policies and recent
-  # checks. Every command that changes any of those invalidates it.
+  # One subject's roles, grants, assignments, relations and policies. The
+  # gate covers the assignments; the handler checks the read grant for roles,
+  # relations and policies itself. Recent checks need read_audit, so the page
+  # reads them through checkLogs.list. Every command that changes any of
+  # those invalidates it.
   - { name: subjects.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
 
 queries:

@@ -2,14 +2,17 @@ package contract
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/checklog"
+	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/policy"
 	"github.com/xraph/warden/relation"
@@ -19,9 +22,24 @@ import (
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
 
-// subjectDetail runs the handler as a t1 user.
+// sectionReads are the grants the subject view checks beyond its intent's.
+var sectionReads = []string{"warden:role:read", "warden:relation:read", "warden:policy:read"}
+
+// grantSectionReads lets principalFor's user ("tester") read every section,
+// so a test about what a section holds is not a test about withholding. A
+// store that already grants them is left alone, so tests can ask twice.
+func grantSectionReads(t *testing.T, s *memory.Store) {
+	t.Helper()
+	if _, err := s.GetRoleBySlug(context.Background(), "t1", "", "r-tester"); err == nil {
+		return
+	}
+	grantUser(t, s, "tester", sectionReads...)
+}
+
+// subjectDetail runs the handler as a t1 user who may read every section.
 func subjectDetail(t *testing.T, s *memory.Store, in SubjectDetailInput) SubjectDetailResponse {
 	t.Helper()
+	grantSectionReads(t, s)
 	h := subjectsDetailHandler(Deps{Engine: engineOver(t, s)})
 	got, err := h(context.Background(), in, principalFor("t1"))
 	if err != nil {
@@ -119,7 +137,7 @@ func TestSubjectsDetailAcceptsAnySubjectKind(t *testing.T) {
 func TestSubjectsDetailAnEmptySubjectGetsEmptyListsNotNulls(t *testing.T) {
 	// The page maps over every list, and a nil slice is JSON null.
 	got := subjectDetail(t, memory.New(), SubjectDetailInput{SubjectKind: "user", SubjectID: "nobody"})
-	if got.Roles == nil || got.Assignments == nil || got.Relations == nil || got.Policies == nil || got.RecentChecks == nil {
+	if got.Roles == nil || got.Assignments == nil || got.Relations == nil || got.Policies == nil || got.Withheld == nil {
 		t.Errorf("a list is nil: %+v", got)
 	}
 	if got.AssignmentsTruncated || got.RelationsTruncated {
@@ -414,7 +432,10 @@ func TestSubjectsDetailPoliciesAreThoseInEffectAndSelectingThisSubject(t *testin
 	seedPolicyFor(t, s, "t1", "", "inactive", func(p *policy.Policy) { p.IsActive = false })
 	seedPolicyFor(t, s, "t1", "", "lapsed", func(p *policy.Policy) { p.NotAfter = &past })
 	seedPolicyFor(t, s, "t1", "", "not-yet", func(p *policy.Policy) { p.NotBefore = &future })
-	seedPolicyFor(t, s, "t1", "", "deny-first", func(p *policy.Policy) { p.Effect = policy.EffectDeny; p.Priority = 7 })
+	// Denies only on doc, so it cannot deny the viewer's own section reads.
+	seedPolicyFor(t, s, "t1", "", "deny-first", func(p *policy.Policy) {
+		p.Effect, p.Priority, p.Resources = policy.EffectDeny, 7, []string{"doc"}
+	})
 	seedPolicyFor(t, s, "t1", "sandbox", "elsewhere", nil)
 	seedPolicyFor(t, s, "t1", "eng", "eng-only", nil)
 	seedPolicyFor(t, s, "t2", "", "theirs", nil)
@@ -483,40 +504,24 @@ func TestSubjectsDetailPolicyRolesComeFromTheResolvedSetIncludingInherited(t *te
 	}
 }
 
-func TestSubjectsDetailRecentChecksAreTheNewestTenForThisSubject(t *testing.T) {
+func TestSubjectsDetailHasNoRecentChecks(t *testing.T) {
+	// The check log needs read_audit, which the intent's grant does not
+	// cover, so the page reads it through checkLogs.list instead.
 	s := memory.New()
 	eng := engineOver(t, s)
-	base := time.Now().Add(-time.Hour)
-	var newest []string
-	for i := 0; i < 12; i++ {
-		e := &checklog.Entry{
-			TenantID: "t1", NamespacePath: []string{"", "eng"}[i%2], SubjectKind: "user", SubjectID: "alice",
-			Action: "read", ResourceType: "doc", ResourceID: fmt.Sprint(i), Decision: "allow",
-			CreatedAt: base.Add(time.Duration(i) * time.Minute),
-		}
-		seedCheckLog(t, eng, e)
-		if i >= 2 {
-			newest = append([]string{e.ID.String()}, newest...)
-		}
-	}
-	seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", SubjectKind: "api_key", SubjectID: "alice", Action: "read", Decision: "allow", CreatedAt: time.Now()})
-	seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", SubjectKind: "user", SubjectID: "bob", Action: "read", Decision: "allow", CreatedAt: time.Now()})
+	seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", SubjectKind: "user", SubjectID: "alice", Action: "read", Decision: "allow", CreatedAt: time.Now()})
+	grantSectionReads(t, s)
 
-	h := subjectsDetailHandler(Deps{Engine: eng})
-	got, err := h(context.Background(), SubjectDetailInput{SubjectKind: "user", SubjectID: "alice"}, principalFor("t1"))
+	got, err := subjectsDetailHandler(Deps{Engine: eng})(context.Background(), SubjectDetailInput{SubjectKind: "user", SubjectID: "alice"}, principalFor("t1"))
 	if err != nil {
 		t.Fatalf("subjects.detail: %v", err)
 	}
-	if len(got.RecentChecks) != 10 {
-		t.Fatalf("recentChecks = %d rows, want 10", len(got.RecentChecks))
+	raw := marshalDetail(t, got)
+	if strings.Contains(raw, "recentChecks") {
+		t.Errorf("response still carries recentChecks: %s", raw)
 	}
-	for i, c := range got.RecentChecks {
-		if c.ID != newest[i] {
-			t.Errorf("row %d = %s, want %s (newest first)", i, c.ID, newest[i])
-		}
-		if c.SubjectKind != "user" || c.SubjectID != "alice" || c.Decision != "allow" || c.Action != "read" {
-			t.Errorf("row %d not projected as a check log summary: %+v", i, c)
-		}
+	if !strings.Contains(raw, `"withheld":[]`) {
+		t.Errorf("a viewer holding every grant must get \"withheld\":[], got %s", raw)
 	}
 }
 
@@ -531,7 +536,7 @@ func TestSubjectsDetailNeverShowsAnotherTenantsRows(t *testing.T) {
 	other := assignTo(t, s, &assignment.Assignment{TenantID: "t2", RoleID: theirs.ID})
 	otherTuple := seedSubjectTuple(t, s, "t2", "", "vault", "user", "alice")
 	otherPolicy := seedPolicyFor(t, s, "t2", "", "theirs-policy", nil)
-	otherLog := seedCheckLog(t, eng, &checklog.Entry{TenantID: "t2", SubjectKind: "user", SubjectID: "alice", Action: "read", Decision: "allow"})
+	grantSectionReads(t, s)
 
 	h := subjectsDetailHandler(Deps{Engine: eng})
 	got, err := h(ctx, SubjectDetailInput{SubjectKind: "user", SubjectID: "alice"}, principalFor("t1"))
@@ -558,11 +563,6 @@ func TestSubjectsDetailNeverShowsAnotherTenantsRows(t *testing.T) {
 	for _, p := range got.Policies {
 		if p.ID == otherPolicy.ID.String() {
 			t.Error("t2's policy leaked")
-		}
-	}
-	for _, c := range got.RecentChecks {
-		if c.ID == otherLog.ID.String() {
-			t.Error("t2's check leaked")
 		}
 	}
 	if len(got.Roles) != 1 || got.Roles[0].Slug != "mine" || len(got.Assignments) != 1 {
@@ -603,16 +603,16 @@ func TestSubjectsDetailEmptyKindKeepsOnlyRowsOfKindEmpty(t *testing.T) {
 	eng := engineOver(t, s)
 	r := seedRoleIn(t, s, "t1", "", "reader", "")
 	now := time.Now()
-	var wantA, wantT, wantC string
+	var wantA, wantT string
 	for i, kind := range []string{"", "user", "api_key"} {
 		at := now.Add(time.Duration(i) * time.Minute)
 		a := createBareAssignment(t, s, r, kind, "d1", at)
 		tp := createBareTuple(t, s, kind, "o1", at)
-		c := seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", SubjectKind: kind, SubjectID: "alice", Action: "read", Decision: "allow", CreatedAt: at})
 		if kind == "" {
-			wantA, wantT, wantC = a.ID.String(), tp.ID.String(), c.ID.String()
+			wantA, wantT = a.ID.String(), tp.ID.String()
 		}
 	}
+	grantSectionReads(t, s)
 
 	got, err := subjectsDetailHandler(Deps{Engine: eng})(context.Background(), SubjectDetailInput{SubjectID: "alice"}, principalFor("t1"))
 	if err != nil {
@@ -624,9 +624,6 @@ func TestSubjectsDetailEmptyKindKeepsOnlyRowsOfKindEmpty(t *testing.T) {
 	if len(got.Relations) != 1 || got.Relations[0].ID != wantT {
 		t.Errorf("relations = %+v, want only the empty-type row %s", got.Relations, wantT)
 	}
-	if len(got.RecentChecks) != 1 || got.RecentChecks[0].ID != wantC {
-		t.Errorf("recentChecks = %+v, want only the empty-kind row %s", got.RecentChecks, wantC)
-	}
 	if got.AssignmentsTruncated || got.RelationsTruncated {
 		t.Error("nothing was cut off")
 	}
@@ -636,34 +633,29 @@ func TestSubjectsDetailEmptyKindPagesPastManyNonMatchingRows(t *testing.T) {
 	// More than a page of other-kind rows come first in the store's order, so
 	// a single fetch of 201 would hold no empty-kind row at all.
 	const noise = 450
-	seed := func(t *testing.T, matching int) (*memory.Store, []string, []string, []string) {
+	seed := func(t *testing.T, matching int) (*memory.Store, []string, []string) {
 		t.Helper()
 		s := memory.New()
-		eng := engineOver(t, s)
 		r := seedRoleIn(t, s, "t1", "", "reader", "")
 		base := time.Now().Add(-24 * time.Hour)
-		var as, ts, cs []string
-		// Assignments and tuples list oldest first, check logs newest first,
-		// so the noise is oldest for the first two and newest for the third.
+		var as, ts []string
+		// Assignments and tuples list oldest first, so the noise is oldest.
 		for i := 0; i < noise; i++ {
 			kind := []string{"user", "api_key"}[i%2]
 			createBareAssignment(t, s, r, kind, fmt.Sprintf("n%03d", i), base.Add(time.Duration(i)*time.Second))
 			createBareTuple(t, s, kind, fmt.Sprintf("n%03d", i), base.Add(time.Duration(i)*time.Second))
-			seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", SubjectKind: kind, SubjectID: "alice", Action: "read", Decision: "allow",
-				CreatedAt: base.Add(time.Hour + time.Duration(i)*time.Second)})
 		}
 		for i := 0; i < matching; i++ {
 			at := base.Add(time.Hour + time.Duration(i)*time.Second)
 			a := createBareAssignment(t, s, r, "", fmt.Sprintf("m%03d", i), at)
 			tp := createBareTuple(t, s, "", fmt.Sprintf("m%03d", i), at)
-			c := seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", SubjectKind: "", SubjectID: "alice", Action: "read", Decision: "allow",
-				CreatedAt: base.Add(-time.Hour + time.Duration(i)*time.Second)})
-			as, ts, cs = append(as, a.ID.String()), append(ts, tp.ID.String()), append(cs, c.ID.String())
+			as, ts = append(as, a.ID.String()), append(ts, tp.ID.String())
 		}
-		return s, as, ts, cs
+		return s, as, ts
 	}
 	run := func(t *testing.T, s *memory.Store) SubjectDetailResponse {
 		t.Helper()
+		grantSectionReads(t, s)
 		got, err := subjectsDetailHandler(Deps{Engine: engineOver(t, s)})(context.Background(), SubjectDetailInput{SubjectID: "alice"}, principalFor("t1"))
 		if err != nil {
 			t.Fatalf("subjects.detail: %v", err)
@@ -672,11 +664,11 @@ func TestSubjectsDetailEmptyKindPagesPastManyNonMatchingRows(t *testing.T) {
 	}
 
 	t.Run("a few matching rows are found behind the noise", func(t *testing.T) {
-		s, as, ts, cs := seed(t, 3)
+		s, as, ts := seed(t, 3)
 		got := run(t, s)
-		if len(got.Assignments) != 3 || len(got.Relations) != 3 || len(got.RecentChecks) != 3 {
-			t.Fatalf("got %d assignments, %d relations, %d checks, want 3 of each",
-				len(got.Assignments), len(got.Relations), len(got.RecentChecks))
+		if len(got.Assignments) != 3 || len(got.Relations) != 3 {
+			t.Fatalf("got %d assignments, %d relations, want 3 of each",
+				len(got.Assignments), len(got.Relations))
 		}
 		if got.AssignmentsTruncated || got.RelationsTruncated {
 			t.Error("three rows are not truncated")
@@ -691,16 +683,10 @@ func TestSubjectsDetailEmptyKindPagesPastManyNonMatchingRows(t *testing.T) {
 				t.Errorf("relation %d = %s, want %s", i, r.ID, ts[i])
 			}
 		}
-		// Newest first: the seeded matching checks ascend, so they reverse.
-		for i, c := range got.RecentChecks {
-			if c.ID != cs[len(cs)-1-i] {
-				t.Errorf("check %d = %s, want %s", i, c.ID, cs[len(cs)-1-i])
-			}
-		}
 	})
 
 	t.Run("truncation reflects the matching rows, not the noise", func(t *testing.T) {
-		s, _, _, _ := seed(t, 201)
+		s, _, _ := seed(t, 201)
 		got := run(t, s)
 		if len(got.Assignments) != 200 || !got.AssignmentsTruncated {
 			t.Errorf("201 matching assignments: got %d truncated=%v, want 200 and true", len(got.Assignments), got.AssignmentsTruncated)
@@ -708,14 +694,197 @@ func TestSubjectsDetailEmptyKindPagesPastManyNonMatchingRows(t *testing.T) {
 		if len(got.Relations) != 200 || !got.RelationsTruncated {
 			t.Errorf("201 matching relations: got %d truncated=%v, want 200 and true", len(got.Relations), got.RelationsTruncated)
 		}
-		if len(got.RecentChecks) != 10 {
-			t.Errorf("recentChecks = %d, want 10", len(got.RecentChecks))
-		}
-		s, _, _, _ = seed(t, 200)
+		s, _, _ = seed(t, 200)
 		got = run(t, s)
 		if len(got.Assignments) != 200 || got.AssignmentsTruncated || len(got.Relations) != 200 || got.RelationsTruncated {
 			t.Errorf("exactly 200 matching: assignments %d/%v relations %d/%v, want 200 and not truncated",
 				len(got.Assignments), got.AssignmentsTruncated, len(got.Relations), got.RelationsTruncated)
 		}
 	})
+}
+
+func marshalDetail(t *testing.T, got SubjectDetailResponse) string {
+	t.Helper()
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(raw)
+}
+
+// seedWholePicture gives alice one of everything the view can show: an
+// assigned role that inherits another, each with a grant, 201 relations (so
+// a withheld section is visibly not truncated), and a policy selecting her.
+func seedWholePicture(t *testing.T, s *memory.Store) {
+	t.Helper()
+	base := seedRoleIn(t, s, "t1", "", "hidden-base", "")
+	editor := seedRoleIn(t, s, "t1", "", "editor", "hidden-base")
+	grantPermission(t, s, "t1", base, "secretdoc:peek")
+	grantPermission(t, s, "t1", editor, "secretdoc:edit")
+	assignTo(t, s, &assignment.Assignment{RoleID: editor.ID})
+	for i := 0; i < subjectListCap+1; i++ {
+		tp := &relation.Tuple{
+			TenantID: "t1", ObjectType: "vault", ObjectID: fmt.Sprintf("hidden-object-%03d", i),
+			Relation: "keyholder", SubjectType: "user", SubjectID: "alice",
+		}
+		if err := s.CreateRelation(context.Background(), tp); err != nil {
+			t.Fatalf("create tuple: %v", err)
+		}
+	}
+	seedPolicyFor(t, s, "t1", "", "hidden-policy", func(p *policy.Policy) {
+		p.Subjects = []policy.SubjectMatch{{Kind: "user", ID: "alice"}}
+		p.Resources = []string{"vault"}
+	})
+}
+
+func detailAs(t *testing.T, s *memory.Store) SubjectDetailResponse {
+	t.Helper()
+	got, err := subjectsDetailHandler(Deps{Engine: engineOver(t, s)})(context.Background(),
+		SubjectDetailInput{SubjectKind: "user", SubjectID: "alice"}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("subjects.detail: %v", err)
+	}
+	return got
+}
+
+func TestSubjectsDetailWithOnlyTheAssignmentGrantWithholdsEveryOtherSection(t *testing.T) {
+	// The manifest gate checks read on warden:assignment and nothing else,
+	// so that grant alone must not reveal roles, relations or policies.
+	s := memory.New()
+	seedWholePicture(t, s)
+	grantUser(t, s, "tester", "warden:assignment:read")
+
+	got := detailAs(t, s)
+	if len(got.Assignments) != 1 || got.Assignments[0].RoleSlug != "editor" {
+		t.Errorf("assignments = %+v, want alice's editor assignment", got.Assignments)
+	}
+	if fmt.Sprint(got.Withheld) != "[roles relations policies]" {
+		t.Errorf("withheld = %v, want [roles relations policies]", got.Withheld)
+	}
+	if len(got.Roles) != 0 || len(got.Relations) != 0 || len(got.Policies) != 0 || got.RelationsTruncated {
+		t.Errorf("a withheld section carried data: roles %+v relations %d (truncated %v) policies %+v",
+			got.Roles, len(got.Relations), got.RelationsTruncated, got.Policies)
+	}
+	raw := marshalDetail(t, got)
+	for _, secret := range []string{"hidden-base", "EDITOR", "secretdoc", "hidden-object", "keyholder", "hidden-policy"} {
+		if strings.Contains(raw, secret) {
+			t.Errorf("the JSON reveals %q: %s", secret, raw)
+		}
+	}
+	for _, empty := range []string{`"roles":[]`, `"relations":[]`, `"policies":[]`, `"relationsTruncated":false`} {
+		if !strings.Contains(raw, empty) {
+			t.Errorf("the JSON lacks %s: %s", empty, raw)
+		}
+	}
+}
+
+func TestSubjectsDetailEachGrantRevealsExactlyItsSection(t *testing.T) {
+	for _, tc := range []struct {
+		grant    string
+		section  string
+		withheld string
+	}{
+		{"warden:role:read", "roles", "[relations policies]"},
+		{"warden:relation:read", "relations", "[roles policies]"},
+		{"warden:policy:read", "policies", "[roles relations]"},
+	} {
+		t.Run(tc.section, func(t *testing.T) {
+			s := memory.New()
+			seedWholePicture(t, s)
+			grantUser(t, s, "tester", "warden:assignment:read", tc.grant)
+
+			got := detailAs(t, s)
+			if fmt.Sprint(got.Withheld) != tc.withheld {
+				t.Errorf("withheld = %v, want %s", got.Withheld, tc.withheld)
+			}
+			sizes := map[string]int{"roles": len(got.Roles), "relations": len(got.Relations), "policies": len(got.Policies)}
+			for name, n := range sizes {
+				if name == tc.section && n == 0 {
+					t.Errorf("%s is empty though %s is held", name, tc.grant)
+				}
+				if name != tc.section && n != 0 {
+					t.Errorf("%s has %d rows though only %s is held", name, n, tc.grant)
+				}
+			}
+			if got.RelationsTruncated != (tc.section == "relations") {
+				t.Errorf("relationsTruncated = %v, want it only when relations are shown", got.RelationsTruncated)
+			}
+			if tc.section == "roles" {
+				if e := roleBySlug(t, got, "editor"); len(e.Permissions) != 1 || e.Permissions[0].Name != "secretdoc:edit" {
+					t.Errorf("editor permissions = %+v", e.Permissions)
+				}
+				roleBySlug(t, got, "hidden-base")
+			}
+			if tc.section == "policies" && (len(got.Policies) != 1 || got.Policies[0].Name != "hidden-policy") {
+				t.Errorf("policies = %+v, want hidden-policy", got.Policies)
+			}
+			if len(got.Assignments) != 1 {
+				t.Errorf("assignments = %+v, want the one row under the intent's own grant", got.Assignments)
+			}
+		})
+	}
+}
+
+// failingGrantStore fails the resource-role lookup Check makes for the
+// viewer ("tester"), so a grant check errors while every read the handler
+// makes about alice still works.
+type failingGrantStore struct{ *memory.Store }
+
+func (f failingGrantStore) ListRolesForSubjectOnResource(ctx context.Context, tenantID string, namespaces []string, kind, subjectID, resourceType, resourceID string) ([]id.RoleID, error) {
+	if subjectID == "tester" {
+		return nil, errors.New("role table unavailable")
+	}
+	return f.Store.ListRolesForSubjectOnResource(ctx, tenantID, namespaces, kind, subjectID, resourceType, resourceID)
+}
+
+func TestSubjectsDetailFailsWhenAGrantCheckCannotBeAnswered(t *testing.T) {
+	mem := memory.New()
+	seedWholePicture(t, mem)
+	grantUser(t, mem, "tester", sectionReads...)
+	eng, err := warden.NewEngine(warden.WithStore(failingGrantStore{mem}))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	got, err := subjectsDetailHandler(Deps{Engine: eng})(context.Background(),
+		SubjectDetailInput{SubjectKind: "user", SubjectID: "alice"}, principalFor("t1"))
+	var ce *dashcontract.Error
+	if !errors.As(err, &ce) || ce.Code != dashcontract.CodeInternal {
+		t.Fatalf("want INTERNAL, got %v with %+v", err, got)
+	}
+	if !strings.Contains(ce.Message, "role table unavailable") {
+		t.Errorf("message %q does not carry the engine's cause", ce.Message)
+	}
+}
+
+func TestSubjectsDetailRelationsCarryTheSubjectRelationOfAUserset(t *testing.T) {
+	// group:eng#member on doc:spec grants every member of eng, which is not
+	// the same as a grant to the group itself.
+	s := memory.New()
+	ctx := context.Background()
+	userset := &relation.Tuple{TenantID: "t1", ObjectType: "doc", ObjectID: "spec", Relation: "viewer",
+		SubjectType: "group", SubjectID: "eng", SubjectRelation: "member"}
+	direct := &relation.Tuple{TenantID: "t1", ObjectType: "doc", ObjectID: "readme", Relation: "viewer",
+		SubjectType: "group", SubjectID: "eng"}
+	for _, tp := range []*relation.Tuple{userset, direct} {
+		if err := s.CreateRelation(ctx, tp); err != nil {
+			t.Fatalf("create tuple: %v", err)
+		}
+	}
+
+	got := subjectDetail(t, s, SubjectDetailInput{SubjectKind: "group", SubjectID: "eng"})
+	by := map[string]SubjectRelation{}
+	for _, r := range got.Relations {
+		by[r.ID] = r
+	}
+	if r := by[userset.ID.String()]; r.SubjectRelation != "member" {
+		t.Errorf("userset tuple = %+v, want subjectRelation member", r)
+	}
+	if r := by[direct.ID.String()]; r.SubjectRelation != "" {
+		t.Errorf("direct tuple = %+v, want no subjectRelation", r)
+	}
+	raw := marshalDetail(t, got)
+	if strings.Count(raw, `"subjectRelation":"member"`) != 1 || strings.Count(raw, `"subjectRelation"`) != 1 {
+		t.Errorf("want subjectRelation on the userset row only (omitted when empty): %s", raw)
+	}
 }

@@ -114,8 +114,11 @@ var intentPolicies = map[string]intentPolicy{
 	"playground.explain":    {"check", "warden:authz"},
 	"playground.batchCheck": {"check", "warden:authz"},
 
-	// A subject's whole access picture is assignment data, so it needs the
-	// same read grant the assignment list does.
+	// The subject view is reached through its assignments, so the intent
+	// needs the assignment read grant. That grant covers the assignments
+	// alone: the handler checks read on warden:role, warden:relation and
+	// warden:policy itself before it returns those sections, and leaves out
+	// the check log, which needs read_audit.
 	"subjects.detail": {"read", "warden:assignment"},
 }
 
@@ -146,8 +149,7 @@ func (a *engineAuthorizer) Authorize(ctx context.Context, p dashcontract.Princip
 	if !ok {
 		return deny("no authorization policy for intent " + act.Intent), nil
 	}
-	subject, err := requireUser(p)
-	if err != nil {
+	if _, err := requireUser(p); err != nil {
 		return deny("authentication required"), nil //nolint:nilerr // a refusal is a decision, not a failure
 	}
 	tenantID, err := tenantFrom(p, a.deps)
@@ -155,21 +157,45 @@ func (a *engineAuthorizer) Authorize(ctx context.Context, p dashcontract.Princip
 		return deny("no tenant in scope"), nil //nolint:nilerr // a refusal is a decision, not a failure
 	}
 
-	req := &warden.CheckRequest{
-		Subject:  warden.Subject{Kind: warden.SubjectUser, ID: subject},
-		Action:   warden.Action{Name: pol.action},
-		Resource: warden.Resource{Type: pol.resource},
-	}
-	if err := a.deps.Engine.Enforce(ctx, req, warden.WithCallTenantID(tenantID)); err != nil {
-		if errors.Is(err, warden.ErrAccessDenied) {
-			return deny(fmt.Sprintf("missing permission %s on %s", pol.action, pol.resource)), nil
-		}
+	held, err := principalHolds(ctx, a.deps.Engine, p, tenantID, pol.action, pol.resource)
+	if err != nil {
 		// The engine could not decide. Deny, and return the error so the
 		// transport records it, but keep the cause out of the reason: that
 		// text goes back to the browser.
 		return deny("authorization unavailable"), fmt.Errorf("warden/contract: authorize %s: %w", act.Intent, err)
 	}
+	if !held {
+		return deny(fmt.Sprintf("missing permission %s on %s", pol.action, pol.resource)), nil
+	}
 	return dashcontract.Decision{Allow: true}, nil
+}
+
+// principalHolds reports whether the principal's signed-in user holds action
+// on resource in tenantID. It is the one question Authorize asks, and a
+// handler that returns more than its intent's grant covers asks it again
+// for each extra grant, so the two can never drift apart.
+//
+// The check runs through Enforce, with the user as a SubjectUser, in the
+// resolved tenant, so it is a real, logged check. ErrAccessDenied means no.
+// A principal with no user, and any other engine error, is an error: the
+// caller fails closed on it.
+func principalHolds(ctx context.Context, eng *warden.Engine, p dashcontract.Principal, tenantID, action, resource string) (bool, error) {
+	subject, err := requireUser(p)
+	if err != nil {
+		return false, err
+	}
+	req := &warden.CheckRequest{
+		Subject:  warden.Subject{Kind: warden.SubjectUser, ID: subject},
+		Action:   warden.Action{Name: action},
+		Resource: warden.Resource{Type: resource},
+	}
+	if err := eng.Enforce(ctx, req, warden.WithCallTenantID(tenantID)); err != nil {
+		if errors.Is(err, warden.ErrAccessDenied) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // requireUser returns the caller's subject, or an UNAUTHENTICATED error
