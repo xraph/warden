@@ -15,16 +15,13 @@ import (
 	"net/http"
 
 	"github.com/xraph/forge"
-	dashboard "github.com/xraph/forge/extensions/dashboard"
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
-	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/api"
-	wardendash "github.com/xraph/warden/dashboard"
 	"github.com/xraph/warden/dsl"
 	wardencontract "github.com/xraph/warden/extension/contract"
 	"github.com/xraph/warden/plugin"
@@ -44,11 +41,8 @@ const ExtensionDescription = "Composable permissions & authorization engine (RBA
 // ExtensionVersion is the semantic version.
 const ExtensionVersion = "0.1.0"
 
-// Ensure Extension implements forge.Extension and dashboard.DashboardAware at compile time.
-var (
-	_ forge.Extension          = (*Extension)(nil)
-	_ dashboard.DashboardAware = (*Extension)(nil)
-)
+// Ensure Extension implements forge.Extension at compile time.
+var _ forge.Extension = (*Extension)(nil)
 
 // Extension adapts Warden as a Forge extension.
 type Extension struct {
@@ -623,28 +617,9 @@ func (e *Extension) buildStoreFromGroveDB(db *grove.DB) (store.Store, error) {
 
 // ─── Dashboard Integration ───────────────────────────────────────────────────
 
-// DashboardContributor implements dashboard.DashboardAware. It returns a
-// LocalContributor that renders warden pages, widgets, and settings in the
-// Forge dashboard using templ + ForgeUI.
-func (e *Extension) DashboardContributor() contributor.LocalContributor {
-	basePath := e.config.BasePath
-	if basePath == "" {
-		basePath = "/warden"
-	}
-	return wardendash.New(
-		wardendash.NewManifest(e.eng, e.plugins),
-		e.eng,
-		e.plugins,
-		basePath,
-	)
-}
-
 // RegisterContractContributor implements the dashboard's contract
 // auto-discovery. It registers the `warden` contributor so the React shell
 // can read warden's intents.
-//
-// This is the parallel surface to DashboardContributor above. Both exist
-// while the templ dashboard is being retired; see warden/MIGRATION.md.
 func (e *Extension) RegisterContractContributor(
 	disp *dispatcher.Dispatcher,
 	reg dashcontract.Registry,
