@@ -31,6 +31,9 @@ const (
 	// budget (MaxGraphVisited) can be raised until a walk reaches millions
 	// of edges, which the page cannot draw and the wire should not carry.
 	maxExpandNodes = 2000
+
+	// schemaGraphPage is the page size the schema graph reads types in.
+	schemaGraphPage = 500
 )
 
 // ResourceTypeGraphInput filters the schema graph.
@@ -49,7 +52,10 @@ type ResourceTypeGraphNode struct {
 
 // ResourceTypeGraphEdge is one allowed subject of one relation.
 type ResourceTypeGraphEdge struct {
-	From     string `json:"from"`     // resource type name
+	From string `json:"from"` // resource type name
+	// FromID is the owning type's id. Two types can share a name in
+	// different namespaces, and From alone cannot tell them apart.
+	FromID   string `json:"fromId"`
 	Relation string `json:"relation"` // the RelationDef's name
 	To       string `json:"to"`       // allowed subject type
 	// ToRelation is the subject set's relation for "type#rel", else "".
@@ -57,6 +63,9 @@ type ResourceTypeGraphEdge struct {
 	// Declared is false when To names no resource type in the graph (a
 	// subject kind like "user", or a type outside the namespace filter).
 	Declared bool `json:"declared"`
+	// ToIDs is the id of every returned type whose name is To, in node
+	// order. It is empty (never null) when the edge is undeclared.
+	ToIDs []string `json:"toIds"`
 }
 
 // ResourceTypeGraphResponse is the schema graph.
@@ -85,9 +94,13 @@ type RelationExpandNode struct {
 	ID       string `json:"id"`
 	Relation string `json:"relation,omitempty"`
 	Depth    int    `json:"depth"`
-	// Walked is false for a node reached but never walked: a frontier node
-	// after a stop, the node that tripped the fanout limit, and every single
-	// subject. Its edges, if drawn, are not all of its tuples.
+	// Walked is true when every one of the node's tuples is drawn: the walk
+	// took the node off its queue and went through all of its tuples, and
+	// none of its edges was left out by the node cap. It is false for a node
+	// reached but never walked (a frontier node after a stop, the node that
+	// tripped the fanout limit, every single subject) and for a walked node
+	// with an edge to a node the cap dropped. Any edges drawn from a node
+	// with walked false are not all of its tuples.
 	Walked bool `json:"walked"`
 }
 
@@ -109,7 +122,8 @@ type RelationExpandResponse struct {
 	// built-in walk would find, which may differ.
 	ExactWalk bool `json:"exactWalk"`
 	// TruncatedNodes is how many nodes were left out past the node cap, 0
-	// when none. Edges that touch a left-out node are left out too.
+	// when none. Edges that touch a left-out node are left out too, and a
+	// kept node that lost an edge that way reports walked false.
 	TruncatedNodes int `json:"truncatedNodes"`
 	// Path is the node keys of the walk's path to PathTo, root first, or
 	// empty when not asked for or not reached.
@@ -130,15 +144,34 @@ func resourceTypesGraphHandler(deps Deps) func(context.Context, ResourceTypeGrap
 				return ResourceTypeGraphResponse{}, err
 			}
 		}
-		// One more than the cap, to tell "exactly the cap" from "more".
-		rows, err := deps.Engine.Store().ListResourceTypes(ctx, &resourcetype.ListFilter{
-			TenantID:      tenantID,
-			NamespacePath: in.NamespacePath,
-			Limit:         maxSchemaGraphTypes + 1,
-		})
-		if err != nil {
-			return ResourceTypeGraphResponse{}, mapWardenError(err)
+		// The cap keeps the first 500 types in namespace and name order, so
+		// which survive does not depend on the store's order. That needs
+		// every type, so read them all, a page at a time.
+		var rows []*resourcetype.ResourceType
+		for offset := 0; ; offset += schemaGraphPage {
+			page, err := deps.Engine.Store().ListResourceTypes(ctx, &resourcetype.ListFilter{
+				TenantID:      tenantID,
+				NamespacePath: in.NamespacePath,
+				Limit:         schemaGraphPage,
+				Offset:        offset,
+			})
+			if err != nil {
+				return ResourceTypeGraphResponse{}, mapWardenError(err)
+			}
+			rows = append(rows, page...)
+			if len(page) < schemaGraphPage {
+				break
+			}
 		}
+		sort.SliceStable(rows, func(i, j int) bool {
+			if rows[i].NamespacePath != rows[j].NamespacePath {
+				return rows[i].NamespacePath < rows[j].NamespacePath
+			}
+			if rows[i].Name != rows[j].Name {
+				return rows[i].Name < rows[j].Name
+			}
+			return rows[i].ID.String() < rows[j].ID.String()
+		})
 		out := ResourceTypeGraphResponse{
 			Nodes: make([]ResourceTypeGraphNode, 0, len(rows)),
 			Edges: []ResourceTypeGraphEdge{},
@@ -156,26 +189,18 @@ func resourceTypesGraphHandler(deps Deps) func(context.Context, ResourceTypeGrap
 				Permissions:   permissionDefsToDTO(rt.Permissions),
 			})
 		}
-		// Name order, so the same schema draws the same graph whatever order
-		// the store lists in.
-		sort.SliceStable(out.Nodes, func(i, j int) bool {
-			if out.Nodes[i].Name != out.Nodes[j].Name {
-				return out.Nodes[i].Name < out.Nodes[j].Name
-			}
-			return out.Nodes[i].NamespacePath < out.Nodes[j].NamespacePath
-		})
-
-		declared := make(map[string]struct{}, len(out.Nodes))
+		idsByName := make(map[string][]string, len(out.Nodes))
 		for _, n := range out.Nodes {
-			declared[n.Name] = struct{}{}
+			idsByName[n.Name] = append(idsByName[n.Name], n.ID)
 		}
 		for _, n := range out.Nodes {
 			for _, rel := range n.Relations {
 				for _, allowed := range rel.AllowedSubjects {
 					to, toRel, _ := strings.Cut(allowed, "#")
-					_, isDeclared := declared[to]
+					toIDs := append([]string{}, idsByName[to]...)
 					out.Edges = append(out.Edges, ResourceTypeGraphEdge{
-						From: n.Name, Relation: rel.Name, To: to, ToRelation: toRel, Declared: isDeclared,
+						From: n.Name, FromID: n.ID, Relation: rel.Name, To: to, ToRelation: toRel,
+						Declared: len(toIDs) > 0, ToIDs: toIDs,
 					})
 				}
 			}
@@ -276,13 +301,22 @@ func relationsExpandHandler(deps Deps) func(context.Context, RelationExpandInput
 			TruncatedNodes: len(x.Nodes) - kept,
 			Path:           []string{},
 		}
+		// A kept node with an edge to a dropped node no longer has all its
+		// tuples drawn, so it is not reported as walked.
+		incomplete := make([]bool, len(x.Nodes))
+		for _, e := range x.Edges {
+			if keep[e.From] && !keep[e.To] {
+				incomplete[e.From] = true
+			}
+		}
 		for i, n := range x.Nodes {
 			keys[i] = expandKey(n)
 			if !keep[i] {
 				continue
 			}
 			out.Nodes = append(out.Nodes, RelationExpandNode{
-				Key: keys[i], Type: n.Type, ID: n.ID, Relation: n.Relation, Depth: n.Depth, Walked: n.Walked,
+				Key: keys[i], Type: n.Type, ID: n.ID, Relation: n.Relation, Depth: n.Depth,
+				Walked: n.Walked && !incomplete[i],
 			})
 		}
 		for _, e := range x.Edges {

@@ -36,6 +36,13 @@ func graphEdge(from, rel, to, toRel string, declared bool) ResourceTypeGraphEdge
 	return ResourceTypeGraphEdge{From: from, Relation: rel, To: to, ToRelation: toRel, Declared: declared}
 }
 
+// sameEdge compares the name-level fields of two edges. The ids have their own
+// assertions where they matter.
+func sameEdge(a, b ResourceTypeGraphEdge) bool {
+	return a.From == b.From && a.Relation == b.Relation && a.To == b.To &&
+		a.ToRelation == b.ToRelation && a.Declared == b.Declared
+}
+
 func TestResourceTypesGraphDrawsAnEdgePerAllowedSubject(t *testing.T) {
 	s := memory.New()
 	seedTypeWith(t, s, "", "document",
@@ -79,7 +86,7 @@ func TestResourceTypesGraphDrawsAnEdgePerAllowedSubject(t *testing.T) {
 		t.Fatalf("got %d edges %+v, want %d %+v", len(got.Edges), got.Edges, len(want), want)
 	}
 	for i := range want {
-		if got.Edges[i] != want[i] {
+		if !sameEdge(got.Edges[i], want[i]) {
 			t.Errorf("edge %d = %+v, want %+v", i, got.Edges[i], want[i])
 		}
 	}
@@ -158,7 +165,7 @@ func TestResourceTypesGraphNamespaceFilterLeavesTypesOutsideUndeclared(t *testin
 	}
 	// folder exists, but outside the filter: the edge stays and is not
 	// declared, as the brief says for a type outside the namespace filter.
-	if len(got.Edges) != 1 || got.Edges[0] != graphEdge("document", "parent", "folder", "", false) {
+	if len(got.Edges) != 1 || !sameEdge(got.Edges[0], graphEdge("document", "parent", "folder", "", false)) {
 		t.Errorf("edges = %+v", got.Edges)
 	}
 
@@ -622,4 +629,178 @@ type notTheBuiltInWalker struct{}
 
 func (notTheBuiltInWalker) Walk(context.Context, relation.Store, string, string, *warden.CheckRequest) (bool, string, error) {
 	return false, "", nil
+}
+
+func TestResourceTypesGraphEdgesNameTheirTypesByIDWhenNamesRepeat(t *testing.T) {
+	s := memory.New()
+	docA := seedTypeWith(t, s, "a", "document",
+		resourcetype.RelationDef{Name: "parent", AllowedSubjects: []string{"folder"}},
+	)
+	docB := seedTypeWith(t, s, "b", "document",
+		resourcetype.RelationDef{Name: "parent", AllowedSubjects: []string{"folder"}},
+	)
+	folder := seedTypeWith(t, s, "a", "folder",
+		resourcetype.RelationDef{Name: "contains", AllowedSubjects: []string{"document", "user"}},
+	)
+	h := resourceTypesGraphHandler(Deps{Engine: engineOver(t, s)})
+
+	got, err := h(context.Background(), ResourceTypeGraphInput{}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("resourceTypes.graph: %v", err)
+	}
+	if len(got.Edges) != 4 {
+		t.Fatalf("got %d edges %+v, want 4", len(got.Edges), got.Edges)
+	}
+	byFrom := map[string][]ResourceTypeGraphEdge{}
+	for _, e := range got.Edges {
+		byFrom[e.FromID] = append(byFrom[e.FromID], e)
+		if e.From == "document" && e.FromID != docA.ID.String() && e.FromID != docB.ID.String() {
+			t.Errorf("edge %+v names no document id", e)
+		}
+	}
+	// Each same-named type's edge carries its own id.
+	if len(byFrom[docA.ID.String()]) != 1 || len(byFrom[docB.ID.String()]) != 1 {
+		t.Fatalf("edges by owner = %+v, want one edge for each document id", byFrom)
+	}
+	// folder is one type, so a document edge names exactly it.
+	if e := byFrom[docA.ID.String()][0]; len(e.ToIDs) != 1 || e.ToIDs[0] != folder.ID.String() {
+		t.Errorf("document in a: toIds = %v, want [%s]", e.ToIDs, folder.ID)
+	}
+	// document is two types, so the folder's edge names both, in node order
+	// (namespace, then name).
+	var toDoc, toUser ResourceTypeGraphEdge
+	for _, e := range byFrom[folder.ID.String()] {
+		switch e.To {
+		case "document":
+			toDoc = e
+		case "user":
+			toUser = e
+		}
+	}
+	if !toDoc.Declared || len(toDoc.ToIDs) != 2 || toDoc.ToIDs[0] != docA.ID.String() || toDoc.ToIDs[1] != docB.ID.String() {
+		t.Errorf("folder -> document = %+v, want declared with toIds [%s %s]", toDoc, docA.ID, docB.ID)
+	}
+	// An undeclared target has no ids, and the wire carries [] not null.
+	if toUser.Declared || toUser.ToIDs == nil || len(toUser.ToIDs) != 0 {
+		t.Errorf("folder -> user = %+v, want undeclared with an empty non-nil toIds", toUser)
+	}
+	raw, err := json.Marshal(toUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"toIds":[]`) || !strings.Contains(string(raw), `"fromId":"`+folder.ID.String()+`"`) {
+		t.Errorf("edge JSON = %s, want fromId and toIds:[]", raw)
+	}
+}
+
+func TestResourceTypesGraphCapKeepsTheFirstTypesByNamespaceAndName(t *testing.T) {
+	// Created in the reverse of the order the cap must keep, so a cap that
+	// followed the store's order would keep the wrong 500.
+	s := memory.New()
+	for i := 500; i >= 0; i-- {
+		seedTypeWith(t, s, "", "type"+strconv.Itoa(1000+i))
+	}
+	seedTypeWith(t, s, "z", "aaa")
+	h := resourceTypesGraphHandler(Deps{Engine: engineOver(t, s)})
+
+	got, err := h(context.Background(), ResourceTypeGraphInput{}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("resourceTypes.graph: %v", err)
+	}
+	if len(got.Nodes) != 500 || !got.Truncated {
+		t.Fatalf("got %d nodes truncated=%v, want 500 and true", len(got.Nodes), got.Truncated)
+	}
+	// 502 types: the root namespace sorts before "z", so the survivors are
+	// the first 500 of type1000..type1500, and both the last root type and
+	// the "z" type are left out.
+	if first, last := got.Nodes[0].Name, got.Nodes[499].Name; first != "type1000" || last != "type1499" {
+		t.Errorf("first %q last %q, want type1000 and type1499", first, last)
+	}
+}
+
+func TestRelationsExpandNodeWithADroppedEdgeIsNotWalked(t *testing.T) {
+	// root -> mid -> 2005 users. The root's one edge is kept, so it stays
+	// walked. mid's tuples straddle the cap: some are drawn, some are not, so
+	// mid is not walked, though the walk went through all of them.
+	s := memory.New()
+	seeds := []expandSeed{{objType: "document", objID: "1", rel: "viewer", subType: "group", subID: "mid", subRel: "member"}}
+	for i := 0; i < 2005; i++ {
+		seeds = append(seeds, expandSeed{objType: "group", objID: "mid", rel: "member", subType: "user", subID: "u" + strconv.Itoa(i)})
+	}
+	seedExpand(t, s, seeds)
+
+	got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000}, expandIn("document", "1", "viewer"))
+	if len(got.Nodes) != 2000 || got.TruncatedNodes != 7 {
+		t.Fatalf("got %d nodes, truncatedNodes %d, want 2000 and 7", len(got.Nodes), got.TruncatedNodes)
+	}
+	if n := nodeByKey(t, got, "document:1#viewer"); !n.Walked {
+		t.Errorf("root = %+v, want walked: its only edge is drawn", n)
+	}
+	if n := nodeByKey(t, got, "group:mid#member"); n.Walked {
+		t.Errorf("mid = %+v, want not walked: some of its tuples were dropped", n)
+	}
+	// Single subjects stay not walked, cap or no cap.
+	if n := nodeByKey(t, got, "user:u0"); n.Walked {
+		t.Errorf("user:u0 = %+v, want not walked", n)
+	}
+}
+
+func TestRelationsExpandAMultiHopPathThroughDroppedNodesIsKeptWhole(t *testing.T) {
+	// The root has 2005 subject sets, and the path runs through the last one
+	// and one more set to a user: the three nodes after the cap that the path
+	// needs, with the middle ones past the cap.
+	s := memory.New()
+	var seeds []expandSeed
+	for i := 0; i < 2005; i++ {
+		seeds = append(seeds, expandSeed{objType: "document", objID: "1", rel: "viewer", subType: "group", subID: "g" + strconv.Itoa(i), subRel: "member"})
+	}
+	seeds = append(seeds,
+		expandSeed{objType: "group", objID: "g2004", rel: "member", subType: "team", subID: "deep", subRel: "member"},
+		expandSeed{objType: "team", objID: "deep", rel: "member", subType: "user", subID: "target"},
+	)
+	seedExpand(t, s, seeds)
+	in := expandIn("document", "1", "viewer")
+	in.PathToType, in.PathToID = "user", "target"
+
+	got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000, MaxGraphVisited: 100000}, in)
+	wantPath := []string{"document:1#viewer", "group:g2004#member", "team:deep#member", "user:target"}
+	if strings.Join(got.Path, ",") != strings.Join(wantPath, ",") {
+		t.Fatalf("path = %v, want %v", got.Path, wantPath)
+	}
+	// 2008 nodes: 2000 by the cap plus the three path nodes past it.
+	if len(got.Nodes) != 2003 || got.TruncatedNodes != 5 {
+		t.Fatalf("got %d nodes, truncatedNodes %d, want 2003 and 5", len(got.Nodes), got.TruncatedNodes)
+	}
+	kept := map[string]bool{}
+	for _, n := range got.Nodes {
+		kept[n.Key] = true
+	}
+	for _, key := range wantPath {
+		if !kept[key] {
+			t.Errorf("path node %s was dropped", key)
+		}
+	}
+	// Every hop of the path has its edge, and no edge touches a dropped node.
+	edges := map[[2]string]bool{}
+	for _, e := range got.Edges {
+		if !kept[e.From] || !kept[e.To] {
+			t.Fatalf("edge %+v touches a dropped node", e)
+		}
+		edges[[2]string{e.From, e.To}] = true
+	}
+	for i := 0; i+1 < len(wantPath); i++ {
+		if !edges[[2]string{wantPath[i], wantPath[i+1]}] {
+			t.Errorf("no edge %s -> %s along the path", wantPath[i], wantPath[i+1])
+		}
+	}
+	// The path's own nodes lost nothing, so they stay walked, except the root,
+	// which lost its edges to the dropped sets.
+	if n := nodeByKey(t, got, "document:1#viewer"); n.Walked {
+		t.Errorf("root = %+v, want not walked: 5 of its sets were dropped", n)
+	}
+	for _, key := range []string{"group:g2004#member", "team:deep#member"} {
+		if n := nodeByKey(t, got, key); !n.Walked {
+			t.Errorf("%s = %+v, want walked: all its edges are drawn", key, n)
+		}
+	}
 }
