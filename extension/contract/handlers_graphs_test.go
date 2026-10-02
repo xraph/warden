@@ -804,3 +804,76 @@ func TestRelationsExpandAMultiHopPathThroughDroppedNodesIsKeptWhole(t *testing.T
 		}
 	}
 }
+
+func TestRelationsExpandCappedSaysWhyASetIsNotWalked(t *testing.T) {
+	t.Run("a walked set whose children all fall past the cap", func(t *testing.T) {
+		// root -> mid and 1998 users, so the root and its subjects are the
+		// 2000 nodes kept. mid is walked, and its three users are the first
+		// nodes past the cap: no edge of mid is drawn.
+		s := memory.New()
+		seeds := []expandSeed{{objType: "document", objID: "1", rel: "viewer", subType: "group", subID: "mid", subRel: "member"}}
+		for i := 0; i < 1998; i++ {
+			seeds = append(seeds, expandSeed{objType: "document", objID: "1", rel: "viewer", subType: "user", subID: "r" + strconv.Itoa(i)})
+		}
+		for i := 0; i < 3; i++ {
+			seeds = append(seeds, expandSeed{objType: "group", objID: "mid", rel: "member", subType: "user", subID: "m" + strconv.Itoa(i)})
+		}
+		seedExpand(t, s, seeds)
+
+		got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000}, expandIn("document", "1", "viewer"))
+		if len(got.Nodes) != 2000 || got.TruncatedNodes != 3 {
+			t.Fatalf("got %d nodes, truncatedNodes %d, want 2000 and 3", len(got.Nodes), got.TruncatedNodes)
+		}
+		for _, e := range got.Edges {
+			if e.From == "group:mid#member" {
+				t.Fatalf("edge %+v: mid should have none drawn", e)
+			}
+		}
+		if n := nodeByKey(t, got, "group:mid#member"); n.Walked || !n.Capped {
+			t.Errorf("mid = %+v, want walked false and capped true", n)
+		}
+		// The root's edges are all drawn, so it is walked and not capped.
+		if n := nodeByKey(t, got, "document:1#viewer"); !n.Walked || n.Capped {
+			t.Errorf("root = %+v, want walked true and capped false", n)
+		}
+		// A single subject lost nothing to the cap.
+		if n := nodeByKey(t, got, "user:r0"); n.Walked || n.Capped {
+			t.Errorf("user:r0 = %+v, want walked false and capped false", n)
+		}
+	})
+	t.Run("a frontier set was never walked, and the cap did not touch it", func(t *testing.T) {
+		s := memory.New()
+		seedExpand(t, s, groupChain(6))
+		got := expandWith(t, s, warden.Config{MaxGraphDepth: 2}, expandIn("document", "1", "viewer"))
+		if n := nodeByKey(t, got, "group:2#member"); n.Walked || n.Capped {
+			t.Errorf("group:2 = %+v, want walked false and capped false", n)
+		}
+		if n := nodeByKey(t, got, "group:1#member"); !n.Walked || n.Capped {
+			t.Errorf("group:1 = %+v, want walked true and capped false", n)
+		}
+	})
+	t.Run("a set with some of its edges drawn and some cut is capped", func(t *testing.T) {
+		s := memory.New()
+		seeds := []expandSeed{{objType: "document", objID: "1", rel: "viewer", subType: "group", subID: "mid", subRel: "member"}}
+		for i := 0; i < 2005; i++ {
+			seeds = append(seeds, expandSeed{objType: "group", objID: "mid", rel: "member", subType: "user", subID: "u" + strconv.Itoa(i)})
+		}
+		seedExpand(t, s, seeds)
+		got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000}, expandIn("document", "1", "viewer"))
+		if n := nodeByKey(t, got, "group:mid#member"); n.Walked || !n.Capped {
+			t.Errorf("mid = %+v, want walked false and capped true", n)
+		}
+	})
+	t.Run("the wire carries capped on every node", func(t *testing.T) {
+		s := memory.New()
+		seedExpand(t, s, groupChain(1))
+		got := expandWith(t, s, warden.Config{}, expandIn("document", "1", "viewer"))
+		raw, err := json.Marshal(got.Nodes[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), `"capped":false`) {
+			t.Errorf("node JSON = %s, want capped:false present", raw)
+		}
+	})
+}

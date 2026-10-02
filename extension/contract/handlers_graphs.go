@@ -102,6 +102,13 @@ type RelationExpandNode struct {
 	// with an edge to a node the cap dropped. Any edges drawn from a node
 	// with walked false are not all of its tuples.
 	Walked bool `json:"walked"`
+	// Capped is true when the node cap removed any of this node's outgoing
+	// edges, because the node at the other end was left out, and false
+	// otherwise. It tells the two reasons for walked false apart: a node
+	// that was never walked has capped false, and a node the walk did go
+	// through, whose edges the cap then cut, has capped true. Together with
+	// the node's drawn edges it says how much of the node is shown.
+	Capped bool `json:"capped"`
 }
 
 // RelationExpandEdge is one tuple, between node keys.
@@ -302,7 +309,8 @@ func relationsExpandHandler(deps Deps) func(context.Context, RelationExpandInput
 			Path:           []string{},
 		}
 		// A kept node with an edge to a dropped node no longer has all its
-		// tuples drawn, so it is not reported as walked.
+		// tuples drawn, so it is not reported as walked, and it is reported
+		// as capped so that a walked node is not mistaken for an unwalked one.
 		incomplete := make([]bool, len(x.Nodes))
 		for _, e := range x.Edges {
 			if keep[e.From] && !keep[e.To] {
@@ -317,6 +325,7 @@ func relationsExpandHandler(deps Deps) func(context.Context, RelationExpandInput
 			out.Nodes = append(out.Nodes, RelationExpandNode{
 				Key: keys[i], Type: n.Type, ID: n.ID, Relation: n.Relation, Depth: n.Depth,
 				Walked: n.Walked && !incomplete[i],
+				Capped: incomplete[i],
 			})
 		}
 		for _, e := range x.Edges {
