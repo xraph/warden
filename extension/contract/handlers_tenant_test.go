@@ -146,6 +146,14 @@ var tenantEnforcedHandlers = []tenantEnforcementCase{
 		_, err := relationsDeleteHandler(deps)(context.Background(), RelationDeleteInput{}, p)
 		return err
 	}},
+	{"relations.expand", func(deps Deps, p dashcontract.Principal) error {
+		_, err := relationsExpandHandler(deps)(context.Background(), RelationExpandInput{}, p)
+		return err
+	}},
+	{"resourceTypes.graph", func(deps Deps, p dashcontract.Principal) error {
+		_, err := resourceTypesGraphHandler(deps)(context.Background(), ResourceTypeGraphInput{}, p)
+		return err
+	}},
 	{"resourceTypes.list", func(deps Deps, p dashcontract.Principal) error {
 		_, err := resourceTypesListHandler(deps)(context.Background(), ResourceTypesListInput{}, p)
 		return err

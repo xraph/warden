@@ -73,11 +73,13 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		"relations.list":              dashcontract.IntentKindQuery,
 		"relations.create":            dashcontract.IntentKindCommand,
 		"relations.delete":            dashcontract.IntentKindCommand,
+		"relations.expand":            dashcontract.IntentKindQuery,
 		"resourceTypes.list":          dashcontract.IntentKindQuery,
 		"resourceTypes.detail":        dashcontract.IntentKindQuery,
 		"resourceTypes.create":        dashcontract.IntentKindCommand,
 		"resourceTypes.update":        dashcontract.IntentKindCommand,
 		"resourceTypes.delete":        dashcontract.IntentKindCommand,
+		"resourceTypes.graph":         dashcontract.IntentKindQuery,
 		"policies.list":               dashcontract.IntentKindQuery,
 		"policies.detail":             dashcontract.IntentKindQuery,
 		"policies.validate":           dashcontract.IntentKindQuery,
@@ -655,8 +657,8 @@ var schemaApplyInvalidates = []string{
 	"roles.list", "roles.detail",
 	"permissions.list", "permissions.detail",
 	"policies.list", "policies.detail",
-	"resourceTypes.list", "resourceTypes.detail",
-	"relations.list",
+	"resourceTypes.list", "resourceTypes.detail", "resourceTypes.graph",
+	"relations.list", "relations.expand",
 	"assignments.list", "assignments.expiring",
 	"namespaces.list", "overview.stats", "subjects.detail",
 	"schema.export", "schema.plan",
@@ -713,6 +715,57 @@ func TestManifest_SchemaApplyInvalidatesEveryViewOfWhatItWrites(t *testing.T) {
 	for q := range queries {
 		if !want[q] && schemaApplyLeavesAlone[q] == "" {
 			t.Errorf("query intent %s is neither invalidated by schema.apply nor listed as unaffected", q)
+		}
+	}
+}
+
+func TestManifest_GraphQueriesAreDeclaredAndRefreshedByWhatChangesThem(t *testing.T) {
+	m := loadManifest(t)
+	for name, want := range map[string]struct{ intent, stale string }{
+		// The schema changes only when someone edits it. An expansion walks
+		// tuples as they are now, so it is never served stale.
+		"resourceTypeGraph": {"resourceTypes.graph", "30s"},
+		"relationExpand":    {"relations.expand", "0s"},
+	} {
+		q, ok := m.Queries[name]
+		if !ok {
+			t.Errorf("manifest declares no %s query", name)
+			continue
+		}
+		if q.Intent != want.intent || q.Cache.StaleTime != want.stale {
+			t.Errorf("%s = %q staleTime %q, want %s %s", name, q.Intent, q.Cache.StaleTime, want.intent, want.stale)
+		}
+	}
+	byName := map[string]dashcontract.Intent{}
+	for _, in := range m.Intents {
+		byName[in.Name] = in
+	}
+	for _, name := range []string{"resourceTypes.graph", "relations.expand"} {
+		in, ok := byName[name]
+		if !ok {
+			t.Errorf("manifest declares no %s intent", name)
+			continue
+		}
+		if in.Kind != dashcontract.IntentKindQuery || in.Capability != "read" || len(in.Invalidates) != 0 {
+			t.Errorf("%s is %s/%s invalidating %v, want a read query that invalidates nothing", name, in.Kind, in.Capability, in.Invalidates)
+		}
+	}
+	has := func(intent, target string) bool {
+		for _, v := range byName[intent].Invalidates {
+			if v == target {
+				return true
+			}
+		}
+		return false
+	}
+	for _, intent := range []string{"resourceTypes.create", "resourceTypes.update", "resourceTypes.delete"} {
+		if !has(intent, "resourceTypes.graph") {
+			t.Errorf("%s does not invalidate resourceTypes.graph", intent)
+		}
+	}
+	for _, intent := range []string{"relations.create", "relations.delete"} {
+		if !has(intent, "relations.expand") {
+			t.Errorf("%s does not invalidate relations.expand", intent)
 		}
 	}
 }

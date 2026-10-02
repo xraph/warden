@@ -85,6 +85,9 @@ var intentPolicies = map[string]intentPolicy{
 	"relations.list":   {"read", "warden:relation"},
 	"relations.create": {"manage", "warden:relation"},
 	"relations.delete": {"manage", "warden:relation"},
+	// The expansion reads relation tuples and nothing else, so the relation
+	// read grant is all it takes.
+	"relations.expand": {"read", "warden:relation"},
 
 	// Same resource the REST resource type routes use
 	// (api/resourcetype_handler.go), so one grant covers both surfaces.
@@ -93,6 +96,8 @@ var intentPolicies = map[string]intentPolicy{
 	"resourceTypes.create": {"manage", "warden:resourcetype"},
 	"resourceTypes.update": {"manage", "warden:resourcetype"},
 	"resourceTypes.delete": {"manage", "warden:resourcetype"},
+	// The schema graph reads resource types and nothing else.
+	"resourceTypes.graph": {"read", "warden:resourcetype"},
 
 	// Same resource the REST policy routes use, so one grant covers both
 	// surfaces. Validating a draft writes nothing, so it is a read too.
