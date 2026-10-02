@@ -86,7 +86,7 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		edgeLabel:  fmt.Sprintf("%s:%s#%s", req.Resource.Type, req.Resource.ID, req.Action.Name),
 	}
 
-	stop, visitedCount, err := w.traverse(ctx, relStore, tenantID, namespacePath, root, func(nodes []walkNode, idx int, t *relation.Tuple) bool {
+	stop, visitedCount, err := w.traverse(ctx, relStore, tenantID, namespacePath, root, nil, func(nodes []walkNode, idx int, t *relation.Tuple) bool {
 		// Direct match: the subject we're looking for.
 		if t.SubjectType == targetSubjectType && t.SubjectID == targetSubjectID {
 			path = w.reconstructPath(nodes, idx, fmt.Sprintf("%s:%s", t.SubjectType, t.SubjectID))
@@ -132,10 +132,12 @@ const (
 type walkVisitor func(nodes []walkNode, idx int, t *relation.Tuple) (stop bool)
 
 // traverse is the walker's BFS from root, shared by Walk (which stops on
-// its target) and ExpandRelation (which records every tuple). It returns
-// why it stopped and how many distinct nodes it visited; err is set only
-// for walkFailed. It records no metrics: each caller decides its own.
-func (w *bfsGraphWalker) traverse(ctx context.Context, relStore relation.Store, tenantID, namespacePath string, root walkNode, visit walkVisitor) (walkStop, int, error) {
+// its target) and ExpandRelation (which records every tuple). walked, when
+// not nil, is called with each node whose hop passed the fanout check,
+// just before its tuples go to visit; Walk passes nil. It returns why it
+// stopped and how many distinct nodes it visited; err is set only for
+// walkFailed. It records no metrics: each caller decides its own.
+func (w *bfsGraphWalker) traverse(ctx context.Context, relStore relation.Store, tenantID, namespacePath string, root walkNode, walked func(nodes []walkNode, idx int), visit walkVisitor) (walkStop, int, error) {
 	// Relations cascade: the whole walk considers the request namespace and
 	// every ancestor. Computed once and reused for every node lookup.
 	namespaces := AncestorNamespaces(namespacePath)
@@ -180,6 +182,9 @@ func (w *bfsGraphWalker) traverse(ctx context.Context, relStore relation.Store, 
 		}
 		if w.maxFanout > 0 && len(tuples) >= w.maxFanout {
 			return walkFanout, visitedCount, nil
+		}
+		if walked != nil {
+			walked(nodes, idx)
 		}
 
 		for _, t := range tuples {

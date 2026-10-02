@@ -104,15 +104,16 @@ func NewEngine(opts ...Option) (*Engine, error) {
 	return e, nil
 }
 
-// expansionWalker is the walker ExpandRelation runs: the engine's own when
-// it is the built-in BFS walker, so an expansion has exactly Check's
-// budget; otherwise, when WithGraphWalker installed another kind, a
-// built-in walker with Config's budget, as NewEngine would have built.
-func (e *Engine) expansionWalker() *bfsGraphWalker {
+// expansionWalker is the walker ExpandRelation runs, and whether it is the
+// one Check runs (Expansion.ExactWalk): the engine's own when it is the
+// built-in BFS walker, so an expansion has exactly Check's budget;
+// otherwise, when WithGraphWalker installed another kind, a built-in
+// walker with Config's budget, as NewEngine would have built, and false.
+func (e *Engine) expansionWalker() (w *bfsGraphWalker, exact bool) {
 	if w, ok := e.graphWalker.(*bfsGraphWalker); ok {
-		return w
+		return w, true
 	}
-	return newBFSGraphWalker(e.config.MaxGraphDepth, e.config.MaxGraphVisited, e.config.MaxGraphFanout, nil)
+	return newBFSGraphWalker(e.config.MaxGraphDepth, e.config.MaxGraphVisited, e.config.MaxGraphFanout, nil), false
 }
 
 // Store returns the underlying composite store.

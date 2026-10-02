@@ -80,10 +80,10 @@ func TestExpandRelation_TwoHopChainCompletes(t *testing.T) {
 	}
 
 	wantNodes := []ExpandNode{
-		{Type: "document", ID: "1", Relation: "viewer", Depth: 0},
-		{Type: "group", ID: "eng", Relation: "member", Depth: 1},
+		{Type: "document", ID: "1", Relation: "viewer", Depth: 0, Walked: true},
+		{Type: "group", ID: "eng", Relation: "member", Depth: 1, Walked: true},
 		{Type: "user", ID: "carol", Relation: "", Depth: 1},
-		{Type: "team", ID: "core", Relation: "member", Depth: 2},
+		{Type: "team", ID: "core", Relation: "member", Depth: 2, Walked: true},
 		{Type: "user", ID: "alice", Relation: "", Depth: 2},
 		{Type: "user", ID: "bob", Relation: "", Depth: 3},
 	}
@@ -123,7 +123,7 @@ func TestExpandRelation_SingleSubjectIsNeverExpanded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []ExpandNode{{Type: "document", ID: "1", Relation: "viewer"}, {Type: "group", ID: "eng", Depth: 1}}
+	want := []ExpandNode{{Type: "document", ID: "1", Relation: "viewer", Walked: true}, {Type: "group", ID: "eng", Depth: 1}}
 	if !reflect.DeepEqual(x.Nodes, want) {
 		t.Fatalf("nodes:\n got %+v\nwant %+v", x.Nodes, want)
 	}
@@ -145,6 +145,11 @@ func TestExpandRelation_StopsAtDepth(t *testing.T) {
 	if last := x.Nodes[len(x.Nodes)-1]; last.Depth != 3 || len(x.Nodes) != 4 {
 		t.Fatalf("nodes: got %+v, want 4 ending at depth 3", x.Nodes)
 	}
+	for i, n := range x.Nodes {
+		if want := n.Depth <= 2; n.Walked != want {
+			t.Fatalf("node %d %+v: Walked %v, want %v", i, n, n.Walked, want)
+		}
+	}
 }
 
 func TestExpandRelation_StopsAtVisited(t *testing.T) {
@@ -158,6 +163,76 @@ func TestExpandRelation_StopsAtVisited(t *testing.T) {
 	}
 	if x.Stop != ExpandVisited || x.Limit != 3 {
 		t.Fatalf("stop: got %q limit %d, want visited 3", x.Stop, x.Limit)
+	}
+	// document, group:0 and group:1 were walked; group:2 was reached from
+	// group:1 but tripped the budget when dequeued.
+	walked := make([]bool, 0, len(x.Nodes))
+	for _, n := range x.Nodes {
+		walked = append(walked, n.Walked)
+	}
+	if want := []bool{true, true, true, false}; !reflect.DeepEqual(walked, want) {
+		t.Fatalf("walked: got %v, want %v", walked, want)
+	}
+}
+
+func TestExpandRelation_EmptySubjectSetIsWalked(t *testing.T) {
+	// group:empty#member has no tuples: it was walked and has no outgoing
+	// edge, which Walked tells apart from a frontier node.
+	s := memory.New()
+	seedTuples(t, s, []expandSeed{
+		{objType: "document", objID: "1", rel: "viewer", subType: "group", subID: "empty", subRel: "member"},
+	})
+	x, err := newExpandEngine(t, s, nil).ExpandRelation(context.Background(), "document", "1", "viewer", WithCallTenantID("t1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ExpandNode{
+		{Type: "document", ID: "1", Relation: "viewer", Walked: true},
+		{Type: "group", ID: "empty", Relation: "member", Depth: 1, Walked: true},
+	}
+	if !reflect.DeepEqual(x.Nodes, want) || x.Stop != ExpandComplete {
+		t.Fatalf("nodes:\n got %+v (stop %q)\nwant %+v", x.Nodes, x.Stop, want)
+	}
+}
+
+// customWalker is a GraphWalker that is not the built-in BFS walker.
+type customWalker struct{}
+
+func (customWalker) Walk(context.Context, relation.Store, string, string, *CheckRequest) (bool, string, error) {
+	return false, "", nil
+}
+
+func TestExpandRelation_ExactWalk(t *testing.T) {
+	s := memory.New()
+	seedTuples(t, s, chainSeeds(6))
+	ctx := context.Background()
+
+	x, err := newExpandEngine(t, s, nil).ExpandRelation(ctx, "document", "1", "viewer", WithCallTenantID("t1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !x.ExactWalk {
+		t.Fatal("default walker: want ExactWalk")
+	}
+
+	// A built-in walker installed by hand is still the engine's walk, with
+	// its own budget rather than Config's.
+	x, err = newExpandEngine(t, s, nil, WithGraphWalker(NewGraphWalker(2, 0, 0, nil))).ExpandRelation(ctx, "document", "1", "viewer", WithCallTenantID("t1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !x.ExactWalk || x.Stop != ExpandDepth || x.Limit != 2 {
+		t.Fatalf("installed BFS walker: got exact %v stop %q limit %d, want true depth 2", x.ExactWalk, x.Stop, x.Limit)
+	}
+
+	// Another kind of walker: the expansion falls back to the built-in walk
+	// with Config's budget and says it is not Check's walk.
+	x, err = newExpandEngine(t, s, func(c *Config) { c.MaxGraphDepth = 3 }, WithGraphWalker(customWalker{})).ExpandRelation(ctx, "document", "1", "viewer", WithCallTenantID("t1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if x.ExactWalk || x.Stop != ExpandDepth || x.Limit != 3 {
+		t.Fatalf("custom walker: got exact %v stop %q limit %d, want false depth 3", x.ExactWalk, x.Stop, x.Limit)
 	}
 }
 
@@ -186,6 +261,9 @@ func TestExpandRelation_StopsAtFanout(t *testing.T) {
 	if len(x.Edges) != 0 || len(x.Nodes) != 1 {
 		t.Fatalf("3 tuples: got %d nodes %d edges, want the root alone", len(x.Nodes), len(x.Edges))
 	}
+	if x.Nodes[0].Walked {
+		t.Fatal("3 tuples: the node whose hop tripped the fanout limit was not walked")
+	}
 
 	x, err = newExpandEngine(t, seedSubjects(2), budget).ExpandRelation(context.Background(), "document", "1", "viewer", WithCallTenantID("t1"))
 	if err != nil {
@@ -193,6 +271,9 @@ func TestExpandRelation_StopsAtFanout(t *testing.T) {
 	}
 	if x.Stop != ExpandComplete || len(x.Edges) != 2 {
 		t.Fatalf("2 tuples: got %q with %d edges, want complete with 2", x.Stop, len(x.Edges))
+	}
+	if !x.Nodes[0].Walked {
+		t.Fatal("2 tuples: the root was walked")
 	}
 }
 

@@ -24,6 +24,14 @@ const (
 type ExpandNode struct {
 	Type, ID, Relation string // Relation is "" for a single subject
 	Depth              int
+	// Walked is true when the walk took this node off its queue, listed
+	// its tuples and went through them, so its edges are all of them. It
+	// is false for a node reached but not walked: one still queued when a
+	// depth or visited stop ended the walk, or the node whose hop tripped
+	// the fanout limit (its tuples were listed but not walked, so it has
+	// no edges). A single subject is never walked, so it is always false
+	// there. A walked subject set with no tuples is Walked with no edges.
+	Walked bool
 }
 
 // ExpandEdge is one tuple: from the object node to its subject node.
@@ -39,13 +47,22 @@ type Expansion struct {
 	Nodes []ExpandNode
 	Edges []ExpandEdge
 	Stop  ExpandStop
-	// Limit is the configured value of the limit named by Stop; 0 for
-	// ExpandComplete.
+	// Limit is the effective value of the limit that stopped the walk,
+	// the one named by Stop: the walker's own value, which is the
+	// walker's default when Config holds 0 for it. 0 for ExpandComplete.
 	Limit int
 	// Parent maps a node index to the node it was first reached from (-1
 	// for the root), in the walker's BFS order, so PathTo reproduces the
 	// path Walk would report.
 	Parent []int
+	// ExactWalk is true when this is the walk Check makes: the engine's
+	// graph walker is the built-in BFS walker, whether NewEngine built it
+	// or WithGraphWalker installed one from NewGraphWalker or
+	// DefaultGraphWalker. It is false when WithGraphWalker installed
+	// another kind of walker: Check walks with that one, and the
+	// expansion falls back to the built-in BFS walk with Config's budget,
+	// so neither its shape nor PathTo is guaranteed to match Check.
+	ExactWalk bool
 }
 
 // PathTo returns the walk's path from the root to the first node for
@@ -95,13 +112,15 @@ func (e *Engine) ExpandRelation(ctx context.Context, objectType, objectID, rel s
 	if err != nil {
 		return nil, err
 	}
-	x, err := e.expansionWalker().expand(ctx, e.store, scope.tenantID, scope.namespacePath, objectType, objectID, rel)
+	w, exact := e.expansionWalker()
+	x, err := w.expand(ctx, e.store, scope.tenantID, scope.namespacePath, objectType, objectID, rel)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			e.metrics.StoreError("graph_expand")
 		}
 		return nil, fmt.Errorf("warden expand relation: %w", err)
 	}
+	x.ExactWalk = exact
 	return x, nil
 }
 
@@ -129,14 +148,17 @@ func (w *bfsGraphWalker) expand(ctx context.Context, relStore relation.Store, te
 		edgeLabel:  fmt.Sprintf("%s:%s#%s", objectType, objectID, rel),
 	}
 
-	// from caches the node index of the hop being visited, since every
-	// tuple of one hop shares it.
-	fromIdx, from := -1, 0
-	stop, _, err := w.traverse(ctx, relStore, tenantID, namespacePath, root, func(nodes []walkNode, idx int, t *relation.Tuple) bool {
-		if idx != fromIdx {
-			n := nodes[idx]
-			fromIdx, from = idx, sets[fmt.Sprintf("%s:%s#%s", n.objectType, n.objectID, n.relation)]
-		}
+	// from is the node index of the hop being walked, set by walked before
+	// the hop's tuples reach the visitor, since every tuple of one hop
+	// shares it. The walker visits each key once, under the node the
+	// expansion recorded for that key.
+	from := 0
+	walked := func(nodes []walkNode, idx int) {
+		n := nodes[idx]
+		from = sets[fmt.Sprintf("%s:%s#%s", n.objectType, n.objectID, n.relation)]
+		x.Nodes[from].Walked = true
+	}
+	stop, _, err := w.traverse(ctx, relStore, tenantID, namespacePath, root, walked, func(nodes []walkNode, idx int, t *relation.Tuple) bool {
 		depth := nodes[idx].depth + 1
 		var to int
 		if t.SubjectRelation != "" {
