@@ -32,6 +32,12 @@ func DefaultGraphWalker(maxDepth int) GraphWalker {
 // ListRelationSubjects). Zero values fall back to sane defaults. A nil
 // metrics sink uses NoopMetrics.
 func NewGraphWalker(maxDepth, maxVisited, maxFanout int, metrics Metrics) GraphWalker {
+	return newBFSGraphWalker(maxDepth, maxVisited, maxFanout, metrics)
+}
+
+// newBFSGraphWalker is NewGraphWalker with its concrete type, for
+// ExpandRelation, which needs the walker's traversal and budget.
+func newBFSGraphWalker(maxDepth, maxVisited, maxFanout int, metrics Metrics) *bfsGraphWalker {
 	if maxDepth <= 0 {
 		maxDepth = 10
 	}
@@ -71,10 +77,6 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 	targetSubjectType := string(req.Subject.Kind)
 	targetSubjectID := req.Subject.ID
 
-	// Relations cascade: the whole walk considers the request namespace and
-	// every ancestor. Computed once and reused for every node lookup.
-	namespaces := AncestorNamespaces(namespacePath)
-
 	root := walkNode{
 		objectType: req.Resource.Type,
 		objectID:   req.Resource.ID,
@@ -83,6 +85,60 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		parent:     -1,
 		edgeLabel:  fmt.Sprintf("%s:%s#%s", req.Resource.Type, req.Resource.ID, req.Action.Name),
 	}
+
+	stop, visitedCount, err := w.traverse(ctx, relStore, tenantID, namespacePath, root, func(nodes []walkNode, idx int, t *relation.Tuple) bool {
+		// Direct match: the subject we're looking for.
+		if t.SubjectType == targetSubjectType && t.SubjectID == targetSubjectID {
+			path = w.reconstructPath(nodes, idx, fmt.Sprintf("%s:%s", t.SubjectType, t.SubjectID))
+			return true
+		}
+		return false
+	})
+
+	switch stop {
+	case walkFailed:
+		return false, "", err
+	case walkDepth:
+		return false, "", ErrGraphDepthExceeded
+	case walkVisited, walkFanout:
+		w.metrics.GraphBudgetExceeded()
+		w.metrics.GraphNodesVisited(visitedCount)
+		return false, "", ErrGraphBudgetExceeded
+	case walkMatched:
+		w.metrics.GraphNodesVisited(visitedCount)
+		return true, path, nil
+	}
+
+	w.metrics.GraphNodesVisited(visitedCount)
+	return false, "", nil
+}
+
+// walkStop says why traverse returned.
+type walkStop int
+
+const (
+	walkDrained walkStop = iota // the queue emptied
+	walkMatched                 // the visitor asked to stop
+	walkDepth                   // a dequeued node was deeper than maxDepth
+	walkVisited                 // more than maxVisited distinct nodes
+	walkFanout                  // one hop returned at least maxFanout tuples
+	walkFailed                  // ctx ended or the store failed; the error says which
+)
+
+// walkVisitor sees each tuple a hop returns, in order, before the walk
+// decides whether to enqueue its subject set. nodes and idx are the node
+// table and the node whose hop returned t; the table is only valid during
+// the call. Returning true ends the walk with walkMatched.
+type walkVisitor func(nodes []walkNode, idx int, t *relation.Tuple) (stop bool)
+
+// traverse is the walker's BFS from root, shared by Walk (which stops on
+// its target) and ExpandRelation (which records every tuple). It returns
+// why it stopped and how many distinct nodes it visited; err is set only
+// for walkFailed. It records no metrics: each caller decides its own.
+func (w *bfsGraphWalker) traverse(ctx context.Context, relStore relation.Store, tenantID, namespacePath string, root walkNode, visit walkVisitor) (walkStop, int, error) {
+	// Relations cascade: the whole walk considers the request namespace and
+	// every ancestor. Computed once and reused for every node lookup.
+	namespaces := AncestorNamespaces(namespacePath)
 
 	// nodes is the append-only table every queue entry indexes into, so
 	// path reconstruction on a match walks parent pointers instead of
@@ -96,7 +152,7 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 	for len(queue) > 0 {
 		select {
 		case <-ctx.Done():
-			return false, "", ctx.Err()
+			return walkFailed, visitedCount, ctx.Err()
 		default:
 		}
 
@@ -105,7 +161,7 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		node := nodes[idx]
 
 		if node.depth > w.maxDepth {
-			return false, "", ErrGraphDepthExceeded
+			return walkDepth, visitedCount, nil
 		}
 
 		visitKey := fmt.Sprintf("%s:%s#%s", node.objectType, node.objectID, node.relation)
@@ -115,26 +171,20 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		visited[visitKey] = struct{}{}
 		visitedCount++
 		if visitedCount > w.maxVisited {
-			w.metrics.GraphBudgetExceeded()
-			w.metrics.GraphNodesVisited(visitedCount)
-			return false, "", ErrGraphBudgetExceeded
+			return walkVisited, visitedCount, nil
 		}
 
 		tuples, err := relStore.ListRelationSubjects(ctx, tenantID, namespaces, node.objectType, node.objectID, node.relation, w.maxFanout)
 		if err != nil {
-			return false, "", fmt.Errorf("list subjects for %s: %w", visitKey, err)
+			return walkFailed, visitedCount, fmt.Errorf("list subjects for %s: %w", visitKey, err)
 		}
 		if w.maxFanout > 0 && len(tuples) >= w.maxFanout {
-			w.metrics.GraphBudgetExceeded()
-			w.metrics.GraphNodesVisited(visitedCount)
-			return false, "", ErrGraphBudgetExceeded
+			return walkFanout, visitedCount, nil
 		}
 
 		for _, t := range tuples {
-			// Direct match: the subject we're looking for.
-			if t.SubjectType == targetSubjectType && t.SubjectID == targetSubjectID {
-				w.metrics.GraphNodesVisited(visitedCount)
-				return true, w.reconstructPath(nodes, idx, fmt.Sprintf("%s:%s", t.SubjectType, t.SubjectID)), nil
+			if visit(nodes, idx, t) {
+				return walkMatched, visitedCount, nil
 			}
 
 			// Indirect: only a subject SET (t.SubjectRelation != "") denotes a
@@ -143,10 +193,10 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 			// group:eng's `member` relation is a viewer", so the walker must
 			// recurse into (group:eng, member). A tuple with no
 			// SubjectRelation names a single concrete subject (a user, an
-			// api_key, ...): that subject already failed the direct-match
-			// check above and must NOT be treated as another subject set to
-			// traverse, or an unrelated subject with a same-named relation
-			// would incorrectly grant access.
+			// api_key, ...): for Walk, that subject already failed the
+			// visitor's direct-match check and must NOT be treated as another
+			// subject set to traverse, or an unrelated subject with a
+			// same-named relation would incorrectly grant access.
 			if t.SubjectRelation != "" {
 				nodes = append(nodes, walkNode{
 					objectType: t.SubjectType,
@@ -161,8 +211,7 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		}
 	}
 
-	w.metrics.GraphNodesVisited(visitedCount)
-	return false, "", nil
+	return walkDrained, visitedCount, nil
 }
 
 // reconstructPath walks parent pointers from idx back to the root, then
