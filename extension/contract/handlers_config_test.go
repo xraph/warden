@@ -2,7 +2,9 @@ package contract
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -117,6 +119,83 @@ func TestConfigDetailPinnedToWardenDefaultConfig(t *testing.T) {
 	if !got.RBACEnabled || !got.ABACEnabled || !got.ReBACEnabled ||
 		!got.CheckLogEnabled || !got.RequireTenant {
 		t.Errorf("config.detail must report warden.DefaultConfig()'s flags as enabled, got %+v", got)
+	}
+}
+
+// namedPlugin implements only the base Plugin interface. The registry logs a
+// warning for that and keeps it, which is all these tests need.
+type namedPlugin string
+
+func (p namedPlugin) Name() string { return string(p) }
+
+func TestConfigDetailListsTheRegisteredPlugin(t *testing.T) {
+	// CacheTTL stays 0, so the engine registers no cache invalidator of its
+	// own and the registry holds exactly the plugin passed in.
+	eng, err := warden.NewEngine(
+		warden.WithStore(memory.New()),
+		warden.WithConfig(warden.Config{}),
+		warden.WithPlugin(namedPlugin("audit-sink")),
+	)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	got, err := configDetailHandler(Deps{Engine: eng})(context.Background(), struct{}{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("config.detail: %v", err)
+	}
+	if !slices.Equal(got.Plugins, []string{"audit-sink"}) {
+		t.Errorf("plugins = %q, want [audit-sink]", got.Plugins)
+	}
+}
+
+func TestConfigDetailListsPluginsTheEngineRegistersItself(t *testing.T) {
+	// A cache TTL makes NewEngine register its own cache invalidator. The
+	// list is the registry's, so it carries warden's own plugins beside the
+	// caller's, sorted by name.
+	eng, err := warden.NewEngine(
+		warden.WithStore(memory.New()),
+		warden.WithConfig(warden.Config{CacheTTL: time.Minute}),
+		warden.WithPlugin(namedPlugin("zz-last")),
+		warden.WithPlugin(namedPlugin("audit-sink")),
+	)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	got, err := configDetailHandler(Deps{Engine: eng})(context.Background(), struct{}{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("config.detail: %v", err)
+	}
+	want := []string{"audit-sink", "warden-cache-invalidator", "zz-last"}
+	if !slices.Equal(got.Plugins, want) {
+		t.Errorf("plugins = %q, want %q", got.Plugins, want)
+	}
+}
+
+func TestConfigDetailWithNoPluginsSendsAnEmptyList(t *testing.T) {
+	// No plugin and no cache leaves the engine with no registry at all
+	// (Plugins() returns nil). The page reads the field as a list, so the
+	// wire must carry [] and never null.
+	eng := testEngine(t, warden.Config{})
+	if eng.Plugins() != nil {
+		t.Fatalf("precondition: want a nil registry, got one with %d plugins", len(eng.Plugins().Plugins()))
+	}
+
+	got, err := configDetailHandler(Deps{Engine: eng})(context.Background(), struct{}{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("config.detail: %v", err)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(wire["plugins"]) != "[]" {
+		t.Errorf("plugins on the wire = %s, want []", wire["plugins"])
 	}
 }
 

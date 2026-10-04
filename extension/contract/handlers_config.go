@@ -1,12 +1,13 @@
 // handlers_config.go: the read-only view of the engine's configuration.
 //
 // Warden's Config comes from Forge config, not from a store, so there is no
-// write path and no settings intent. The templ dashboard rendered these same
-// fields with every input marked Disabled.
+// write path and no settings intent. The templ dashboard's settings panel had
+// no inputs either: it showed some of these values as text and badges.
 package contract
 
 import (
 	"context"
+	"slices"
 
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
@@ -32,6 +33,27 @@ type ConfigDetail struct {
 	CheckLogQueueSize      int   `json:"checkLogQueueSize"`
 	CheckLogRetentionHours int64 `json:"checkLogRetentionHours"`
 	MaintenanceIntervalMin int64 `json:"maintenanceIntervalMinutes"`
+	// Plugins is the name of every plugin in the engine's registry when the
+	// request was served, sorted. It can include plugins warden registers on
+	// its own, such as the cache invalidators and the audit log sink, beside
+	// any a caller passed in. Never nil: an engine with no registry sends [].
+	Plugins []string `json:"plugins"`
+}
+
+// pluginNames lists the registry's plugin names, sorted. The registry is not
+// frozen when the engine starts (anything holding the engine can call
+// Plugins().Register later), so this is read on every request.
+func pluginNames(deps Deps) []string {
+	names := []string{}
+	reg := deps.Engine.Plugins()
+	if reg == nil {
+		return names
+	}
+	for _, p := range reg.Plugins() {
+		names = append(names, p.Name())
+	}
+	slices.Sort(names)
+	return names
 }
 
 // enabled reads one of Config's tri-state flags. A nil pointer means the
@@ -60,6 +82,7 @@ func configDetailHandler(deps Deps) func(context.Context, struct{}, dashcontract
 			CheckLogQueueSize:      c.CheckLogQueueSize,
 			CheckLogRetentionHours: int64(c.CheckLogRetention.Hours()),
 			MaintenanceIntervalMin: int64(c.MaintenanceInterval.Minutes()),
+			Plugins:                pluginNames(deps),
 		}, nil
 	}
 }
