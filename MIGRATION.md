@@ -107,7 +107,7 @@ did not supply that sentence.
 | Subject kind, subject id, action, resource type, resource id inputs | `dashboard/pages/playground.templ:71-111` | migrated | `/playground` builder, same four kinds. Adds namespace, subject attributes and resource attributes. |
 | Context JSON input and its parse error | `dashboard/pages/playground.templ:38-44`, `:112-119` | migrated | "Context" textarea under "attributes and context". Errors read "This is not valid JSON." or "This must be a JSON object." |
 | Run disabled until the three required fields are filled | `dashboard/pages/playground.templ:124` | migrated | Run button, same three fields (`canRun`). |
-| The check itself (real, logged, cached, hook-firing) | `dashboard/pages/playground.templ:45-50` | migrated | `playground.explain`, which is a dry run: no check log row, no hooks, no cache. Your own permission to run it is checked, and that check is logged. |
+| The check itself (real, logged, cached, hook-firing) | `dashboard/pages/playground.templ:45-50` | migrated | `playground.explain`, which is a dry run: no check log row, no hooks, no cache. Your own permission to run it is checked too, as a dry run, like every query's. |
 | Empty result state | `dashboard/pages/playground.templ:149-155` | migrated | "Run a check to see its verdict and what each model did." |
 | Error box | `dashboard/pages/playground.templ:146-147` | migrated | "Could not run the check." alert carrying the contract error. |
 | ALLOWED / DENIED banner | `dashboard/pages/playground.templ:159-173` | migrated | A badge with the decision string (`allow`, `deny_no_roles`, and so on), next to the reason, or the error when the decision is `error`. |
