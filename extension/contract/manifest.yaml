@@ -123,8 +123,8 @@ intents:
   - { name: maintenance.cacheInvalidate, kind: command, version: 1, requires: { warden: warden.engine }, capability: write }
   # The check the playground builds is a dry run: no check log row, no hooks,
   # no cache. It is a query, and a viewer who may run checks may run it.
-  # Authorizing the call itself is a real, logged check: the warden.engine
-  # gate enforces it, which writes a check log row and fires hooks.
+  # Authorizing the call is a dry run too: the warden.engine gate dry-runs
+  # every query's check and logs only a command's (authz.go Authorize).
   - { name: playground.explain, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # A batch of the same dry-run checks at one namespace, capped by
   # Config.MaxBatchChecks. A query for the same reasons.

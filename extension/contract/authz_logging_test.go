@@ -68,22 +68,44 @@ func TestAuthorizingACommandWritesACheckLog(t *testing.T) {
 	}
 }
 
-// TestEveryIntentHasAKnownKind pins that the authorizer decides whether to
-// log from warden's own manifest, for every intent it gates. The envelope's
-// kind comes from the browser, so it is never the input.
-func TestEveryIntentHasAKnownKind(t *testing.T) {
-	m, err := loader.Load(bytes.NewReader(manifestYAML), "manifest.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
+// TestEveryGatedIntentHasAKind pins that every intent Authorize has a policy
+// for also has a kind in the manifest, since Authorize denies an intent it
+// cannot find a kind for. The envelope's kind comes from the browser, so it
+// is never the input.
+func TestEveryGatedIntentHasAKind(t *testing.T) {
 	kinds, err := commandIntents()
 	if err != nil {
 		t.Fatal(err)
 	}
+	for intent := range intentPolicies {
+		if _, ok := kinds[intent]; !ok {
+			t.Errorf("%s has an authorization policy but no kind in manifest.yaml", intent)
+		}
+	}
+}
+
+// TestHandlerGrantChecksLogLikeTheirIntent pins the flags the handlers pass
+// to principalHolds by hand: subjects.detail, schema.export and schema.plan
+// are queries and dry-run their extra grant checks; schema.apply is a
+// command and logs them.
+func TestHandlerGrantChecksLogLikeTheirIntent(t *testing.T) {
+	m, err := loader.Load(bytes.NewReader(manifestYAML), "manifest.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	passed := map[string]bool{
+		"subjects.detail": false,
+		"schema.export":   false,
+		"schema.plan":     false,
+		"schema.apply":    true,
+	}
 	for _, in := range m.Intents {
-		want := in.Kind == dashcontract.IntentKindCommand
-		if got, ok := kinds[in.Name]; !ok || got != want {
-			t.Errorf("%s: logged=%v (known=%v), want logged=%v", in.Name, got, ok, want)
+		logged, ok := passed[in.Name]
+		if !ok {
+			continue
+		}
+		if want := in.Kind == dashcontract.IntentKindCommand; logged != want {
+			t.Errorf("%s passes logged=%v to principalHolds, but its kind is %s", in.Name, logged, in.Kind)
 		}
 	}
 }
