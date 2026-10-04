@@ -32,7 +32,8 @@ import (
 )
 
 // tenantExemptIntent is config.detail: it reaches no store (it reports the
-// engine's static Config) and deliberately answers without a tenant. Naming
+// engine's static Config and the names in its plugin registry, both
+// engine-wide) and deliberately answers without a tenant. Naming
 // the exemption here, rather than just leaving it out of the table below,
 // keeps it a visible decision instead of something that looks identical to
 // an oversight.
