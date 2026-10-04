@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/xraph/warden/id"
@@ -782,5 +783,68 @@ func TestRelations_MissingFields422(t *testing.T) {
 	}))
 	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 400 or 422; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPolicies_ConditionThatIsNotAListIs422 covers the shape the retired templ
+// dashboard posted here: an in or not_in value sent as one string. The
+// evaluator fails closed on it, so the API refuses to store it, on create and
+// on an update that sends conditions.
+func TestPolicies_ConditionThatIsNotAListIs422(t *testing.T) {
+	h := newTestAPI(t)
+	scalar := []map[string]any{{"field": "context.ip", "operator": "not_in", "value": "10.0.0.1, 10.0.0.2"}}
+
+	refused := do(h, request(http.MethodPost, "/v1/policies", "alice", testTenant, map[string]any{
+		"name": "office-only", "effect": "deny", "conditions": scalar,
+	}))
+	if refused.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("create: status = %d, want 422; body=%s", refused.Code, refused.Body.String())
+	}
+	if body := refused.Body.String(); !strings.Contains(body, "conditions[0]") || !strings.Contains(body, "needs a list") {
+		t.Errorf("create: body does not name conditions[0] and the list rule: %s", body)
+	}
+	list := do(h, request(http.MethodGet, "/v1/policies?search=&effect=&active=&limit=10&offset=0", "alice", testTenant, nil))
+	var stored []map[string]any
+	decodeJSON(t, list, &stored)
+	if len(stored) != 0 {
+		t.Fatalf("a refused create stored %d policies", len(stored))
+	}
+
+	create := do(h, request(http.MethodPost, "/v1/policies", "alice", testTenant, map[string]any{
+		"name": "office-only", "effect": "deny",
+		"conditions": []map[string]any{{"field": "context.ip", "operator": "not_in", "value": []string{"10.0.0.1", "10.0.0.2"}}},
+	}))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create with a list: status = %d, want 201; body=%s", create.Code, create.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	decodeJSON(t, create, &created)
+
+	update := do(h, request(http.MethodPut, "/v1/policies/"+created.ID, "alice", testTenant, map[string]any{
+		"description": "would be lost", "conditions": scalar,
+	}))
+	if update.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("update: status = %d, want 422; body=%s", update.Code, update.Body.String())
+	}
+	get := do(h, request(http.MethodGet, "/v1/policies/"+created.ID, "alice", testTenant, nil))
+	var after struct {
+		Description string `json:"description"`
+		Conditions  []struct {
+			Value any `json:"value"`
+		} `json:"conditions"`
+	}
+	decodeJSON(t, get, &after)
+	if after.Description != "" || len(after.Conditions) != 1 {
+		t.Fatalf("a refused update changed the policy: %+v", after)
+	}
+	if _, isList := after.Conditions[0].Value.([]any); !isList {
+		t.Errorf("stored value = %#v, want the list it was created with", after.Conditions[0].Value)
+	}
+
+	// An update that sends no conditions is not judged on them.
+	if rec := do(h, request(http.MethodPut, "/v1/policies/"+created.ID, "alice", testTenant, map[string]any{"description": "documented"})); rec.Code != http.StatusOK {
+		t.Fatalf("update without conditions: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }

@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"net"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -42,6 +43,8 @@ var validFieldPrefixes = []string{"subject.", "resource.", "context."}
 //   - Operator is one of the known Operator constants.
 //   - Field starts with "subject.", "resource.", "context." or is
 //     "action"/"action.<x>".
+//   - An in or not_in value is a list (any slice or array). The evaluator
+//     refuses anything else, so a policy holding one fails closed.
 //   - A regex condition's pattern compiles and is at most 512 characters.
 //   - Every CIDR in an ip_in_cidr condition parses.
 //   - time_after/time_before values parse as RFC3339.
@@ -54,6 +57,10 @@ func ValidateCondition(c Condition) error {
 	}
 
 	switch c.Operator {
+	case OpIn, OpNotIn:
+		if !isList(c.Value) {
+			return fmt.Errorf("policy: %s needs a list of values, got %T", c.Operator, c.Value)
+		}
 	case OpRegex:
 		pattern := fmt.Sprint(c.Value)
 		if len(pattern) > maxRegexLength {
@@ -72,6 +79,14 @@ func ValidateCondition(c Condition) error {
 		}
 	}
 	return nil
+}
+
+// isList is the evaluator's test for an in or not_in value (inSlice in
+// evaluator.go): any slice or array, whatever its element type.
+// TestValidateConditionAgreesWithTheEvaluatorOnLists holds the two together.
+func isList(v any) bool {
+	k := reflect.ValueOf(v).Kind()
+	return k == reflect.Slice || k == reflect.Array
 }
 
 func validConditionField(field string) bool {

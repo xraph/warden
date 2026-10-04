@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/xraph/forge"
@@ -83,6 +84,7 @@ func (a *API) createPolicy(ctx forge.Context, req *CreatePolicyRequest) (*policy
 		if req.Effect != string(policy.EffectAllow) && req.Effect != string(policy.EffectDeny) {
 			verr.AddWithCode("effect", "effect must be 'allow' or 'deny'", "ENUM", req.Effect)
 		}
+		addConditionErrors(verr, req.Conditions)
 		if verr.HasErrors() {
 			return nil, verr
 		}
@@ -158,6 +160,16 @@ func (a *API) updatePolicy(ctx forge.Context, req *UpdatePolicyRequest) (*policy
 	polID, err := id.ParsePolicyID(ctx.Param("policyId"))
 	if err != nil {
 		return nil, forge.BadRequest(fmt.Sprintf("invalid policy ID: %v", err))
+	}
+
+	// Only conditions the request sends are checked, so a policy stored
+	// with a bad condition can still have its other fields edited.
+	if req.Conditions != nil {
+		verr := forge.NewValidationErrors()
+		addConditionErrors(verr, req.Conditions)
+		if verr.HasErrors() {
+			return nil, verr
+		}
 	}
 
 	_, tenantID := scopeFromForgeContext(ctx)
@@ -291,4 +303,18 @@ func (a *API) listPolicies(ctx forge.Context, req *ListPoliciesRequest) (*Policy
 	}
 
 	return &PolicyListResponse{Body: policies}, nil
+}
+
+// addConditionErrors records every condition policy.ValidateCondition
+// refuses, keyed conditions[i]. An unknown operator, a field the evaluator
+// does not read, an in or not_in value that is not a list, or a regex, CIDR
+// or time that does not parse would all store fine and then fail every
+// check.
+func addConditionErrors(verr *forge.ValidationErrors, conds []ConditionInput) {
+	for i, c := range conds {
+		err := policy.ValidateCondition(policy.Condition{Field: c.Field, Operator: policy.Operator(c.Operator), Value: c.Value})
+		if err != nil {
+			verr.AddWithCode(fmt.Sprintf("conditions[%d]", i), strings.TrimPrefix(err.Error(), "policy: "), "INVALID_FORMAT", c.Value)
+		}
+	}
 }

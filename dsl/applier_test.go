@@ -67,7 +67,7 @@ policy "business-hours" {
     actions = ["edit", "delete"]
     resources = ["document"]
     when {
-        context.time time_after "09:00:00Z"
+        context.time time_after "2026-01-01T09:00:00Z"
     }
 }
 `

@@ -234,7 +234,8 @@ namespace "Eng" {
 // TestResolve_RefusesConditionsTheStoreCannotHold pins checkConditions: a
 // stored policy's conditions are a flat list that must all hold, with no
 // negation and no OR, so each shape that would be stored as something else
-// is a diagnostic at that condition.
+// is a diagnostic at that condition. So is a condition that stores as
+// written but that the evaluator cannot read.
 func TestResolve_RefusesConditionsTheStoreCannotHold(t *testing.T) {
 	for _, tc := range []struct {
 		name, when string
@@ -246,6 +247,12 @@ func TestResolve_RefusesConditionsTheStoreCannotHold(t *testing.T) {
 		{"any_of with two conditions", "any_of {\n            subject.a == \"x\"\n            subject.b == \"y\"\n        }", 5, "any_of with 2 conditions cannot be stored"},
 		{"any_of nested in all_of", "all_of {\n            subject.c == \"z\"\n            any_of {\n                subject.a == \"x\"\n                subject.b == \"y\"\n            }\n        }", 7, "any_of with 2 conditions cannot be stored"},
 		{"empty any_of", "any_of {}", 5, "an empty any_of can never hold"},
+		// policy.ValidateCondition: shapes that store fine but that the
+		// evaluator cannot read.
+		{"not in given a string", `context.ip not in "10.0.0.1"`, 5, "not_in needs a list of values"},
+		{"in given a string", `subject.dept in "eng"`, 5, "in needs a list of values"},
+		{"in given a string inside all_of", "all_of {\n            subject.dept in \"eng\"\n        }", 6, "in needs a list of values"},
+		{"a time of day", `context.time time_after "09:00:00Z"`, 5, "invalid RFC3339 time"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			src := "warden config 1\npolicy \"p\" {\n    effect = deny\n    when {\n        " + tc.when + "\n    }\n}\n"
@@ -254,5 +261,12 @@ func TestResolve_RefusesConditionsTheStoreCannotHold(t *testing.T) {
 				t.Fatalf("want one diagnostic at line %d containing %q, got %v\n%s", tc.line, tc.want, errs, src)
 			}
 		})
+	}
+}
+
+func TestResolve_AcceptsListsForInAndNotIn(t *testing.T) {
+	src := "warden config 1\npolicy \"p\" {\n    effect = deny\n    when {\n        context.ip not in [\"10.0.0.1\", \"10.0.0.2\"]\n        subject.level in [1, 2]\n    }\n}\n"
+	if errs := resolveSrc(t, src); len(errs) != 0 {
+		t.Fatalf("want no diagnostics, got %v\n%s", errs, src)
 	}
 }

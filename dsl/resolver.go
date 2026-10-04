@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/xraph/warden"
+	"github.com/xraph/warden/policy"
 )
 
 // Resolve performs name resolution and type checking against a parsed
@@ -18,7 +19,8 @@ import (
 //   - resource-type permission expressions reference declared relations
 //   - traversal expressions hop through declared relation targets
 //   - condition operators are valid
-//   - every condition has a shape the store can hold (checkConditions)
+//   - every condition has a shape the store can hold, and one the
+//     evaluator can read (checkConditions, policy.ValidateCondition)
 //   - identifier conventions (see conventions.go: names are whatever the
 //     store and the dashboard accept; namespace paths are validated)
 func Resolve(prog *Program) []*Diagnostic {
@@ -389,6 +391,16 @@ func (r *resolver) checkCondition(pol *PolicyDecl, c *Condition) {
 		}
 	case c.Negate:
 		r.errf(c.Pos, "policy %q: `negate` cannot be stored: a stored condition has no negation, so it would mean the opposite. Use the opposite operator (!=, not in, not exists) instead", pol.Name)
+	default:
+		// Stored as written (the applier copies field, operator and value),
+		// so a condition the evaluator cannot read is refused here, before
+		// it reaches a store: `in "a"` instead of `in ["a"]`, a field outside
+		// subject., resource., context. and action, or a regex, CIDR or time
+		// that does not parse.
+		cond := policy.Condition{Field: c.Field, Operator: policy.Operator(c.Operator), Value: c.Value}
+		if err := policy.ValidateCondition(cond); err != nil {
+			r.errf(c.Pos, "policy %q: %s", pol.Name, strings.TrimPrefix(err.Error(), "policy: "))
+		}
 	}
 }
 

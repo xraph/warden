@@ -18,7 +18,11 @@ func TestValidateCondition_KnownOperators(t *testing.T) {
 		OpGreaterThan, OpLessThan, OpGTE, OpLTE, OpExists, OpNotExists,
 	} {
 		t.Run(string(op), func(t *testing.T) {
-			err := ValidateCondition(Condition{Field: "subject.role", Operator: op, Value: "x"})
+			var value any = "x"
+			if op == OpIn || op == OpNotIn {
+				value = []any{"x"}
+			}
+			err := ValidateCondition(Condition{Field: "subject.role", Operator: op, Value: value})
 			if err != nil {
 				t.Fatalf("expected %s to validate, got %v", op, err)
 			}
@@ -121,5 +125,21 @@ func TestValidate_PropagatesConditionErrors(t *testing.T) {
 func TestValidate_Nil(t *testing.T) {
 	if err := Validate(nil); err == nil {
 		t.Fatal("expected error for nil policy")
+	}
+}
+
+func TestValidateCondition_InAndNotInNeedAList(t *testing.T) {
+	for _, op := range []Operator{OpIn, OpNotIn} {
+		for _, v := range []any{"10.0.0.1", "a, b", float64(2), true, nil, map[string]any{"a": 1}} {
+			err := ValidateCondition(Condition{Field: "context.ip", Operator: op, Value: v})
+			if err == nil || !strings.Contains(err.Error(), "needs a list") {
+				t.Errorf("%s %#v: err = %v, want a needs-a-list error", op, v, err)
+			}
+		}
+		for _, v := range []any{[]any{"a"}, []string{"a"}, []int{1}, [2]string{"a", "b"}, []any{}} {
+			if err := ValidateCondition(Condition{Field: "context.ip", Operator: op, Value: v}); err != nil {
+				t.Errorf("%s %#v: %v, want it to validate", op, v, err)
+			}
+		}
 	}
 }

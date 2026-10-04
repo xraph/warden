@@ -445,3 +445,23 @@ func TestEvaluate_ScalarInFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateConditionAgreesWithTheEvaluatorOnLists holds policy.isList and
+// inSlice together: a value validation accepts for in and not_in must
+// evaluate, and one it refuses must fail closed, so validation never lets
+// through a condition the evaluator cannot read.
+func TestValidateConditionAgreesWithTheEvaluatorOnLists(t *testing.T) {
+	values := []any{
+		"10.0.0.1", "a, b", float64(2), true, nil, map[string]any{"a": 1},
+		[]any{"a"}, []string{"a"}, []int{1}, [2]string{"a", "b"}, []any{},
+	}
+	for _, op := range []policy.Operator{policy.OpIn, policy.OpNotIn} {
+		for _, v := range values {
+			validErr := policy.ValidateCondition(policy.Condition{Field: "context.ip", Operator: op, Value: v})
+			_, evalErr := evaluateCondition(op, "a", v)
+			if (validErr == nil) != (evalErr == nil) {
+				t.Errorf("%s %#v: validation says %v, the evaluator says %v", op, v, validErr, evalErr)
+			}
+		}
+	}
+}
