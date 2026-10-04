@@ -17,13 +17,16 @@
 package contract
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/xraph/warden"
 
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
+	"github.com/xraph/forge/extensions/dashboard/contract/loader"
 )
 
 // wardenDelegateName is the name the manifest's `requires.warden` entries
@@ -113,9 +116,9 @@ var intentPolicies = map[string]intentPolicy{
 	"maintenance.cacheInvalidate": {"manage", "warden:maintenance"},
 
 	// The playground asks the engine a question, so it needs the same grant
-	// a caller needs to run a check. The check it builds is a dry run, but
-	// authorizing the call is a real, logged check: engineAuthorizer enforces
-	// it, which writes a check log row and fires hooks.
+	// a caller needs to run a check. The check it builds is a dry run, and so
+	// is authorizing the call, since both intents are queries (see
+	// Authorize).
 	"playground.explain":    {"check", "warden:authz"},
 	"playground.batchCheck": {"check", "warden:authz"},
 
@@ -138,6 +141,22 @@ var intentPolicies = map[string]intentPolicy{
 	"schema.apply": {"manage", "warden:role"},
 }
 
+// commandIntents maps every intent in warden's manifest to whether it is a
+// command. Authorize logs a command's check and dry-runs a query's, and it
+// reads the kind here, from the manifest warden ships, never from the
+// request envelope, whose kind the browser chose. Parsed once.
+var commandIntents = sync.OnceValues(func() (map[string]bool, error) {
+	m, err := loader.Load(bytes.NewReader(manifestYAML), "warden/extension/contract/manifest.yaml")
+	if err != nil {
+		return nil, err
+	}
+	kinds := make(map[string]bool, len(m.Intents))
+	for _, in := range m.Intents {
+		kinds[in.Name] = in.Kind == dashcontract.IntentKindCommand
+	}
+	return kinds, nil
+})
+
 // engineAuthorizer is the dashcontract.Warden the manifest delegates to.
 type engineAuthorizer struct {
 	deps Deps
@@ -154,6 +173,13 @@ func deny(reason string) dashcontract.Decision {
 // Authorize implements dashcontract.Warden. It fails closed: a nil user, an
 // empty subject, an unresolvable tenant, an intent it has no policy for, a
 // foreign contributor, a missing engine and any engine error all deny.
+//
+// A command's check is a real one: it writes a check log row and fires
+// hooks, allowed or denied, because a write is rare and is what an auditor
+// looks for. A query's check is a dry run. Every page view and every poll
+// is a query, and logging them would fill the check log an operator browses
+// with the dashboard's own reads. The cost is that a denied read leaves no
+// check log row; forge's transport answers it with a 403 and audits nothing.
 func (a *engineAuthorizer) Authorize(ctx context.Context, p dashcontract.Principal, act dashcontract.Action) (dashcontract.Decision, error) {
 	if a.deps.Engine == nil {
 		return deny("warden engine not configured"), errors.New("warden/contract: engine not configured")
@@ -173,7 +199,18 @@ func (a *engineAuthorizer) Authorize(ctx context.Context, p dashcontract.Princip
 		return deny("no tenant in scope"), nil //nolint:nilerr // a refusal is a decision, not a failure
 	}
 
-	held, err := principalHolds(ctx, a.deps.Engine, p, tenantID, pol.action, pol.resource)
+	kinds, err := commandIntents()
+	if err != nil {
+		return deny("authorization unavailable"), fmt.Errorf("warden/contract: load manifest kinds: %w", err)
+	}
+	logged, ok := kinds[act.Intent]
+	if !ok {
+		// intentPolicies names an intent the manifest does not. The guards in
+		// authz_test.go keep the two in step, so this is a build gone wrong.
+		return deny("no authorization policy for intent " + act.Intent), nil
+	}
+
+	held, err := principalHolds(ctx, a.deps.Engine, p, tenantID, pol.action, pol.resource, logged)
 	if err != nil {
 		// The engine could not decide. Deny, and return the error so the
 		// transport records it, but keep the cause out of the reason: that
@@ -192,10 +229,13 @@ func (a *engineAuthorizer) Authorize(ctx context.Context, p dashcontract.Princip
 // for each extra grant, so the two can never drift apart.
 //
 // The check runs through Enforce, with the user as a SubjectUser, in the
-// resolved tenant, so it is a real, logged check. ErrAccessDenied means no.
+// resolved tenant. With logged it is a real check that writes a check log
+// row and fires hooks; without it, a dry run that does neither and skips the
+// result cache. The decision is the same either way. Pass logged for a
+// command and not for a query, as Authorize does. ErrAccessDenied means no.
 // A principal with no user, and any other engine error, is an error: the
 // caller fails closed on it.
-func principalHolds(ctx context.Context, eng *warden.Engine, p dashcontract.Principal, tenantID, action, resource string) (bool, error) {
+func principalHolds(ctx context.Context, eng *warden.Engine, p dashcontract.Principal, tenantID, action, resource string, logged bool) (bool, error) {
 	subject, err := requireUser(p)
 	if err != nil {
 		return false, err
@@ -205,7 +245,11 @@ func principalHolds(ctx context.Context, eng *warden.Engine, p dashcontract.Prin
 		Action:   warden.Action{Name: action},
 		Resource: warden.Resource{Type: resource},
 	}
-	if err := eng.Enforce(ctx, req, warden.WithCallTenantID(tenantID)); err != nil {
+	opts := []warden.CallOption{warden.WithCallTenantID(tenantID)}
+	if !logged {
+		opts = append(opts, warden.WithCallDryRun())
+	}
+	if err := eng.Enforce(ctx, req, opts...); err != nil {
 		if errors.Is(err, warden.ErrAccessDenied) {
 			return false, nil
 		}

@@ -257,7 +257,7 @@ func subjectsDetailHandler(deps Deps) func(context.Context, SubjectDetailInput, 
 		// request, as the authorizer does.
 		granted := make(map[string]bool, len(subjectSections))
 		for _, sec := range subjectSections {
-			held, err := principalHolds(ctx, eng, p, tenantID, "read", sec.resource)
+			held, err := principalHolds(ctx, eng, p, tenantID, "read", sec.resource, false)
 			if err != nil {
 				return SubjectDetailResponse{}, mapWardenError(err)
 			}

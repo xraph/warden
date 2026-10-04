@@ -138,10 +138,11 @@ var schemaGrantResources = []string{
 
 // requireSchemaGrants refuses with PERMISSION_DENIED naming the first
 // resource the caller lacks action on. An engine that cannot decide fails the
-// request, as the authorizer does.
-func requireSchemaGrants(ctx context.Context, eng *warden.Engine, p dashcontract.Principal, tenantID, action string) error {
+// request, as the authorizer does. logged follows the intent's kind, as in
+// Authorize: true for schema.apply, false for the export and plan queries.
+func requireSchemaGrants(ctx context.Context, eng *warden.Engine, p dashcontract.Principal, tenantID, action string, logged bool) error {
 	for _, resource := range schemaGrantResources {
-		held, err := principalHolds(ctx, eng, p, tenantID, action, resource)
+		held, err := principalHolds(ctx, eng, p, tenantID, action, resource, logged)
 		if err != nil {
 			return mapWardenError(err)
 		}
@@ -157,7 +158,7 @@ func requireSchemaGrants(ctx context.Context, eng *warden.Engine, p dashcontract
 
 // requireSchemaReads is requireSchemaGrants for the read intents.
 func requireSchemaReads(ctx context.Context, eng *warden.Engine, p dashcontract.Principal, tenantID string) error {
-	return requireSchemaGrants(ctx, eng, p, tenantID, "read")
+	return requireSchemaGrants(ctx, eng, p, tenantID, "read", false)
 }
 
 func schemaExportHandler(deps Deps) func(context.Context, SchemaExportInput, dashcontract.Principal) (SchemaExportResponse, error) {
@@ -270,7 +271,7 @@ func schemaApplyHandler(deps Deps) func(context.Context, SchemaApplyInput, dashc
 		if err != nil {
 			return SchemaApplyResponse{}, err
 		}
-		if err := requireSchemaGrants(ctx, deps.Engine, p, tenantID, "manage"); err != nil {
+		if err := requireSchemaGrants(ctx, deps.Engine, p, tenantID, "manage", true); err != nil {
 			return SchemaApplyResponse{}, err
 		}
 

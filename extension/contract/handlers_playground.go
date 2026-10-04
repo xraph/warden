@@ -6,7 +6,7 @@
 // playground.explain runs one authorization check as a dry run and reports
 // what each model did. The check it builds writes no check log row, fires no
 // hooks and reads no cache, so it is a query: a viewer who may run checks may
-// run it. Authorizing the call itself is a separate, logged check.
+// run it. Authorizing the call is a dry run too, as for every query.
 package contract
 
 import (
