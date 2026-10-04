@@ -3,8 +3,11 @@ package warden
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
@@ -462,6 +465,61 @@ func TestValidateConditionAgreesWithTheEvaluatorOnLists(t *testing.T) {
 			if (validErr == nil) != (evalErr == nil) {
 				t.Errorf("%s %#v: validation says %v, the evaluator says %v", op, v, validErr, evalErr)
 			}
+		}
+	}
+}
+
+// warnRecorder captures Warn calls. It embeds a nil log.Logger for the rest
+// of the interface: the evaluator only ever calls Warn.
+type warnRecorder struct {
+	log.Logger
+	msgs   []string
+	fields []map[string]any
+}
+
+func (w *warnRecorder) Warn(msg string, fields ...log.Field) {
+	m := make(map[string]any, len(fields))
+	for _, f := range fields {
+		m[f.Key()] = f.Value()
+	}
+	w.msgs = append(w.msgs, msg)
+	w.fields = append(w.fields, m)
+}
+
+// TestEvaluate_ConditionErrorIsLoggedForEitherEffect pins that a condition
+// the evaluator cannot read is logged whichever way it fails: a skipped
+// allow and an applied deny both name the policy. A fail-closed deny looks
+// like any other deny in the check log, so the warning is how an operator
+// tells the two apart.
+func TestEvaluate_ConditionErrorIsLoggedForEitherEffect(t *testing.T) {
+	req := &CheckRequest{
+		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+		Action:   Action{Name: "read"},
+		Resource: Resource{Type: "doc", ID: "d1"},
+		Context:  map[string]any{"ip": "10.0.0.9"},
+	}
+	for _, tc := range []struct {
+		effect policy.Effect
+		want   string
+	}{
+		{policy.EffectDeny, "applying deny policy (fail closed)"},
+		{policy.EffectAllow, "skipping policy"},
+	} {
+		pol := &policy.Policy{
+			ID: id.NewPolicyID(), Name: "templ-made", Effect: tc.effect, IsActive: true,
+			Conditions: []policy.Condition{{Field: "context.ip", Operator: policy.OpNotIn, Value: "10.0.0.1"}},
+		}
+		rec := &warnRecorder{}
+		ev := &conditionEvaluator{now: time.Now, logger: rec}
+		if _, err := ev.Evaluate(context.Background(), []*policy.Policy{pol}, req, nil); err != nil {
+			t.Fatalf("%s: %v", tc.effect, err)
+		}
+		if len(rec.msgs) != 1 || !strings.Contains(rec.msgs[0], tc.want) {
+			t.Fatalf("%s: warnings = %q, want one containing %q", tc.effect, rec.msgs, tc.want)
+		}
+		f := rec.fields[0]
+		if f["policy"] != "templ-made" || f["policy_id"] != pol.ID.String() || f["error"] == nil {
+			t.Errorf("%s: fields = %v, want policy, policy_id and error", tc.effect, f)
 		}
 	}
 }

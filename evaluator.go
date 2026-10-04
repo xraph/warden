@@ -93,11 +93,19 @@ func (e *conditionEvaluator) Evaluate(_ context.Context, policies []*policy.Poli
 			if pol.Effect != policy.EffectAllow {
 				// Fail closed: a deny policy whose condition couldn't be
 				// evaluated still applies rather than silently opening up
-				// access.
+				// access. Logged, because the deny it produces looks like
+				// any other in the check log, and this one comes from a
+				// broken condition rather than a met one.
+				e.logger.Warn("warden: abac condition evaluation error, applying deny policy (fail closed)",
+					log.String("policy", pol.Name),
+					log.String("policy_id", pol.ID.String()),
+					log.Error(err),
+				)
 				conditionsMet = true
 			} else {
 				e.logger.Warn("warden: abac condition evaluation error, skipping policy",
 					log.String("policy", pol.Name),
+					log.String("policy_id", pol.ID.String()),
 					log.Error(err),
 				)
 				continue
