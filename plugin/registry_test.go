@@ -3,6 +3,9 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	log "github.com/xraph/go-utils/log"
@@ -170,5 +173,73 @@ func TestRegistry_EmitAudit(t *testing.T) {
 	}
 	if ap.events[0].Action != "role.created" || ap.events[0].TenantID != "t1" {
 		t.Fatalf("unexpected audit event: %+v", ap.events[0])
+	}
+}
+
+// countingCheckPlugin counts AfterCheck calls; safe for concurrent use.
+type countingCheckPlugin struct {
+	name  string
+	calls atomic.Int64
+}
+
+func (c *countingCheckPlugin) Name() string { return c.name }
+
+func (c *countingCheckPlugin) OnAfterCheck(_ context.Context, _, _ any) error {
+	c.calls.Add(1)
+	return nil
+}
+
+// TestRegistryConcurrentRegisterAndEmit pins that Register may run while
+// checks are emitting and while the plugin list is read. Engine.Plugins()
+// hands the registry to any caller, so nothing stops a Register after the
+// engine starts serving. Run with -race: without the registry's lock this
+// reports a data race on the hook slices and on the plugin list.
+func TestRegistryConcurrentRegisterAndEmit(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry(log.NewNoopLogger())
+	first := &countingCheckPlugin{name: "first"}
+	reg.Register(first)
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := range 200 {
+			reg.Register(&countingCheckPlugin{name: fmt.Sprintf("p%d", i)})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			reg.EmitAfterCheck(ctx, nil, nil)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			_ = len(reg.Plugins())
+			reg.SetMetrics(noopMetricsRecorder{})
+		}
+	}()
+	wg.Wait()
+
+	if got := len(reg.Plugins()); got != 201 {
+		t.Fatalf("Plugins() = %d plugins, want 201", got)
+	}
+	if first.calls.Load() != 200 {
+		t.Fatalf("first plugin saw %d AfterCheck calls, want 200", first.calls.Load())
+	}
+}
+
+// TestRegistryPluginsReturnsCopy pins that the slice Plugins() returns is
+// the caller's own: changing it cannot reorder or replace what the
+// registry dispatches to.
+func TestRegistryPluginsReturnsCopy(t *testing.T) {
+	reg := NewRegistry(log.NewNoopLogger())
+	reg.Register(&countingCheckPlugin{name: "a"})
+	got := reg.Plugins()
+	got[0] = &countingCheckPlugin{name: "b"}
+	if name := reg.Plugins()[0].Name(); name != "a" {
+		t.Fatalf("registry's first plugin is %q after the caller edited its copy, want %q", name, "a")
 	}
 }

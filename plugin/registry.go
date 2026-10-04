@@ -3,6 +3,8 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sync"
 
 	log "github.com/xraph/go-utils/log"
 
@@ -111,7 +113,15 @@ type auditEntry struct {
 // Every dispatch is panic-recovered per hook: one misbehaving plugin can
 // neither crash the calling goroutine nor stop other plugins in the same
 // Emit call from running.
+//
+// It is safe for concurrent use. Engine.Plugins() hands the registry to any
+// caller, so a Register can arrive while checks are emitting. Register only
+// ever appends, so an Emit reads the hook slice's header under the read lock
+// and iterates outside it: a later append writes past that header's length
+// or into a new array, and the plugins it adds are notified from the next
+// Emit on.
 type Registry struct {
+	mu      sync.RWMutex
 	plugins []Plugin
 	logger  log.Logger
 	metrics MetricsRecorder
@@ -149,8 +159,25 @@ func NewRegistry(logger log.Logger) *Registry {
 // is a no-op (the registry keeps its current sink, defaulting to a noop).
 func (r *Registry) SetMetrics(m MetricsRecorder) {
 	if m != nil {
+		r.mu.Lock()
 		r.metrics = m
+		r.mu.Unlock()
 	}
+}
+
+// metricsSink returns the current metrics sink.
+func (r *Registry) metricsSink() MetricsRecorder {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.metrics
+}
+
+// hooksOf returns the hook slice s points at, as it stands now. It reads
+// the slice header under the registry's read lock; see Registry.
+func hooksOf[T any](r *Registry, s *[]T) []T {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return *s
 }
 
 // Register adds a plugin and type-asserts it into all applicable
@@ -161,6 +188,9 @@ func (r *Registry) SetMetrics(m MetricsRecorder) {
 // is almost always a wiring mistake (wrong interface signature, typo'd
 // method name, etc).
 func (r *Registry) Register(p Plugin) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.plugins = append(r.plugins, p)
 	name := p.Name()
 
@@ -292,8 +322,13 @@ func (r *Registry) Validate(p Plugin) []string {
 	return names
 }
 
-// Plugins returns all registered plugins.
-func (r *Registry) Plugins() []Plugin { return r.plugins }
+// Plugins returns all registered plugins, in registration order. The slice
+// is the caller's own copy.
+func (r *Registry) Plugins() []Plugin {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return slices.Clone(r.plugins)
+}
 
 // call invokes fn, recovering from a panic and counting/logging both
 // panics and returned errors as a hook error. Used by every Emit* method
@@ -302,7 +337,7 @@ func (r *Registry) Plugins() []Plugin { return r.plugins }
 func (r *Registry) call(hook, pluginName string, fn func() error) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			r.metrics.HookError(hook, pluginName)
+			r.metricsSink().HookError(hook, pluginName)
 			r.logger.Error("plugin hook panicked",
 				log.String("hook", hook),
 				log.String("plugin", pluginName),
@@ -311,7 +346,7 @@ func (r *Registry) call(hook, pluginName string, fn func() error) {
 		}
 	}()
 	if err := fn(); err != nil {
-		r.metrics.HookError(hook, pluginName)
+		r.metricsSink().HookError(hook, pluginName)
 		r.logHookError(hook, pluginName, err)
 	}
 }
@@ -322,14 +357,14 @@ func (r *Registry) call(hook, pluginName string, fn func() error) {
 
 // EmitBeforeCheck notifies all plugins that implement BeforeCheck.
 func (r *Registry) EmitBeforeCheck(ctx context.Context, req any) {
-	for _, e := range r.beforeCheck {
+	for _, e := range hooksOf(r, &r.beforeCheck) {
 		r.call("OnBeforeCheck", e.name, func() error { return e.hook.OnBeforeCheck(ctx, req) })
 	}
 }
 
 // EmitAfterCheck notifies all plugins that implement AfterCheck.
 func (r *Registry) EmitAfterCheck(ctx context.Context, req, result any) {
-	for _, e := range r.afterCheck {
+	for _, e := range hooksOf(r, &r.afterCheck) {
 		r.call("OnAfterCheck", e.name, func() error { return e.hook.OnAfterCheck(ctx, req, result) })
 	}
 }
@@ -340,21 +375,21 @@ func (r *Registry) EmitAfterCheck(ctx context.Context, req, result any) {
 
 // EmitRoleCreated notifies all plugins that implement RoleCreated.
 func (r *Registry) EmitRoleCreated(ctx context.Context, rl *role.Role) {
-	for _, e := range r.roleCreated {
+	for _, e := range hooksOf(r, &r.roleCreated) {
 		r.call("OnRoleCreated", e.name, func() error { return e.hook.OnRoleCreated(ctx, rl) })
 	}
 }
 
 // EmitRoleUpdated notifies all plugins that implement RoleUpdated.
 func (r *Registry) EmitRoleUpdated(ctx context.Context, rl *role.Role) {
-	for _, e := range r.roleUpdated {
+	for _, e := range hooksOf(r, &r.roleUpdated) {
 		r.call("OnRoleUpdated", e.name, func() error { return e.hook.OnRoleUpdated(ctx, rl) })
 	}
 }
 
 // EmitRoleDeleted notifies all plugins that implement RoleDeleted.
 func (r *Registry) EmitRoleDeleted(ctx context.Context, roleID id.RoleID) {
-	for _, e := range r.roleDeleted {
+	for _, e := range hooksOf(r, &r.roleDeleted) {
 		r.call("OnRoleDeleted", e.name, func() error { return e.hook.OnRoleDeleted(ctx, roleID) })
 	}
 }
@@ -365,28 +400,28 @@ func (r *Registry) EmitRoleDeleted(ctx context.Context, roleID id.RoleID) {
 
 // EmitPermissionCreated notifies all plugins that implement PermissionCreated.
 func (r *Registry) EmitPermissionCreated(ctx context.Context, p *permission.Permission) {
-	for _, e := range r.permissionCreated {
+	for _, e := range hooksOf(r, &r.permissionCreated) {
 		r.call("OnPermissionCreated", e.name, func() error { return e.hook.OnPermissionCreated(ctx, p) })
 	}
 }
 
 // EmitPermissionDeleted notifies all plugins that implement PermissionDeleted.
 func (r *Registry) EmitPermissionDeleted(ctx context.Context, permID id.PermissionID) {
-	for _, e := range r.permissionDeleted {
+	for _, e := range hooksOf(r, &r.permissionDeleted) {
 		r.call("OnPermissionDeleted", e.name, func() error { return e.hook.OnPermissionDeleted(ctx, permID) })
 	}
 }
 
 // EmitPermissionAttached notifies all plugins that implement PermissionAttached.
 func (r *Registry) EmitPermissionAttached(ctx context.Context, roleID id.RoleID, permID id.PermissionID) {
-	for _, e := range r.permissionAttached {
+	for _, e := range hooksOf(r, &r.permissionAttached) {
 		r.call("OnPermissionAttached", e.name, func() error { return e.hook.OnPermissionAttached(ctx, roleID, permID) })
 	}
 }
 
 // EmitPermissionDetached notifies all plugins that implement PermissionDetached.
 func (r *Registry) EmitPermissionDetached(ctx context.Context, roleID id.RoleID, permID id.PermissionID) {
-	for _, e := range r.permissionDetached {
+	for _, e := range hooksOf(r, &r.permissionDetached) {
 		r.call("OnPermissionDetached", e.name, func() error { return e.hook.OnPermissionDetached(ctx, roleID, permID) })
 	}
 }
@@ -397,14 +432,14 @@ func (r *Registry) EmitPermissionDetached(ctx context.Context, roleID id.RoleID,
 
 // EmitRoleAssigned notifies all plugins that implement RoleAssigned.
 func (r *Registry) EmitRoleAssigned(ctx context.Context, a *assignment.Assignment) {
-	for _, e := range r.roleAssigned {
+	for _, e := range hooksOf(r, &r.roleAssigned) {
 		r.call("OnRoleAssigned", e.name, func() error { return e.hook.OnRoleAssigned(ctx, a) })
 	}
 }
 
 // EmitRoleUnassigned notifies all plugins that implement RoleUnassigned.
 func (r *Registry) EmitRoleUnassigned(ctx context.Context, a *assignment.Assignment) {
-	for _, e := range r.roleUnassigned {
+	for _, e := range hooksOf(r, &r.roleUnassigned) {
 		r.call("OnRoleUnassigned", e.name, func() error { return e.hook.OnRoleUnassigned(ctx, a) })
 	}
 }
@@ -415,14 +450,14 @@ func (r *Registry) EmitRoleUnassigned(ctx context.Context, a *assignment.Assignm
 
 // EmitRelationWritten notifies all plugins that implement RelationWritten.
 func (r *Registry) EmitRelationWritten(ctx context.Context, t *relation.Tuple) {
-	for _, e := range r.relationWritten {
+	for _, e := range hooksOf(r, &r.relationWritten) {
 		r.call("OnRelationWritten", e.name, func() error { return e.hook.OnRelationWritten(ctx, t) })
 	}
 }
 
 // EmitRelationDeleted notifies all plugins that implement RelationDeleted.
 func (r *Registry) EmitRelationDeleted(ctx context.Context, relID id.RelationID) {
-	for _, e := range r.relationDeleted {
+	for _, e := range hooksOf(r, &r.relationDeleted) {
 		r.call("OnRelationDeleted", e.name, func() error { return e.hook.OnRelationDeleted(ctx, relID) })
 	}
 }
@@ -433,21 +468,21 @@ func (r *Registry) EmitRelationDeleted(ctx context.Context, relID id.RelationID)
 
 // EmitPolicyCreated notifies all plugins that implement PolicyCreated.
 func (r *Registry) EmitPolicyCreated(ctx context.Context, p *policy.Policy) {
-	for _, e := range r.policyCreated {
+	for _, e := range hooksOf(r, &r.policyCreated) {
 		r.call("OnPolicyCreated", e.name, func() error { return e.hook.OnPolicyCreated(ctx, p) })
 	}
 }
 
 // EmitPolicyUpdated notifies all plugins that implement PolicyUpdated.
 func (r *Registry) EmitPolicyUpdated(ctx context.Context, p *policy.Policy) {
-	for _, e := range r.policyUpdated {
+	for _, e := range hooksOf(r, &r.policyUpdated) {
 		r.call("OnPolicyUpdated", e.name, func() error { return e.hook.OnPolicyUpdated(ctx, p) })
 	}
 }
 
 // EmitPolicyDeleted notifies all plugins that implement PolicyDeleted.
 func (r *Registry) EmitPolicyDeleted(ctx context.Context, polID id.PolicyID) {
-	for _, e := range r.policyDeleted {
+	for _, e := range hooksOf(r, &r.policyDeleted) {
 		r.call("OnPolicyDeleted", e.name, func() error { return e.hook.OnPolicyDeleted(ctx, polID) })
 	}
 }
@@ -456,7 +491,7 @@ func (r *Registry) EmitPolicyDeleted(ctx context.Context, polID id.PolicyID) {
 // PolicyObligationFired. Called once per obligation produced by the
 // engine after merging RBAC / ReBAC / ABAC results.
 func (r *Registry) EmitPolicyObligationFired(ctx context.Context, polID id.PolicyID, obligation string, req, result any) {
-	for _, e := range r.policyObligation {
+	for _, e := range hooksOf(r, &r.policyObligation) {
 		r.call("OnPolicyObligationFired", e.name, func() error {
 			return e.hook.OnPolicyObligationFired(ctx, polID, obligation, req, result)
 		})
@@ -470,7 +505,7 @@ func (r *Registry) EmitPolicyObligationFired(ctx context.Context, polID id.Polic
 // EmitAudit notifies all plugins that implement Audit. Called for every
 // mutation, in addition to whichever typed Emit* also fires for it.
 func (r *Registry) EmitAudit(ctx context.Context, ev Event) {
-	for _, e := range r.audit {
+	for _, e := range hooksOf(r, &r.audit) {
 		r.call("OnAudit", e.name, func() error { return e.hook.OnAudit(ctx, ev) })
 	}
 }
@@ -481,7 +516,7 @@ func (r *Registry) EmitAudit(ctx context.Context, ev Event) {
 
 // EmitShutdown notifies all plugins that implement Shutdown.
 func (r *Registry) EmitShutdown(ctx context.Context) {
-	for _, e := range r.shutdown {
+	for _, e := range hooksOf(r, &r.shutdown) {
 		r.call("OnShutdown", e.name, func() error { return e.hook.OnShutdown(ctx) })
 	}
 }
