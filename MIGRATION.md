@@ -12,6 +12,10 @@ the Where-now cell tells you which React route and which intent does that job
 today, or why nothing does. Every file that lived in `dashboard/` is named here
 by its path from warden's root, so you can grep for it.
 
+The source itself is still in git history. Every `dashboard/...:line` reference
+below points at it as it stood before the deletion, and
+`git show 45701f8:dashboard/<path>` prints any of those files.
+
 React routes are written as the plugin declares them, relative to wherever your
 shell mounts warden. Templ routes are written as `contributor.go` dispatched
 them.
@@ -126,10 +130,10 @@ React route `/roles` (`pages/roles.tsx`), intent `roles.list`.
 | Column Slug | `dashboard/pages/roles.templ:52`, `:75-77` | migrated | Slug column. |
 | Column Parent: parent role name as a link, else a dash | `dashboard/pages/roles.templ:53`, `:78-91`; lookup at `dashboard/data.go:376` | bug fixed | The templ cell never showed a parent. `enrichRoleRows` cached parents under tenant, namespace and slug (`dashboard/data.go:338-345`) but looked them up under tenant and slug only (`dashboard/data.go:376`), so the lookup always missed and every row showed the dash. React shows the parent slug in the Inherits column. |
 | Column Permissions: count of attached permissions | `dashboard/pages/roles.templ:54`, `:92-100`; `dashboard/data.go:369-371` | migrated | Not a list column. The grants table on `/roles/:id` captions the count ("N permissions", `roles.detail`). |
-| Column Relations: count of tuples with the role as object or subject | `dashboard/pages/roles.templ:55`, `:101-109`; `dashboard/data.go:383-392` | dropped | The count was taken with no tenant in the filter (`dashboard/data.go:384-391`), and an empty tenant matches every tenant's rows (`dashboard/contributor.go:53-58`), so in a multi-tenant deployment the number summed tuples across tenants. To see the tuples themselves, filter `/relations` by object type `role` and object id, or subject type `role` and subject id (`relations.list`). |
+| Column Relations: count of tuples with the role as object or subject | `dashboard/pages/roles.templ:55`, `:101-109`; `dashboard/data.go:383-392` | dropped | The count was taken with no tenant in the filter (`dashboard/data.go:384-391`), and an empty tenant matches every tenant's rows (`dashboard/contributor.go:53-58`), so the number also counted any other tenant's tuples that named the role. Role ids are unique TypeIDs, so that happened only when another tenant held tuples naming this exact id. To see the tuples themselves, filter `/relations` by object type `role` and object id, or subject type `role` and subject id (`relations.list`). |
 | Column Flags: System and Default badges | `dashboard/pages/roles.templ:56`, `:110-123` | migrated | Flags column, `system` and `default` badges. |
 | Column Description, "No description" when empty | `dashboard/pages/roles.templ:57`, `:124-130` | migrated | On `/roles/:id` in the details list. |
-| Column Created | `dashboard/pages/roles.templ:58`, `:131-134` | migrated | Created column, beside Updated (`createdAt` from `roles.list`). A row with no created time shows a dash. |
+| Column Created | `dashboard/pages/roles.templ:58`, `:131-134` | migrated | Created column, beside Updated (`createdAt` from `roles.list`). |
 | Row menu: View Details | `dashboard/pages/roles.templ:143-152` | migrated | Details link to `/roles/:id`. |
 | Row menu: Delete, hidden on system roles, with a confirm | `dashboard/pages/roles.templ:153-176` | migrated | Delete button, hidden on system roles, confirm dialog (`roles.delete`). |
 | Empty state "No roles found." | `dashboard/pages/roles.templ:45-46` | migrated | "No roles yet", or a message naming the search and namespace when filtered. |
@@ -171,7 +175,7 @@ you reached it from a role name. React route `/roles/:id`
 | Attach button and dialog: select of every permission as "name (resource:action)" | `dashboard/pages/role_detail.templ:107-116`, `:228`; `dashboard/pages/role_permissions.templ:11-55` | migrated | Attach permission dialog (`roles.attachPermission`). Lists only permissions the role does not hold, and says when the list is truncated. |
 | Empty state "No permissions attached." | `dashboard/pages/role_detail.templ:120-121` | migrated | "This role grants nothing." |
 | Child Roles table, shown only when there are children: Name (link), Slug, Created | `dashboard/pages/role_detail.templ:165-211` | migrated | Children table, always shown, "Nothing inherits from this role." when empty. Columns Role, Slug, Namespace, Flags, Created, with a Details link. |
-| Plugin-contributed sections slot | `dashboard/pages/role_detail.templ:213-214`; `dashboard/contributor.go:535-546` | dropped | No type implements `RoleDetailContributor` (`dashboard/plugin_iface.go:45-47`). A search of every Go file under the xraph tree finds the method name only inside `dashboard/`. |
+| Plugin-contributed sections slot | `dashboard/pages/role_detail.templ:213-214`; `dashboard/contributor.go:535-546` | dropped | No type implements `RoleDetailContributor` (`dashboard/plugin_iface.go:45-47`). Before the deletion, a search of every Go file under the xraph tree found the method name only inside `dashboard/`. |
 
 ### Edit role dialog
 
@@ -294,7 +298,7 @@ React route `/policies/:id` (`pages/policy-detail.tsx`,
 | Scope card: Actions and Resources as badges, "All actions" / "All resources" when empty | `dashboard/pages/policy_detail.templ:89-131` | migrated | Rule rows `action` and `resource`, "any action" and "any resource" when unrestricted. |
 | Subject Matches table, shown when there are subjects: Kind, ID, Role, "Any" for an empty part | `dashboard/pages/policy_detail.templ:133-185` | migrated | Rule row `subject`, one chip per matcher, "anyone" when unrestricted, and a note when a matcher is empty. |
 | Conditions table, shown when there are conditions: Field, Operator badge, Value | `dashboard/pages/policy_detail.templ:187-227` | migrated | Rule rows `when` and `and`, the operator in words, with notes on conditions that cannot be evaluated or can never hold. |
-| Plugin-contributed sections slot | `dashboard/pages/policy_detail.templ:229-230`; `dashboard/contributor.go:548-559` | dropped | No type implements `PolicyDetailContributor` (`dashboard/plugin_iface.go:51-53`), and the method name appears only inside `dashboard/`. |
+| Plugin-contributed sections slot | `dashboard/pages/policy_detail.templ:229-230`; `dashboard/contributor.go:548-559` | dropped | No type implements `PolicyDetailContributor` (`dashboard/plugin_iface.go:51-53`), and before the deletion the method name appeared only inside `dashboard/`. |
 
 ## Policy create and edit form
 
@@ -409,7 +413,7 @@ Templ route `/check-logs`, source `dashboard/pages/check_logs.templ`. React rout
 | Subject kind filter | `dashboard/pages/check_logs.templ:23-37` | migrated | Subject kind select. |
 | Subject ID, Action, Resource Type filters | `dashboard/pages/check_logs.templ:38-79` | migrated | Subject id, Action, Resource type, applied together with an Apply button. |
 | Decision filter: All, Allow | `dashboard/pages/check_logs.templ:80-90` | migrated | Decision filter, Any decision and `allow` among its options. |
-| Decision filter: Deny | `dashboard/pages/check_logs.templ:91` | bug fixed | It asked for the exact decision `deny`, and the engine never writes that value (it records `deny_explicit`, `deny_no_roles` and the other specific denials), so choosing Deny always showed an empty table. React's Decision filter offers each `deny_*` value on its own. It has no single "every denial" choice. It still offers a plain `deny` option as well, and that matches nothing the built-in evaluator records, for the same reason. |
+| Decision filter: Deny | `dashboard/pages/check_logs.templ:91` | bug fixed | It asked for the exact decision `deny`, and the engine never writes that value (it records `deny_explicit`, `deny_default`, `deny_no_roles`, `deny_no_perms` and `deny_relation`), so choosing Deny always showed an empty table. React's Decision filter offers each `deny_*` value on its own. It has no single "every denial" choice. It still offers plain `deny` and `deny_condition` as well, and neither matches anything the built-in evaluator records: `deny` for the same reason, and `deny_condition` because it is declared (`warden.go:119`) and accepted as a filter (`extension/contract/handlers_checklogs.go:90`) but nothing sets it. |
 | `after` query parameter (no control on the page; reachable only by editing the URL) | `dashboard/data.go:224`; named in the `hx-include` lists, e.g. `dashboard/pages/check_logs.templ:30` | migrated | Time window select (last hour, 24 hours, 7 days, 30 days). |
 | `before` query parameter (no control on the page) | `dashboard/data.go:225`; `dashboard/pages/check_logs.templ:30` | dropped | The templ page never offered a control for it. You could set it only by editing the URL, and `dashboard/pages/check_logs.templ:30` names a `before` field that the page never renders. React's time window sends only `after`. `checkLogs.list` still accepts `before` from any client that sends it. |
 | Columns Subject, Action, Resource | `dashboard/pages/check_logs.templ:104-106`, `:117-125` | migrated | Same, Subject linking to `/subjects/:kind/:id`. |
