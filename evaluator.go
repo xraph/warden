@@ -254,6 +254,9 @@ func (e *conditionEvaluator) evaluateConditions(conditions []policy.Condition, r
 	return true, nil
 }
 
+// resolveField reads a condition field from the request. Under subject and
+// resource, kind, type and id name the built-in fields and anything else
+// names an attribute (see lookupAttribute for the attributes. spelling).
 func resolveField(field string, req *CheckRequest) any {
 	parts := strings.SplitN(field, ".", 2)
 	if len(parts) < 2 {
@@ -267,9 +270,7 @@ func resolveField(field string, req *CheckRequest) any {
 		if parts[1] == "id" {
 			return req.Subject.ID
 		}
-		if req.Subject.Attributes != nil {
-			return req.Subject.Attributes[parts[1]]
-		}
+		return lookupAttribute(req.Subject.Attributes, parts[1])
 	case "resource":
 		if parts[1] == "type" {
 			return req.Resource.Type
@@ -277,9 +278,7 @@ func resolveField(field string, req *CheckRequest) any {
 		if parts[1] == "id" {
 			return req.Resource.ID
 		}
-		if req.Resource.Attributes != nil {
-			return req.Resource.Attributes[parts[1]]
-		}
+		return lookupAttribute(req.Resource.Attributes, parts[1])
 	case "action":
 		if parts[1] == "name" {
 			return req.Action.Name
@@ -287,6 +286,34 @@ func resolveField(field string, req *CheckRequest) any {
 	case "context":
 		if req.Context != nil {
 			return req.Context[parts[1]]
+		}
+	}
+	return nil
+}
+
+// lookupAttribute reads key from a subject or resource attribute map. The
+// docs and the DSL spell an attribute subject.attributes.<k>, or
+// subject.attributes["<k>"] when <k> isn't a bare word, so key arrives here
+// as attributes.<k> or attributes["<k>"]. When attrs has no key spelled that
+// way literally, the <k> inside it is looked up instead. The literal key wins
+// so a caller who really sends an attribute named "attributes.<k>" keeps
+// getting it: no field that resolved to a value before resolves differently
+// now, and only fields that used to resolve to nil change.
+func lookupAttribute(attrs map[string]any, key string) any {
+	if attrs == nil {
+		return nil
+	}
+	if v, ok := attrs[key]; ok {
+		return v
+	}
+	if k, ok := strings.CutPrefix(key, "attributes."); ok {
+		return attrs[k]
+	}
+	if quoted, ok := strings.CutPrefix(key, "attributes["); ok {
+		if quoted, ok = strings.CutSuffix(quoted, "]"); ok {
+			if k, err := strconv.Unquote(quoted); err == nil {
+				return attrs[k]
+			}
 		}
 	}
 	return nil
