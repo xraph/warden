@@ -68,8 +68,8 @@ func requireEngine(deps Deps) error {
 // warden.WithTenant value or forge.ScopeFrom(ctx), and nothing on the
 // contract path sets either: grep extensions/dashboard/contract for
 // context.WithValue and you will find nothing. A scope helper ported from
-// the deleted templ dashboard's contributor (see MIGRATION.md) compiles, runs, and silently returns the
-// empty string forever.
+// the deleted templ dashboard's contributor (see MIGRATION.md) compiles,
+// runs, and silently returns the empty string forever.
 //
 // The empty string is not a harmless zero. An empty TenantID in a store
 // ListFilter matches EVERY tenant's rows rather than none, so a handler

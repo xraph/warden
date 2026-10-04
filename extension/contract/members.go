@@ -30,11 +30,13 @@ import (
 // Three rules that are easy to get backwards:
 //
 // MaxMembers 0 means UNLIMITED. There is no field comment saying so, so the
-// evidence is the `omitempty` tag on role.Role.MaxMembers and the templ
-// dashboard's own guard at dashboard/pages/role_detail_templ.go:328, which
-// renders the cap only `if r.MaxMembers > 0`. A guard that read 0 as "no
-// members" would block every assignment on every role that never set a
-// cap, which is most of them.
+// evidence is the `omitempty` tag on role.Role.MaxMembers and the deleted
+// templ dashboard's own guard, which rendered the cap only
+// `if r.MaxMembers > 0` (MIGRATION.md, Role detail, "Max Members (when
+// above 0)"; read the source with
+// `git show 45701f8:dashboard/pages/role_detail_templ.go`, line 328). A
+// guard that read 0 as "no members" would block every assignment on every
+// role that never set a cap, which is most of them.
 //
 // Only LIVE members occupy a seat. An expired assignment grants nothing
 // (ListRolesForSubject filters it), so counting it would let old grants pile
