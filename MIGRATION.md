@@ -56,15 +56,17 @@ nothing else records it.
 
 ### What the templ playground looked like
 
-You got two cards side by side. The left card, "Request Builder", had six inputs:
+The page opened with the heading "Authorization Playground" and the line "Test
+authorization checks against your configured policies, roles, and relations."
+Under it you got two cards side by side. The left card, "Request Builder", had six inputs:
 
 | Input | Control | Rule |
 |---|---|---|
 | Subject Kind | select: User, API Key, Service, Service Account (`user`, `api_key`, `service`, `service_acct`) | defaulted to `user` |
-| Subject ID | text, placeholder `user-123` | required |
-| Action | text, placeholder `read` | required |
-| Resource Type | text, placeholder `document` | required |
-| Resource ID (optional) | text, placeholder `doc-456` | optional |
+| Subject ID | text, placeholder `e.g. user-123` | required |
+| Action | text, placeholder `e.g. read` | required |
+| Resource Type | text, placeholder `e.g. document` | required |
+| Resource ID (optional) | text, placeholder `e.g. doc-456` | optional |
 | Context JSON (optional) | monospace textarea, placeholder `{"ip": "192.168.1.1"}` | parsed with `JSON.parse` on submit; a parse failure showed "Invalid JSON in context field" and sent nothing |
 
 The Check Access button stayed disabled until Subject ID, Action and Resource
@@ -83,7 +85,7 @@ eval time you saw was the cache lookup.
 The right card, "Result", had three states:
 
 1. Before any run: a large lightning icon and "Run an authorization check to see results here."
-2. On a failed request: a red box with the server's `error` or `message`, or "Check failed".
+2. On a failed request: a red box with the server's `error` or `message`, or "Check failed". When the request itself threw (a network failure, or a response that was not JSON), the box showed the browser's own error message (`dashboard/pages/playground.templ:50`).
 3. On a result: a large banner, green with a check-circle and the word ALLOWED when `allowed` was true, red with an x-circle and DENIED otherwise. Under it a definition list of Decision (the raw `decision` string), Reason (or `-`) and Eval Time (`eval_time_ns` shown as ns below 1000, `us` with one decimal below 1,000,000, ms with one decimal above).
 
 When the response carried a non-empty `matched_by`, a "Matched By" table followed
@@ -99,6 +101,7 @@ did not supply that sentence.
 
 | Item | Templ source | Status | Where now |
 |---|---|---|---|
+| Heading "Authorization Playground" and its subtitle | `dashboard/pages/playground.templ:56-57` | migrated | Page header "Playground". In place of the subtitle, a note at the foot of the page says the run is a dry run. |
 | Subject kind, subject id, action, resource type, resource id inputs | `dashboard/pages/playground.templ:71-111` | migrated | `/playground` builder, same four kinds. Adds namespace, subject attributes and resource attributes. |
 | Context JSON input and its parse error | `dashboard/pages/playground.templ:38-44`, `:112-119` | migrated | "Context" textarea under "attributes and context". Errors read "This is not valid JSON." or "This must be a JSON object." |
 | Run disabled until the three required fields are filled | `dashboard/pages/playground.templ:124` | migrated | Run button, same three fields (`canRun`). |
@@ -249,7 +252,7 @@ Source `dashboard/pages/assignment_form.templ`.
 | Subject Kind select, four kinds | `dashboard/pages/assignment_form.templ:46-59` | migrated | Subject kind, same four. |
 | Subject ID, required | `dashboard/pages/assignment_form.templ:60-63` | migrated | Subject id, required. |
 | Resource Type (optional), Resource ID (optional) | `dashboard/pages/assignment_form.templ:64-71` | migrated | Same two fields. Both or neither, as `assignments.create` requires. |
-| Expires At (optional), datetime input | `dashboard/pages/assignment_form.templ:72-75` | migrated | Expires (optional). A value that does not parse blocks the create. |
+| Expires At (optional), datetime input | `dashboard/pages/assignment_form.templ:72-75` | bug fixed | It never worked. The field is a `datetime-local` input (`dashboard/pages/assignment_form.templ:74`), which submits `YYYY-MM-DDTHH:MM` with no zone, and the API parses `expires_at` as RFC3339 (`api/assignment_handler.go:109`) and answers 400 "invalid expires_at". Every templ create with an expiry failed. React's Expires (optional) field is also `datetime-local`, read as your local time and sent to `assignments.create` as an RFC3339 instant in UTC. A value that does not parse blocks the create. |
 
 ## Policies
 
@@ -314,7 +317,7 @@ New policy dialog on `/policies`, then `/policies/:id/edit`
 | Subjects: add rows of Kind (Any or one of four), ID, Role; remove a row; "No subject filters" when empty | `dashboard/pages/policy_form.templ:134-184` | migrated | Subject matchers in the editor (kind, id, role), with removal. |
 | Actions and Resources as comma-separated text | `dashboard/pages/policy_form.templ:187-212` | migrated | Action and resource chip inputs. |
 | Conditions: add rows of Field, Operator (17 operators, eq through regex), Value; remove a row; "No conditions" when empty | `dashboard/pages/policy_form.templ:215-274` | migrated | Condition rows, same operator set, each value typed to its operator (list, CIDR, time, number, pattern, none, text). |
-| Edit form rewrote every condition value as a string | `dashboard/pages/policy_form.templ:351-360`, `:338` | bug fixed | `buildConditionsJSON` formatted each stored value with `%v` into a string, and the form sent it back as typed text, so saving a policy whose condition held a list wrote back a string like `[a b]`. The React editor sends arrays, numbers and strings as their own JSON types. |
+| Every condition value was saved as a string, on create and on edit | `dashboard/pages/policy_form.templ:264`, `:301`, `:338`, `:351-360` | bug fixed | The Value control is a plain text input (`:264`), sent as typed on create (`:301`) and on edit (`:338`), and on edit `buildConditionsJSON` first turned each stored value into a string with `%v` (`:357`), so a list came back as text like `[a b]`. `in` and `not_in` compare against a list only (`inSlice`, `evaluator.go:358-375`). An `in` condition written through the templ form therefore never matched, and a `not_in` condition always matched, so such a policy applied more widely than written. The React editor sends arrays, numbers and strings as their own JSON types. If you created or edited policies with `in` or `not_in` conditions through the templ dashboard, check them, because the value may still be a string: `/policies/:id` marks such a condition "It needs a list of values, not one.", and an `in` one also gets the "never applies" flag on `/policies`. Re-enter the value as list items in the editor; a row you leave untouched is saved back exactly as stored. |
 | Create posted to `/v1/policies` with no base path | `dashboard/pages/policy_form.templ:303` | bug fixed | See "Requests that ignored the base path". |
 | Edit posted to `/v1/policies/:id` with no base path | `dashboard/pages/policy_form.templ:340` | bug fixed | See "Requests that ignored the base path". |
 
@@ -406,7 +409,8 @@ Templ route `/check-logs`, source `dashboard/pages/check_logs.templ`. React rout
 | Header "Authorization Check Logs", count, description | `dashboard/pages/check_logs.templ:18-19` | migrated | "Check log", caption "N checks". |
 | Subject kind filter | `dashboard/pages/check_logs.templ:23-37` | migrated | Subject kind select. |
 | Subject ID, Action, Resource Type filters | `dashboard/pages/check_logs.templ:38-79` | migrated | Subject id, Action, Resource type, applied together with an Apply button. |
-| Decision filter: All, Allow, Deny | `dashboard/pages/check_logs.templ:80-92` | migrated | Decision filter listing every decision `checkLogs.list` accepts, `deny_no_roles` and `error` among them. |
+| Decision filter: All, Allow | `dashboard/pages/check_logs.templ:80-90` | migrated | Decision filter, Any decision and `allow` among its options. |
+| Decision filter: Deny | `dashboard/pages/check_logs.templ:91` | bug fixed | It asked for the exact decision `deny`, and the engine never writes that value (it records `deny_explicit`, `deny_no_roles` and the other specific denials), so choosing Deny always showed an empty table. React's Decision filter offers each `deny_*` value on its own. It has no single "every denial" choice. |
 | `after` query parameter (no control on the page; reachable only by editing the URL) | `dashboard/data.go:224`; named in the `hx-include` lists, e.g. `dashboard/pages/check_logs.templ:30` | migrated | Time window select (last hour, 24 hours, 7 days, 30 days). |
 | `before` query parameter (no control on the page) | `dashboard/data.go:225`; `dashboard/pages/check_logs.templ:30` | gap | `checkLogs.list` accepts `before`. The page sends only `after`. |
 | Columns Subject, Action, Resource | `dashboard/pages/check_logs.templ:104-106`, `:117-125` | migrated | Same, Subject linking to `/subjects/:kind/:id`. |
@@ -504,7 +508,7 @@ None of this has a page of its own. Each line says what replaced it.
 | `dashboard/contributor.go` | Forge templ `LocalContributor`: dispatched page routes (`/roles/detail?id=`, `/policies/create`, and so on), widgets and settings; resolved the tenant from the request context; rendered "Select a tenant" with no tenant in scope; wrapped pages in the path rewriter. | migrated | The contract (`extension/contract/contract.go`) registers intents, the React plugin (`src/index.tsx`) declares routes with path parameters (`/roles/:id`, `/policies/:id/edit`). The tenant comes from the principal or `Deps.DefaultTenantID`, and a request with none is refused with "no tenant in scope", which the page shows as an error. |
 | `dashboard/contributor_test.go` | Asserted that forms and delete dialogs posted under the configured base path. | migrated | Nothing posts to the HTTP API any more. The contract's own tests live beside it in `extension/contract/`. |
 | `dashboard/data.go` | Store reads: paged lists (default 20, check logs 50, clamp 500), dropdown option reads capped at 500, entity counts, role row enrichment. | migrated | Contract handlers. Paging is offset based with a default of 25 and a cap of 200 (`extension/contract/paging.go`). React pickers read up to 200, and the role page's attach and replace pickers say when that cuts the list short. |
-| `dashboard/data_test.go` | Tested the dropdown caps and the limit clamp. | migrated | `extension/contract/paging_test.go`. |
+| `dashboard/data_test.go` | Tested the 500-option cap on the dialogs' role and permission selects, and the 500 page-size clamp. | migrated | The page-size clamp is `extension/contract/paging_test.go` (cap 200). There is no separate select cap now: the React pickers ask for 200 rows, and that same contract cap bounds them. The role page's picker says when 200 cuts the list short, tested in forge-dashboard `packages/plugin-warden/test/role-detail.test.tsx`. |
 | `dashboard/manifest.go` | Contributor manifest: name, icon `shield-check`, version 0.1.0, extension layout, sidebar, topbar (title, accent `#f59e0b`, search on), nav, widgets, settings, plus plugin merging. | migrated | The `contributor.app` block in `extension/contract/manifest.yaml` (display name, slug, icon, priority, home) and `definePlugin` in the React plugin. Nav, widgets and settings are covered in their own sections above. |
 | Topbar "API Docs" action and sidebar footer link, both to `/docs` | `dashboard/manifest.go:29-33`; `dashboard/components/footer_links.templ` | dropped | The href was a fixed `/docs` on the host root. Warden registers no `/docs` route, so whether it went anywhere depended on the host app. |
 | `searchable` capability and topbar search | `dashboard/manifest.go:28`, `:37-39`; `dashboard/forge.contributor.yaml:70` | dropped | It was a flag for Forge's templ dashboard. Neither `extension/contract/manifest.yaml` nor the React plugin declares anything for a shell search to use. |
@@ -515,7 +519,7 @@ None of this has a page of its own. Each line says what replaced it.
 | `dashboard/components/empty_state.templ` | Centered icon, title and description, used for "Select a tenant". | migrated | `ResourceTable`'s `emptyMessage` and `QueryBoundary` error states. |
 | `dashboard/components/page_header.templ` | Title, count badge, description, actions slot. | migrated | Kit `PageHeader`; counts moved to table captions. |
 | `dashboard/components/pagination_meta.go` | Page math (total pages, current page) from total, limit, offset. | migrated | Kit `ResourceTable` pagination from the contract's `total`, `limit`, `offset`. |
-| `dashboard/components/path_rewriter.templ` | HTMX `configRequest` hook that rewrote bare page paths to `/ext/warden/pages/...` and skipped `/v1/` API paths. | migrated | `PluginLink`, which resolves scope-relative paths in the shell. It left any path starting with `/v1/` alone, so it never added the missing base path to the requests listed under "Requests that ignored the base path". |
+| `dashboard/components/path_rewriter.templ` | HTMX `configRequest` hook that rewrote bare page paths to `/ext/warden/pages/...` and skipped `/v1/` API paths. | migrated | `PluginLink`, which resolves scope-relative paths in the shell. The templ rewriter left any path starting with `/v1/` alone (`dashboard/components/path_rewriter.templ:39`), so it never added the missing base path to the requests listed under "Requests that ignored the base path". |
 | `dashboard/components/plugin_sections.templ` | Rendered plugin sections separated by rules. | dropped | Only ever fed by the plugin interfaces nobody implements. |
 | `dashboard/components/stat_card.templ` | Icon, label, value, subtitle card. | migrated | Kit `StatGrid`. |
 | `dashboard/pages/helpers.templ` | Small `emptyState` and the icon set it used. | migrated | `ResourceTable` empty messages. |
