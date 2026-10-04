@@ -122,8 +122,11 @@ type RelationExpandEdge struct {
 type RelationExpandResponse struct {
 	Nodes []RelationExpandNode `json:"nodes"`
 	Edges []RelationExpandEdge `json:"edges"`
-	Stop  string               `json:"stop"`  // complete | depth | visited | fanout
-	Limit int                  `json:"limit"` // the engine's configured limit, 0 when complete
+	Stop  string               `json:"stop"` // complete | depth | visited | fanout
+	// Limit is the limit that stopped the walk, as the walk ran with it: the
+	// engine's own walker's when ExactWalk is true, Config's otherwise. 0
+	// when the walk completed.
+	Limit int `json:"limit"`
 	// ExactWalk is false when the engine's graph walker is not the built-in
 	// one: Check walks with that walker, so this expansion shows what the
 	// built-in walk would find, which may differ.
