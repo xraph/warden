@@ -2,8 +2,10 @@ package warden
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -289,9 +291,10 @@ func evaluateCondition(op policy.Operator, actual, expected any) (bool, error) {
 	case policy.OpNotEquals:
 		return fmt.Sprint(actual) != fmt.Sprint(expected), nil
 	case policy.OpIn:
-		return inSlice(actual, expected), nil
+		return inSlice(actual, expected)
 	case policy.OpNotIn:
-		return !inSlice(actual, expected), nil
+		found, err := inSlice(actual, expected)
+		return !found, err
 	case policy.OpContains:
 		return strings.Contains(fmt.Sprint(actual), fmt.Sprint(expected)), nil
 	case policy.OpStartsWith:
@@ -355,23 +358,42 @@ func compiledRegex(pattern string) (*regexp.Regexp, error) {
 	return re, nil
 }
 
-func inSlice(actual, expected any) bool {
+// errNotAList is returned for an in or not_in whose stored value is not a
+// list. Read as "never in it", a not_in would hold for every request and an
+// in for none, so an allow would grant everyone and a deny would deny no one.
+// As an error it fails closed: a deny applies, an allow is skipped.
+var errNotAList = errors.New("in and not_in need a list of values")
+
+func inSlice(actual, expected any) (bool, error) {
 	s := fmt.Sprint(actual)
 	switch v := expected.(type) {
 	case []string:
 		for _, item := range v {
 			if item == s {
-				return true
+				return true, nil
 			}
 		}
+		return false, nil
 	case []any:
 		for _, item := range v {
 			if fmt.Sprint(item) == s {
-				return true
+				return true, nil
 			}
 		}
+		return false, nil
 	}
-	return false
+	// Any other slice or array ([]int, []float64, a driver's named slice
+	// type) is still a list.
+	rv := reflect.ValueOf(expected)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return false, fmt.Errorf("%w, got %T", errNotAList, expected)
+	}
+	for i := 0; i < rv.Len(); i++ {
+		if fmt.Sprint(rv.Index(i).Interface()) == s {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // compareNumbers compares a and b numerically. The second return value is

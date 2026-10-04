@@ -390,3 +390,58 @@ func TestC2_EndToEnd_RoleScopedPolicy(t *testing.T) {
 		t.Fatalf("subject holding editor directly should match, got %s: %s", res.Decision, res.Reason)
 	}
 }
+
+func TestInAndNotInRefuseAValueThatIsNotAList(t *testing.T) {
+	for _, op := range []policy.Operator{policy.OpIn, policy.OpNotIn} {
+		for _, expected := range []any{"10.1.2.3", "a, b", "[a b]", float64(2), nil} {
+			if _, err := evaluateCondition(op, "10.1.2.3", expected); !errors.Is(err, errNotAList) {
+				t.Errorf("%s %#v: err = %v, want errNotAList", op, expected, err)
+			}
+		}
+	}
+	// Any slice is a list, not only []string and []any.
+	if ok, err := evaluateCondition(policy.OpIn, 2, []int{1, 2}); err != nil || !ok {
+		t.Errorf("in []int{1, 2} with 2 = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// TestEvaluate_ScalarInFailsClosed pins what a policy whose in or not_in value
+// is a string (as the retired templ form stored them) does at check time.
+// Read as an empty list, the not_in allow granted everyone and the in deny
+// denied no one. As an evaluation error, the allow is skipped and the deny
+// applies.
+func TestEvaluate_ScalarInFailsClosed(t *testing.T) {
+	req := &CheckRequest{
+		Subject:  Subject{Kind: SubjectUser, ID: "u1"},
+		Action:   Action{Name: "read"},
+		Resource: Resource{Type: "doc", ID: "d1"},
+		Context:  map[string]any{"ip": "192.168.0.9"},
+	}
+	cases := []struct {
+		effect policy.Effect
+		op     policy.Operator
+		want   string // "none" or the decision
+	}{
+		{policy.EffectAllow, policy.OpIn, "none"},
+		{policy.EffectAllow, policy.OpNotIn, "none"},
+		{policy.EffectDeny, policy.OpIn, string(DecisionDenyExplicit)},
+		{policy.EffectDeny, policy.OpNotIn, string(DecisionDenyExplicit)},
+	}
+	for _, tc := range cases {
+		pol := &policy.Policy{
+			Name: "templ-made", Effect: tc.effect, IsActive: true,
+			Conditions: []policy.Condition{{Field: "context.ip", Operator: tc.op, Value: "10.0.0.1, 10.0.0.2"}},
+		}
+		res, err := NewConditionEvaluator(time.Now).Evaluate(context.Background(), []*policy.Policy{pol}, req, nil)
+		if err != nil {
+			t.Fatalf("%s %s: %v", tc.effect, tc.op, err)
+		}
+		got := "none"
+		if res != nil {
+			got = string(res.Decision)
+		}
+		if got != tc.want {
+			t.Errorf("%s %s with a string value: decision %s, want %s", tc.effect, tc.op, got, tc.want)
+		}
+	}
+}

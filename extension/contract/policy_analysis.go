@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -121,7 +122,15 @@ func listOf(v any) (items []string, isList bool) {
 		}
 		return out, true
 	}
-	return nil, false
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil, false
+	}
+	out := make([]string, 0, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		out = append(out, fmt.Sprint(rv.Index(i).Interface()))
+	}
+	return out, true
 }
 
 // asNumber mirrors toFloat64 exactly, including the integer widths it does
@@ -242,6 +251,11 @@ func classifyCondition(c policy.Condition) (ConditionProblem, ConditionReason) {
 			return ProblemThrows, ReasonInvalidRegex
 		}
 	}
+	if c.Operator == policy.OpIn || c.Operator == policy.OpNotIn {
+		if _, isList := listOf(c.Value); !isList {
+			return ProblemThrows, ReasonNotAList
+		}
+	}
 	if !fieldResolves(c.Field) {
 		if nilOutcome(c) {
 			return ProblemAlwaysTrue, ReasonUnresolvableField
@@ -270,18 +284,14 @@ func classifyCondition(c policy.Condition) (ConditionProblem, ConditionReason) {
 	}
 	switch c.Operator {
 	case policy.OpIn, policy.OpNotIn:
-		items, isList := listOf(c.Value)
-		reason := ReasonNotAList
-		if isList {
-			if len(items) > 0 {
-				return ProblemNone, ReasonNone
-			}
-			reason = ReasonEmptyList
+		// A value that is not a list was classified as throwing above.
+		if items, _ := listOf(c.Value); len(items) > 0 {
+			return ProblemNone, ReasonNone
 		}
 		if c.Operator == policy.OpIn {
-			return ProblemAlwaysFalse, reason
+			return ProblemAlwaysFalse, ReasonEmptyList
 		}
-		return ProblemAlwaysTrue, reason
+		return ProblemAlwaysTrue, ReasonEmptyList
 	case policy.OpGreaterThan, policy.OpLessThan, policy.OpGTE, policy.OpLTE:
 		n, ok := asNumber(c.Value)
 		if !ok {
