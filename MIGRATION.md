@@ -6,8 +6,7 @@ deleted. Its replacement is the React plugin `packages/plugin-warden` in the
 forge-dashboard repository, which talks to warden only through the contract in
 `extension/contract/` (`manifest.yaml` lists every intent).
 
-This file is the only record of what the old pages showed and did. If you are
-looking for a column, a button or a filter you remember, find its page below and
+This file records what the old pages showed and did. If you are looking for a column, a button or a filter you remember, find its page below and
 the Where-now cell tells you which React route and which intent does that job
 today, or why nothing does. Every file that lived in `dashboard/` is named here
 by its path from warden's root, so you can grep for it.
