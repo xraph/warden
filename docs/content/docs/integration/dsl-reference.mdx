@@ -185,7 +185,7 @@ Cycles are bounded at runtime by the engine's `MaxGraphDepth` (default 10).
 
 The `permission` declaration registers a named permission in the catalog. Two forms:
 
-**Long form** (with metadata):
+**Long form** (with a description):
 
 ```warden
 permission "doc:read" {
@@ -218,7 +218,6 @@ role viewer {
   is_default  = false
   max_members = 0
   grants      = ["doc:read", "folder:read"]
-  metadata    = {} // optional, free-form
 }
 
 role editor : viewer {       // inherits viewer's grants at check time
@@ -242,7 +241,6 @@ role admin : editor {
 | `is_default` | `BOOL` | `false` | Marks the role as the default for new subjects. |
 | `max_members` | `INT` (may be negative) | `0` (no limit) | Soft limit enforced at assignment time. |
 | `grants` | `grant_list` | unmanaged | Permission names, found in the role's namespace and then at the root. A permission anywhere else, or a root one shadowed by a same-named permission in the role's namespace, is written `{ namespace = "eng", name = "deploy:run" }`. A `grants` clause sets the role's whole grant set, so `grants = []` revokes every grant; a role with no `grants` clause keeps its stored grants. `grants += [...]` does exactly what `grants = [...]` does: it sets the role's own grants, and a parent's grants reach the role through inheritance at check time either way. Several `grants` clauses in one role block are combined into one list. `warden fmt` keeps whichever spelling you wrote. |
-| `metadata` | `map` | `{}` | Arbitrary key/value pairs. |
 
 ### Inheritance
 
@@ -282,7 +280,6 @@ policy "business-hours-only" {
   subjects    = [{ kind = "user" }]      // none = match any subject
   actions     = ["write", "delete"]
   resources   = ["document"]
-  metadata    = {}
 
   when {
     context.hour >= 9                    // the caller sends the hour
@@ -306,7 +303,6 @@ policy "business-hours-only" {
 | `subjects` | `subject_list` | none | Subject matchers, each `{ kind = "...", id = "...", role = "..." }` with every field optional. The fields of one matcher are AND-ed; the policy applies when any matcher matches. `{}` matches every subject. No `subjects` clause = any subject. |
 | `actions` | `string_list` | `[]` | Action patterns (glob). |
 | `resources` | `string_list` | `[]` | Resource patterns (glob). |
-| `metadata` | `map` | `{}` | Arbitrary key/value pairs. |
 | `when { ... }` | block | empty | Conditions; see below. |
 
 ### `when` blocks
@@ -422,7 +418,7 @@ namespace "engineering" {
       grants += ["infra:*"]
     }
 
-    role sre : /engineering/platform-admin {  // absolute cross-block reference
+    role sre : /engineering/platform/platform-admin {  // absolute reference
       name    = "SRE"
       grants += ["pager:*"]
     }
@@ -617,7 +613,6 @@ role_member   = "name"        "=" STRING
               | "is_default"  "=" BOOL
               | "max_members" "=" [ "-" ] INT
               | "grants"      ("=" | "+=") grant_list
-              | "metadata"    "=" map_lit
 
 (* — Policies — *)
 policy_decl   = "policy" STRING "{" { policy_member } "}"
@@ -631,7 +626,6 @@ policy_member = "description" "=" STRING
               | "subjects"    "=" subject_list
               | "actions"     "=" string_list
               | "resources"   "=" string_list
-              | "metadata"    "=" map_lit
               | "when" "{" { condition } "}"
 
 condition     = ( field_path | STRING ) operator [ value ] [ "negate" ]
@@ -675,7 +669,6 @@ STRING        = '"' ... '"'                                 (* with escapes *)
 INT           = /[0-9]+/
 BOOL          = "true" | "false"
 string_list   = "[" [ STRING { "," STRING } [ "," ] ] "]"
-map_lit       = "{" [ kv { "," kv } ] "}"
 kv            = IDENT "=" literal
 literal       = STRING | INT | BOOL | string_list
 ```
