@@ -116,6 +116,24 @@ The same operators surface in both flavours — Go uses the `policy.Op*` constan
 | **Time** | `OpTimeAfter` / `OpTimeBefore` | `time_after` / `time_before` |
 | **Presence** | `OpExists` / `OpNotExists` | `exists` / `not exists` |
 
+`time_after` and `time_before` compare two absolute instants, so both sides need a full RFC3339 timestamp such as `"2026-06-01T09:00:00Z"`. The request side can be a `time.Time` or an RFC3339 string. A time of day like `"09:00"` or `"09:00:00Z"` is not an instant: the policy fails to load with `invalid RFC3339 time`, and if one reached the evaluator anyway the condition would never hold. For business hours, see [Deny After Business Hours](#deny-after-business-hours).
+
+A good use is checking a timestamp you already keep on the subject or resource against a fixed date. Say every password set before a breach on 2026-03-01 has to be rotated, and you store the last change in `Subject.Attributes["password_changed_at"]`:
+
+```warden
+policy "rotate-pre-breach-passwords" {
+  effect  = deny
+  active  = true
+  actions = ["*"]
+
+  when {
+    subject.password_changed_at time_before "2026-03-01T00:00:00Z"
+  }
+}
+```
+
+If you only want a whole policy to switch on or off at a date, you don't need a condition at all. Use [`NotBefore` / `NotAfter`](#time-bound-policies).
+
 ## Policy Matching
 
 ### Subject Matchers
@@ -158,7 +176,7 @@ Resources: []string{"*"}               // All resources
     Resources: []string{"*"},
     IsActive:  true,
     Conditions: []policy.Condition{
-        {Field: "time", Operator: policy.OpTimeAfter, Value: "18:00"},
+        {Field: "context.hour", Operator: policy.OpGTE, Value: 18},
     },
 }
 ```
@@ -174,13 +192,30 @@ policy "business-hours-only" {
   resources = ["*"]
 
   when {
-    time time_after "18:00"
+    context.hour >= 18
   }
 }
 ```
 
 </Tab>
 </Tabs>
+
+Warden has no time-of-day operator, and `time_after` won't do it (it needs a full date, see the note under [Operators Reference](#operators-reference)). You work out the hour yourself, in whatever time zone the office keeps, and pass it in the request context:
+
+```go
+office, _ := time.LoadLocation("Europe/London")
+
+result, err := eng.Check(ctx, &warden.CheckRequest{
+    Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "user-42"},
+    Action:   warden.Action{Name: "write"},
+    Resource: warden.Resource{Type: "document", ID: "doc-123"},
+    Context: map[string]any{
+        "hour": time.Now().In(office).Hour(),
+    },
+})
+```
+
+Mind you, a deny only fires when its conditions hold. If a caller forgets `hour`, the comparison has nothing to compare and the deny doesn't apply. When that matters, flip the rule around: allow `write` while `context.hour >= 9` and `context.hour < 18`, and the engine's default deny covers every other hour, including a request with no hour at all.
 
 ### Allow Only From Trusted IPs
 
@@ -377,38 +412,54 @@ Obligations don't change the allow/deny decision — they're signals to the call
 <Tab value="Go">
 
 ```go
-&policy.Policy{
-    Name:        "after-hours-mfa",
-    Effect:      policy.EffectAllow,
-    IsActive:    true,
-    Actions:     []string{"write", "delete"},
-    Obligations: []string{"require-mfa", "audit-log"},
-    Conditions: []policy.Condition{
-        {Field: "context.time", Operator: policy.OpTimeBefore, Value: "09:00:00Z"},
-        {Field: "context.time", Operator: policy.OpTimeAfter, Value: "17:00:00Z"},
-    },
+afterHours := func(name string, c policy.Condition) *policy.Policy {
+    return &policy.Policy{
+        Name:        name,
+        Effect:      policy.EffectAllow,
+        IsActive:    true,
+        Actions:     []string{"write", "delete"},
+        Obligations: []string{"require-mfa", "audit-log"},
+        Conditions:  []policy.Condition{c},
+    }
 }
+
+early := afterHours("after-hours-mfa-early",
+    policy.Condition{Field: "context.hour", Operator: policy.OpLessThan, Value: 9})
+late := afterHours("after-hours-mfa-late",
+    policy.Condition{Field: "context.hour", Operator: policy.OpGTE, Value: 17})
 ```
 
 </Tab>
 <Tab value="DSL">
 
 ```warden
-policy "after-hours-mfa" {
+policy "after-hours-mfa-early" {
   effect      = allow
   active      = true
   actions     = ["write", "delete"]
   obligations = ["require-mfa", "audit-log"]
 
   when {
-    context.time time_before "09:00:00Z"
-    context.time time_after  "17:00:00Z"
+    context.hour < 9
+  }
+}
+
+policy "after-hours-mfa-late" {
+  effect      = allow
+  active      = true
+  actions     = ["write", "delete"]
+  obligations = ["require-mfa", "audit-log"]
+
+  when {
+    context.hour >= 17
   }
 }
 ```
 
 </Tab>
 </Tabs>
+
+That's two policies because "after hours" is before 9 or from 17 on, and the conditions in one policy are all AND-ed. The caller passes `context.hour` the same way as in [Deny After Business Hours](#deny-after-business-hours).
 
 After `eng.Check(...)`:
 

@@ -178,7 +178,7 @@ POST /v1/policies
   "actions": ["write"],
   "resources": ["document:*"],
   "conditions": [
-    {"field": "time", "operator": "time_after", "value": "18:00"}
+    {"field": "context.hour", "operator": "gte", "value": 18}
   ]
 }
 ```

@@ -175,8 +175,8 @@ policy "business-hours" {
     actions = ["read", "write"]
     resources = ["document"]
     when {
-        context.time time_after "09:00:00Z"
-        context.time time_before "17:00:00Z"
+        context.time time_after "2026-06-01T09:00:00Z"
+        context.time time_before "2026-06-01T17:00:00Z"
         subject.attributes.department == "engineering"
     }
 }

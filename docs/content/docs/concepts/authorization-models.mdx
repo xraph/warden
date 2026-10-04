@@ -150,9 +150,9 @@ p := &policy.Policy{
     Actions:   []string{"write"},
     Resources: []string{"document:*"},
     Conditions: []policy.Condition{{
-        Field:    "time",
-        Operator: policy.OpTimeAfter,
-        Value:    "18:00",
+        Field:    "context.hour", // the caller sends the hour, in the office's time zone
+        Operator: policy.OpGTE,
+        Value:    18,
     }},
 }
 ```
@@ -172,7 +172,7 @@ policy "deny-outside-office-hours" {
   resources = ["document:*"]
 
   when {
-    time time_after "18:00"
+    context.hour >= 18
   }
 }
 ```
@@ -190,7 +190,7 @@ policy "deny-outside-office-hours" {
 | `starts_with` / `ends_with` | Prefix / suffix | `resource.path starts_with "/api/"` |
 | `>` / `<` / `>=` / `<=` | Numeric comparison | `subject.attributes.risk_score > 80` |
 | `ip_in_cidr` | IP in CIDR range | `context.ip ip_in_cidr "10.0.0.0/8"` |
-| `time_after` / `time_before` | Time comparison | `context.time time_after "09:00"` |
+| `time_after` / `time_before` | Absolute instant, full RFC3339 only (no time of day) | `subject.password_changed_at time_before "2026-03-01T00:00:00Z"` |
 | `=~` | Regex match | `resource.path =~ "^/api/v[0-9]+"` |
 | `exists` / `not exists` | Field presence | `subject.attributes.mfa_verified exists` |
 

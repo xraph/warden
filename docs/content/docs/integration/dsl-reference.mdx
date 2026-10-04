@@ -285,8 +285,8 @@ policy "business-hours-only" {
   metadata    = {}
 
   when {
-    context.time time_after  "09:00:00Z"
-    context.time time_before "17:00:00Z"
+    context.hour >= 9                    // the caller sends the hour
+    context.hour < 17
     subject.attributes.department == "engineering"
   }
 }
@@ -317,7 +317,7 @@ The `when` block contains zero or more conditions, and all of them must hold for
 when {
   context.ip ip_in_cidr "10.0.0.0/8"
   all_of {                               // an AND, at any depth
-    context.time time_after "09:00:00Z"
+    context.hour >= 9
     subject.attributes.role == "admin"
   }
   any_of {                               // one condition: just that condition
@@ -372,8 +372,10 @@ The grammar still parses `negate` after a condition, so an old file gets a diagn
 | `exists` | presence | `subject.attributes.mfa_verified exists` |
 | `not exists` | absence | `subject.attributes.banned not exists` |
 | `ip_in_cidr` | network | `context.ip ip_in_cidr "10.0.0.0/8"` |
-| `time_after` | wall-clock comparison | `context.time time_after "09:00:00Z"` |
-| `time_before` | wall-clock comparison | `context.time time_before "17:00:00Z"` |
+| `time_after` | instant, RFC3339 only | `resource.published_at time_after "2026-06-01T09:00:00Z"` |
+| `time_before` | instant, RFC3339 only | `subject.password_changed_at time_before "2026-03-01T00:00:00Z"` |
+
+`time_after` and `time_before` compare absolute instants. The value has to be a full RFC3339 timestamp, so `"09:00"` or `"09:00:00Z"` is a diagnostic (`invalid RFC3339 time`), not a time of day. There is no time-of-day operator. For business hours, have the caller send the hour in its own time zone and compare it as a number: `context.hour >= 9` and `context.hour < 17`.
 
 ## Relations
 

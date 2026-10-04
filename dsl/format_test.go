@@ -58,7 +58,7 @@ policy "biz-hours" {
     active = true
     actions = ["read"]
     when {
-        context.time time_after "09:00:00Z"
+        context.time time_after "2026-06-01T09:00:00Z"
         subject.attributes.dept == "engineering"
     }
 }
