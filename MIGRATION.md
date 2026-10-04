@@ -23,7 +23,6 @@ them.
 | migrated | The React dashboard does this. The Where-now cell names the route and the intent, and says so when it works differently (a modal that became a page, a column that moved to the detail page). |
 | dropped | Deliberately not carried over. The reason is a fact about warden or about the old code. |
 | blocked | Not possible today. The cell says what would be needed and why the contract cannot provide it yet. |
-| gap | The contract already serves what this needs, and the React dashboard does not use it yet. |
 | bug fixed | The templ version did not work as it looked. The React version does the job correctly, so this is recorded as a fix, not as a feature. |
 
 ## Overview
@@ -130,7 +129,7 @@ React route `/roles` (`pages/roles.tsx`), intent `roles.list`.
 | Column Relations: count of tuples with the role as object or subject | `dashboard/pages/roles.templ:55`, `:101-109`; `dashboard/data.go:383-392` | dropped | The count was taken with no tenant in the filter (`dashboard/data.go:384-391`), and an empty tenant matches every tenant's rows (`dashboard/contributor.go:53-58`), so in a multi-tenant deployment the number summed tuples across tenants. To see the tuples themselves, filter `/relations` by object type `role` and object id, or subject type `role` and subject id (`relations.list`). |
 | Column Flags: System and Default badges | `dashboard/pages/roles.templ:56`, `:110-123` | migrated | Flags column, `system` and `default` badges. |
 | Column Description, "No description" when empty | `dashboard/pages/roles.templ:57`, `:124-130` | migrated | On `/roles/:id` in the details list. |
-| Column Created | `dashboard/pages/roles.templ:58`, `:131-134` | gap | `roles.list` and `roles.detail` return `createdAt`. No React page shows when a role was created; the list shows Updated. |
+| Column Created | `dashboard/pages/roles.templ:58`, `:131-134` | migrated | Created column, beside Updated (`createdAt` from `roles.list`). A row with no created time shows a dash. |
 | Row menu: View Details | `dashboard/pages/roles.templ:143-152` | migrated | Details link to `/roles/:id`. |
 | Row menu: Delete, hidden on system roles, with a confirm | `dashboard/pages/roles.templ:153-176` | migrated | Delete button, hidden on system roles, confirm dialog (`roles.delete`). |
 | Empty state "No roles found." | `dashboard/pages/roles.templ:45-46` | migrated | "No roles yet", or a message naming the search and namespace when filtered. |
@@ -165,13 +164,13 @@ you reached it from a role name. React route `/roles/:id`
 | Delete button with confirm, hidden on system roles | `dashboard/pages/role_detail.templ:51-59`, `:217-227` | migrated | Not on the detail page. Delete on the role's row at `/roles` (`roles.delete`). |
 | Details: ID | `dashboard/pages/role_detail.templ:73-74` | migrated | Not printed. It is the `:id` in the page URL. |
 | Details: Slug, Parent Role (when set), Max Members (when above 0) | `dashboard/pages/role_detail.templ:75-84` | migrated | Slug, Inherits from, Member cap ("Unlimited" when 0). |
-| Details: Created | `dashboard/pages/role_detail.templ:85-86` | gap | Same as the list's Created column: `roles.detail` returns `createdAt` and the page does not show it. |
+| Details: Created | `dashboard/pages/role_detail.templ:85-86` | migrated | Created in the details list, above Updated (`roles.detail`). |
 | Details: Updated | `dashboard/pages/role_detail.templ:87-88` | migrated | Updated. |
 | Attached Permissions table: Name, Resource, Action | `dashboard/pages/role_detail.templ:96-163` | migrated | Grants table: Permission, Resource, Action, Namespace, with a Details link to `/permissions/:id`. |
 | Detach button (X) per permission, with confirm "Remove permission ... from this role?" | `dashboard/pages/role_detail.templ:144-155`; `dashboard/pages/role_permissions.templ:57-67` | migrated | Revoke per grant, hidden on system roles (`roles.detachPermission`). |
 | Attach button and dialog: select of every permission as "name (resource:action)" | `dashboard/pages/role_detail.templ:107-116`, `:228`; `dashboard/pages/role_permissions.templ:11-55` | migrated | Attach permission dialog (`roles.attachPermission`). Lists only permissions the role does not hold, and says when the list is truncated. |
 | Empty state "No permissions attached." | `dashboard/pages/role_detail.templ:120-121` | migrated | "This role grants nothing." |
-| Child Roles table, shown only when there are children: Name (link), Slug, Created | `dashboard/pages/role_detail.templ:165-211` | migrated | Children table, always shown, "Nothing inherits from this role." when empty. Columns Role, Slug, Namespace, Flags, with a Details link. Created is part of the role Created gap above. |
+| Child Roles table, shown only when there are children: Name (link), Slug, Created | `dashboard/pages/role_detail.templ:165-211` | migrated | Children table, always shown, "Nothing inherits from this role." when empty. Columns Role, Slug, Namespace, Flags, Created, with a Details link. |
 | Plugin-contributed sections slot | `dashboard/pages/role_detail.templ:213-214`; `dashboard/contributor.go:535-546` | dropped | No type implements `RoleDetailContributor` (`dashboard/plugin_iface.go:45-47`). A search of every Go file under the xraph tree finds the method name only inside `dashboard/`. |
 
 ### Edit role dialog
@@ -197,8 +196,8 @@ dashboard had no permission detail page; React adds `/permissions/:id`.
 | Header "Permissions" with a total count badge | `dashboard/pages/permissions.templ:20` | migrated | Page header and caption "N permissions". |
 | Create Permission button | `dashboard/pages/permissions.templ:21-28` | migrated | New permission, inline form (`permissions.create`). |
 | Search box | `dashboard/pages/permissions.templ:33-46` | migrated | Search by name. |
-| Resource filter, exact match | `dashboard/pages/permissions.templ:47-60` | gap | `permissions.list` accepts `resource`. The page sends only search and namespace. |
-| Action filter, exact match | `dashboard/pages/permissions.templ:61-74` | gap | `permissions.list` accepts `action`. The page sends only search and namespace. |
+| Resource filter, exact match | `dashboard/pages/permissions.templ:47-60` | migrated | Filter by resource (`resource` on `permissions.list`), exact match. It is sent when you press Apply, not on every keystroke, and Clear drops it. |
+| Action filter, exact match | `dashboard/pages/permissions.templ:61-74` | migrated | Filter by action (`action` on `permissions.list`), exact match, applied with the resource filter by the same Apply button. |
 | Columns Name, Resource, Action | `dashboard/pages/permissions.templ:86-88`, `:97-105` | migrated | Same three columns. |
 | Column System (badge) | `dashboard/pages/permissions.templ:89`, `:106-112` | migrated | Flags column, `system` badge. |
 | Column Created | `dashboard/pages/permissions.templ:90`, `:113-116` | migrated | On `/permissions/:id` (Created). The list shows Updated. |
@@ -228,15 +227,15 @@ route `/assignments` (`pages/assignments.tsx`), intent `assignments.list`.
 |---|---|---|---|
 | Header "Role Assignments" with a total count badge | `dashboard/pages/assignments.templ:22` | migrated | "Assignments" and caption "N assignments". |
 | Assign Role button | `dashboard/pages/assignments.templ:23-30` | migrated | New assignment, dialog (`assignments.create`). |
-| Subject kind filter: All, User, API Key, Service, Service Account | `dashboard/pages/assignments.templ:35-49` | gap | `assignments.list` accepts `subjectKind`. The page sends only namespace. |
-| Subject ID filter | `dashboard/pages/assignments.templ:50-63` | gap | `assignments.list` accepts `subjectId`. The page sends only namespace. For one known subject, `/subjects/:kind/:id` lists all of its assignments (`subjects.detail`). |
-| Role filter, a select of roles | `dashboard/pages/assignments.templ:64-77` | gap | `assignments.list` accepts `roleId`. The page sends only namespace, and `/roles/:id` does not list holders. |
+| Subject kind filter: All, User, API Key, Service, Service Account | `dashboard/pages/assignments.templ:35-49` | migrated | Subject kind select (`subjectKind` on `assignments.list`): Any kind, then `user`, `api_key`, `service` and `service_acct`, the same four values the templ options sent. |
+| Subject ID filter | `dashboard/pages/assignments.templ:50-63` | migrated | Filter by subject id (`subjectId` on `assignments.list`), exact match, sent when you press Apply. For one known subject, `/subjects/:kind/:id` also lists all of its assignments (`subjects.detail`). |
+| Role filter, a select of roles | `dashboard/pages/assignments.templ:64-77` | migrated | Role select (`roleId` on `assignments.list`). Options come from one `roles.list` read across every namespace, labelled by slug and namespace. That read is capped at 200 roles, and when a tenant has more, the page says how many the filter offers out of how many exist. |
 | Column Subject `kind:id` | `dashboard/pages/assignments.templ:89`, `:101-103` | migrated | Subject column, linking to `/subjects/:kind/:id`. |
 | Column Role ID (raw typeid) | `dashboard/pages/assignments.templ:90`, `:104-106` | migrated | Role column showing the slug, linking to `/roles/:id`. The id shows only when the role could not be resolved. |
 | Column Resource Scope, "Global" when unscoped | `dashboard/pages/assignments.templ:91`, `:107-113` | migrated | Scope column. Unscoped rows show an empty marker, and half-scoped rows explain what warden actually does with them. |
 | Column Status: Expired, "Expires Jan 02", or Active | `dashboard/pages/assignments.templ:92`, `:114-116`, `:179-194` | migrated | Expires column (a timestamp or "Never") and Status column (an Expired badge computed by the server). |
-| Column Granted By | `dashboard/pages/assignments.templ:93`, `:117-123` | gap | `assignments.list` returns `grantedBy`. The page does not show it. |
-| Column Created | `dashboard/pages/assignments.templ:94`, `:124-127` | gap | `assignments.list` returns `createdAt`. The page does not show it. |
+| Column Granted By | `dashboard/pages/assignments.templ:93`, `:117-123` | migrated | Granted by column (`grantedBy`), with a dash when nobody is recorded, as templ had. |
+| Column Created | `dashboard/pages/assignments.templ:94`, `:124-127` | migrated | Created column (`createdAt`), as a full timestamp where templ showed the date alone. |
 | Row menu Revoke with confirm "Revoke role from kind:id?" | `dashboard/pages/assignments.templ:128-155` | migrated | Delete with confirm (`assignments.delete`). |
 | Empty state "No role assignments found." | `dashboard/pages/assignments.templ:83-84` | migrated | "No assignments yet", or a filtered message. |
 | Pagination | `dashboard/pages/assignments.templ:164-166` | migrated | Table pagination. |
@@ -410,9 +409,9 @@ Templ route `/check-logs`, source `dashboard/pages/check_logs.templ`. React rout
 | Subject kind filter | `dashboard/pages/check_logs.templ:23-37` | migrated | Subject kind select. |
 | Subject ID, Action, Resource Type filters | `dashboard/pages/check_logs.templ:38-79` | migrated | Subject id, Action, Resource type, applied together with an Apply button. |
 | Decision filter: All, Allow | `dashboard/pages/check_logs.templ:80-90` | migrated | Decision filter, Any decision and `allow` among its options. |
-| Decision filter: Deny | `dashboard/pages/check_logs.templ:91` | bug fixed | It asked for the exact decision `deny`, and the engine never writes that value (it records `deny_explicit`, `deny_no_roles` and the other specific denials), so choosing Deny always showed an empty table. React's Decision filter offers each `deny_*` value on its own. It has no single "every denial" choice. |
+| Decision filter: Deny | `dashboard/pages/check_logs.templ:91` | bug fixed | It asked for the exact decision `deny`, and the engine never writes that value (it records `deny_explicit`, `deny_no_roles` and the other specific denials), so choosing Deny always showed an empty table. React's Decision filter offers each `deny_*` value on its own. It has no single "every denial" choice. It still offers a plain `deny` option as well, and that matches nothing the built-in evaluator records, for the same reason. |
 | `after` query parameter (no control on the page; reachable only by editing the URL) | `dashboard/data.go:224`; named in the `hx-include` lists, e.g. `dashboard/pages/check_logs.templ:30` | migrated | Time window select (last hour, 24 hours, 7 days, 30 days). |
-| `before` query parameter (no control on the page) | `dashboard/data.go:225`; `dashboard/pages/check_logs.templ:30` | gap | `checkLogs.list` accepts `before`. The page sends only `after`. |
+| `before` query parameter (no control on the page) | `dashboard/data.go:225`; `dashboard/pages/check_logs.templ:30` | dropped | The templ page never offered a control for it. You could set it only by editing the URL, and `dashboard/pages/check_logs.templ:30` names a `before` field that the page never renders. React's time window sends only `after`. `checkLogs.list` still accepts `before` from any client that sends it. |
 | Columns Subject, Action, Resource | `dashboard/pages/check_logs.templ:104-106`, `:117-125` | migrated | Same, Subject linking to `/subjects/:kind/:id`. |
 | Column Decision: Allow, or Deny for every other value | `dashboard/pages/check_logs.templ:107`, `:126-128`, `:170-180` | migrated | Decision badge with the actual decision string. |
 | Column Reason, `-` when empty | `dashboard/pages/check_logs.templ:108`, `:129-135` | migrated | Detail column: the error when there is one, else the reason. |
@@ -453,7 +452,7 @@ shows the same values read-only on `/config` (`pages/config.tsx`, intent
 | Max Graph Depth | `dashboard/settings/config.templ:26-27` | migrated | `/config`, Graph depth limit. |
 | Cache TTL, shown when above 0 | `dashboard/settings/config.templ:28-31` | migrated | `/config`, Decision cache ("Off" when 0). |
 | RBAC, ABAC, ReBAC Enabled / Disabled badges | `dashboard/settings/config.templ:34-47`, `:77-87` | migrated | `/config` model badges, "off" in red when disabled. |
-| Enabled Plugins card: one badge per registered plugin name | `dashboard/settings/config.templ:50-71`; `dashboard/contributor.go:489-492` | blocked | Needs `config.detail` to return the registered plugin names. `ConfigDetail` (`extension/contract/handlers_config.go:19-35`) has no such field today. The names are available to the handler through `Engine.Plugins().Plugins()`. |
+| Enabled Plugins card: one badge per plugin name | `dashboard/settings/config.templ:50-71`; `dashboard/contributor.go:489-492` | migrated | `/config` Plugins section, one badge per name in `plugins` from `config.detail`, sorted. The list works differently: templ named only the plugins passed to the extension, and React names every plugin in the engine's registry, which can include ones warden registers on its own (the audit log sink, the cache invalidators). Templ hid the card when there were none; React says "No authorization plugins are registered." |
 | Plugin-contributed settings slot | `dashboard/settings/config.templ:72-73`; `dashboard/contributor.go:524-533` | dropped | No plugin implements `DashboardSettingsPanel`; nothing outside `dashboard/` imports the package. |
 
 ## Nav
@@ -528,20 +527,15 @@ None of this has a page of its own. Each line says what replaced it.
 
 ## Gaps and blocked items
 
-Blocked, one item. You cannot get this from the React dashboard until the
-contract grows a field:
+None. Every templ capability above is migrated, dropped with a reason, or
+recorded as a bug the migration fixes.
 
-- Enabled Plugins list on the settings panel, `dashboard/settings/config.templ:50-71`. Needs `config.detail` to return the registered plugin names.
-
-Gaps, nine items. The contract already serves each of these and the React page
-does not ask for it yet:
-
-- Role created time, nowhere in React: `dashboard/pages/roles.templ:58` (list column), `dashboard/pages/role_detail.templ:85-86` (detail), `dashboard/pages/role_detail.templ:182` (child roles). `roles.list` and `roles.detail` return `createdAt`.
-- Permission resource filter, `dashboard/pages/permissions.templ:47-60`. `permissions.list` takes `resource`.
-- Permission action filter, `dashboard/pages/permissions.templ:61-74`. `permissions.list` takes `action`.
-- Assignment subject kind filter, `dashboard/pages/assignments.templ:35-49`. `assignments.list` takes `subjectKind`.
-- Assignment subject id filter, `dashboard/pages/assignments.templ:50-63`. `assignments.list` takes `subjectId`.
-- Assignment role filter, `dashboard/pages/assignments.templ:64-77`. `assignments.list` takes `roleId`.
-- Assignment Granted By column, `dashboard/pages/assignments.templ:93`. `assignments.list` returns `grantedBy`.
-- Assignment Created column, `dashboard/pages/assignments.templ:94`. `assignments.list` returns `createdAt`.
-- Check log upper time bound, `dashboard/data.go:225` (the templ page had no control for it; `dashboard/pages/check_logs.templ:30` names a `before` field that does not exist). `checkLogs.list` takes `before`.
+Ten items were still open when this record was first written, and we settled
+each of them before `dashboard/` was deleted. Eight were gaps the React pages
+now close: role created time (on the list, the detail page and the child roles
+table), the permission resource and action filters, the assignment subject
+kind, subject id and role filters, and the assignment Granted By and Created
+columns. The ninth, the Enabled Plugins card, was blocked until
+`config.detail` started returning `plugins`, and it's migrated now. The tenth
+is the check log's `before` bound. We dropped it, since the templ page never
+had a control for it.
