@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1708,4 +1709,267 @@ func TestPoliciesUpdateConditionIds(t *testing.T) {
 			t.Errorf("the repeat has id %v, want a fresh one", got[1].ID)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// The version guard: every policy write is conditional on the version read.
+// ---------------------------------------------------------------------------
+
+// policyRacingStore lets a test land a write between a handler's read and its
+// write, which cannot be interleaved from outside: race runs once, right
+// after the first GetPolicy returns.
+type policyRacingStore struct {
+	*memory.Store
+	mu   sync.Mutex
+	race func()
+}
+
+func (r *policyRacingStore) GetPolicy(ctx context.Context, tenantID string, pid id.PolicyID) (*policy.Policy, error) {
+	got, err := r.Store.GetPolicy(ctx, tenantID, pid)
+	r.mu.Lock()
+	race := r.race
+	r.race = nil
+	r.mu.Unlock()
+	if race != nil && err == nil {
+		race()
+	}
+	return got, err
+}
+
+// bumpOutOfBand stands in for another writer: it changes the description
+// through the guarded write, as every other caller now does, and returns the
+// stored result.
+func bumpOutOfBand(t *testing.T, s *memory.Store, pid id.PolicyID) *policy.Policy {
+	t.Helper()
+	cur := storedPolicy(t, s, pid.String())
+	next := *cur
+	next.Description = "changed out of band"
+	next.Version = cur.Version + 1
+	if err := s.UpdatePolicyIfVersion(context.Background(), &next, cur.Version); err != nil {
+		t.Fatalf("out-of-band write: %v", err)
+	}
+	return storedPolicy(t, s, pid.String())
+}
+
+// wantStale asserts err is the stale refusal, on the wire as well as in Go.
+func wantStale(t *testing.T, err error) {
+	t.Helper()
+	ce := wantCode(t, err, dashcontract.CodeConflict)
+	if ce.Details["reason"] != "stale" {
+		t.Errorf("details = %#v, want reason stale", ce.Details)
+	}
+	raw, merr := json.Marshal(ce)
+	if merr != nil {
+		t.Fatalf("marshal: %v", merr)
+	}
+	var wire struct {
+		Code    string         `json:"code"`
+		Message string         `json:"message"`
+		Details map[string]any `json:"details"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if wire.Code != "CONFLICT" || wire.Message == "" || wire.Details["reason"] != "stale" {
+		t.Errorf("wire = %s, want CONFLICT with a message and details.reason stale", raw)
+	}
+}
+
+func TestMapWardenErrorTellsAStaleWriteFromATakenName(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		code   dashcontract.ErrorCode
+		reason any
+	}{
+		{"version conflict", fmt.Errorf("policy x: %w", warden.ErrPolicyVersionConflict), dashcontract.CodeConflict, "stale"},
+		{"bare stale write", warden.ErrStaleWrite, dashcontract.CodeConflict, "stale"},
+		{"duplicate policy", fmt.Errorf("policy x: %w", warden.ErrDuplicatePolicy), dashcontract.CodeConflict, nil},
+		{"policy not found", fmt.Errorf("policy x: %w", warden.ErrPolicyNotFound), dashcontract.CodeNotFound, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ce := wantCode(t, mapWardenError(tc.err), tc.code)
+			if got := ce.Details["reason"]; got != tc.reason {
+				t.Errorf("details.reason = %v, want %v", got, tc.reason)
+			}
+			if tc.reason == nil && ce.Details != nil {
+				t.Errorf("details = %#v, want none", ce.Details)
+			}
+		})
+	}
+}
+
+func TestPoliciesUpdateWithTheLoadedVersionStoresTheNextOne(t *testing.T) {
+	s := memory.New()
+	orig := fullPolicy(t, s, "eng", "target")
+	before := storedPolicy(t, s, orig.ID.String())
+	h := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})
+
+	v := before.Version
+	if _, err := h(context.Background(), PolicyUpdateInput{
+		ID: orig.ID.String(), ExpectedVersion: &v, Description: strPtr("edited"),
+	}, principalFor("t1")); err != nil {
+		t.Fatalf("policies.update at the stored version: %v", err)
+	}
+	after := storedPolicy(t, s, orig.ID.String())
+	if after.Description != "edited" || after.Version != before.Version+1 {
+		t.Errorf("stored description/version = %q/%d, want edited/%d", after.Description, after.Version, before.Version+1)
+	}
+}
+
+func TestPoliciesUpdateWithoutAnExpectedVersionStillSaves(t *testing.T) {
+	s := memory.New()
+	orig := fullPolicy(t, s, "eng", "target")
+	// Moved once already, so a caller sending nothing is not refused for
+	// failing to name a version it never claimed to have.
+	moved := bumpOutOfBand(t, s, orig.ID)
+	h := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})
+
+	if _, err := h(context.Background(), PolicyUpdateInput{ID: orig.ID.String(), Description: strPtr("edited")}, principalFor("t1")); err != nil {
+		t.Fatalf("policies.update without expectedVersion: %v", err)
+	}
+	after := storedPolicy(t, s, orig.ID.String())
+	if after.Description != "edited" || after.Version != moved.Version+1 {
+		t.Errorf("stored description/version = %q/%d, want edited/%d", after.Description, after.Version, moved.Version+1)
+	}
+}
+
+func TestPoliciesUpdateFromAStaleCopyIsRefusedAndWritesNothing(t *testing.T) {
+	cases := []struct {
+		name  string
+		patch func(*PolicyUpdateInput)
+	}{
+		{"a valid patch", func(in *PolicyUpdateInput) { in.Description = strPtr("my edit") }},
+		// Stale wins over invalid: fixing the input would not make it
+		// saveable, so the page is told to reload first.
+		{"an invalid patch", func(in *PolicyUpdateInput) { in.Effect = strPtr("maybe") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := memory.New()
+			orig := fullPolicy(t, s, "eng", "target")
+			loaded := storedPolicy(t, s, orig.ID.String())
+			moved := bumpOutOfBand(t, s, orig.ID)
+			eng, probe := policyProbedEngine(t, s)
+			h := policiesUpdateHandler(Deps{Engine: eng})
+
+			v := loaded.Version
+			in := PolicyUpdateInput{ID: orig.ID.String(), ExpectedVersion: &v}
+			tc.patch(&in)
+			_, err := h(context.Background(), in, principalFor("t1"))
+			wantStale(t, err)
+
+			if got := storedPolicy(t, s, orig.ID.String()); !reflect.DeepEqual(got, moved) {
+				t.Errorf("a refused update changed the stored policy:\n got %+v\nwant %+v", got, moved)
+			}
+			if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
+				t.Errorf("a refused update emitted %d audit events and %d hooks", ev, ty)
+			}
+		})
+	}
+}
+
+func TestPoliciesUpdateAheadOfTheStoredVersionIsBadInput(t *testing.T) {
+	s := memory.New()
+	orig := fullPolicy(t, s, "eng", "target")
+	before := storedPolicy(t, s, orig.ID.String())
+	h := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})
+
+	v := before.Version + 1
+	_, err := h(context.Background(), PolicyUpdateInput{
+		ID: orig.ID.String(), ExpectedVersion: &v, Description: strPtr("x"),
+	}, principalFor("t1"))
+	ce := wantCode(t, err, dashcontract.CodeBadRequest)
+	if ce.Details["reason"] != nil {
+		t.Errorf("details = %#v, a version never stored is not stale", ce.Details)
+	}
+	if got := storedPolicy(t, s, orig.ID.String()); !reflect.DeepEqual(got, before) {
+		t.Errorf("a refused update changed the stored policy: %+v", got)
+	}
+}
+
+func TestPoliciesUpdateRenameConflictCarriesNoStaleReason(t *testing.T) {
+	s := memory.New()
+	seedPolicy(t, s, "eng", "taken", nil)
+	mine := seedPolicy(t, s, "eng", "mine", nil)
+	h := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})
+
+	v := mine.Version
+	_, err := h(context.Background(), PolicyUpdateInput{
+		ID: mine.ID.String(), ExpectedVersion: &v, Name: strPtr("taken"),
+	}, principalFor("t1"))
+	ce := wantCode(t, err, dashcontract.CodeConflict)
+	if _, has := ce.Details["reason"]; has {
+		t.Errorf("a taken name carries details %#v, want no reason", ce.Details)
+	}
+}
+
+// writePolicy is where every contract update ends. A write that lands
+// between the caller's read and this one must be refused, not undone.
+func TestWritePolicyFromAStaleReadIsRefusedAndKeepsTheOtherWrite(t *testing.T) {
+	s := memory.New()
+	orig := fullPolicy(t, s, "eng", "target")
+	before := storedPolicy(t, s, orig.ID.String())
+	moved := bumpOutOfBand(t, s, orig.ID)
+	eng, probe := policyProbedEngine(t, s)
+
+	pol := *before
+	pol.IsActive = !before.IsActive
+	_, err := writePolicy(context.Background(), Deps{Engine: eng}, principalFor("t1"), "t1", before, &pol)
+	wantStale(t, err)
+
+	if got := storedPolicy(t, s, orig.ID.String()); !reflect.DeepEqual(got, moved) {
+		t.Errorf("the out-of-band write was not kept:\n got %+v\nwant %+v", got, moved)
+	}
+	if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
+		t.Errorf("a refused write emitted %d audit events and %d hooks", ev, ty)
+	}
+}
+
+// A toggle and an edit through the handlers, with the edit landing between
+// the toggle's read and write. The toggle is refused, so it cannot put back
+// the description the edit replaced.
+func TestPoliciesSetActiveRacingAnEditIsRefused(t *testing.T) {
+	r := &policyRacingStore{Store: memory.New()}
+	orig := fullPolicy(t, r.Store, "eng", "target")
+	var moved *policy.Policy
+	r.race = func() { moved = bumpOutOfBand(t, r.Store, orig.ID) }
+	eng, err := warden.NewEngine(warden.WithStore(r))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	_, err = policiesSetActiveHandler(Deps{Engine: eng})(context.Background(),
+		PolicySetActiveInput{ID: orig.ID.String(), Active: false}, principalFor("t1"))
+	wantStale(t, err)
+	if moved == nil {
+		t.Fatal("the race never ran")
+	}
+	if got := storedPolicy(t, r.Store, orig.ID.String()); !reflect.DeepEqual(got, moved) {
+		t.Errorf("the edit was not kept:\n got %+v\nwant %+v", got, moved)
+	}
+}
+
+// The same race on policies.update with no expectedVersion: the handler's
+// own read is still the version it writes against.
+func TestPoliciesUpdateRacingAnotherWriteIsRefused(t *testing.T) {
+	r := &policyRacingStore{Store: memory.New()}
+	orig := fullPolicy(t, r.Store, "eng", "target")
+	var moved *policy.Policy
+	r.race = func() { moved = bumpOutOfBand(t, r.Store, orig.ID) }
+	eng, err := warden.NewEngine(warden.WithStore(r))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	_, err = policiesUpdateHandler(Deps{Engine: eng})(context.Background(),
+		PolicyUpdateInput{ID: orig.ID.String(), Priority: func() *int { n := 1; return &n }()}, principalFor("t1"))
+	wantStale(t, err)
+	if moved == nil {
+		t.Fatal("the race never ran")
+	}
+	if got := storedPolicy(t, r.Store, orig.ID.String()); !reflect.DeepEqual(got, moved) {
+		t.Errorf("the other write was not kept:\n got %+v\nwant %+v", got, moved)
+	}
 }

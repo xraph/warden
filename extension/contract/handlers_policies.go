@@ -272,19 +272,26 @@ type PolicyCreateInput struct {
 
 // PolicyUpdateInput patches a policy. Namespace is not patchable. An empty
 // string on NotBefore or NotAfter clears that bound.
+//
+// ExpectedVersion is the version the caller loaded. When it is present and
+// the stored policy is at another version, the update is refused as stale
+// and nothing is written, so an editor cannot save over a change it never
+// saw. Absent, the update is still guarded against a write that lands
+// between this handler's own read and write, but not against anything older.
 type PolicyUpdateInput struct {
-	ID          string             `json:"id"`
-	Name        *string            `json:"name,omitempty"`
-	Description *string            `json:"description,omitempty"`
-	Effect      *string            `json:"effect,omitempty"`
-	Priority    *int               `json:"priority,omitempty"`
-	NotBefore   *string            `json:"notBefore,omitempty"`
-	NotAfter    *string            `json:"notAfter,omitempty"`
-	Subjects    *[]PolicySubject   `json:"subjects,omitempty"`
-	Actions     *[]string          `json:"actions,omitempty"`
-	Resources   *[]string          `json:"resources,omitempty"`
-	Conditions  *[]PolicyCondition `json:"conditions,omitempty"`
-	Obligations *[]string          `json:"obligations,omitempty"`
+	ID              string             `json:"id"`
+	ExpectedVersion *int               `json:"expectedVersion,omitempty"`
+	Name            *string            `json:"name,omitempty"`
+	Description     *string            `json:"description,omitempty"`
+	Effect          *string            `json:"effect,omitempty"`
+	Priority        *int               `json:"priority,omitempty"`
+	NotBefore       *string            `json:"notBefore,omitempty"`
+	NotAfter        *string            `json:"notAfter,omitempty"`
+	Subjects        *[]PolicySubject   `json:"subjects,omitempty"`
+	Actions         *[]string          `json:"actions,omitempty"`
+	Resources       *[]string          `json:"resources,omitempty"`
+	Conditions      *[]PolicyCondition `json:"conditions,omitempty"`
+	Obligations     *[]string          `json:"obligations,omitempty"`
 }
 
 // PolicySetActiveInput turns a policy on or off and changes nothing else.
@@ -458,6 +465,12 @@ func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, d
 		if err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
+		// Checked before validation: an edit made from a stale copy is
+		// refused as stale even when it is also invalid, because fixing the
+		// input would not make it saveable.
+		if err := checkExpectedVersion(before, in.ExpectedVersion); err != nil {
+			return AckResponse{}, err
+		}
 		// Only what the patch changes is validated, so a policy stored
 		// with a bad condition before this validation existed can still
 		// have its description edited.
@@ -474,7 +487,7 @@ func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, d
 			return AckResponse{}, err
 		}
 
-		// UpdatePolicy persists the whole struct, so this is read, patch
+		// The store persists the whole struct, so this is read, patch
 		// the present fields on a copy, write. The copy is shallow and every
 		// patched slice is replaced rather than edited, so before stays the
 		// stored policy the audit event reports.
@@ -530,15 +543,35 @@ func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, d
 	}
 }
 
+// checkExpectedVersion refuses an update whose caller loaded a version other
+// than the stored one. Versions only grow, so an expected version below the
+// stored one means the policy changed after the caller read it. One above
+// it was never stored, so it is bad input rather than a stale copy.
+func checkExpectedVersion(before *policy.Policy, expected *int) error {
+	if expected == nil || *expected == before.Version {
+		return nil
+	}
+	if *expected > before.Version {
+		return badRequest(fmt.Sprintf("expectedVersion %d is ahead of the stored version %d", *expected, before.Version))
+	}
+	return mapWardenError(fmt.Errorf("policy %s, expected version %d, stored version %d: %w",
+		before.ID, *expected, before.Version, warden.ErrPolicyVersionConflict))
+}
+
 // writePolicy stamps and stores a patched copy and emits what the REST
 // update emits. Both policies.update and policies.setActive end here: REST
 // has no separate activate action, and an audit consumer keys on REST's
 // vocabulary, so both are "policy.updated".
+//
+// The write is conditional on the version read as before. Anything that
+// lands between that read and this write (another save, a toggle, a REST
+// update, a DSL apply) moves the version, and the store then refuses this
+// write rather than letting it silently undo the other one.
 func writePolicy(ctx context.Context, deps Deps, p dashcontract.Principal, tenantID string, before, pol *policy.Policy) (AckResponse, error) {
 	pol.UpdatedBy = actorFor(p).ID
 	pol.Version = before.Version + 1
 	pol.UpdatedAt = time.Now().UTC()
-	if err := deps.Engine.Store().UpdatePolicy(ctx, pol); err != nil {
+	if err := deps.Engine.Store().UpdatePolicyIfVersion(ctx, pol, before.Version); err != nil {
 		return AckResponse{}, mapWardenError(err)
 	}
 	if pl := deps.Engine.Plugins(); pl != nil {

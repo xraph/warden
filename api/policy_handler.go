@@ -229,10 +229,13 @@ func (a *API) updatePolicy(ctx forge.Context, req *UpdatePolicyRequest) (*policy
 	}
 	actor, _ := warden.ActorFromContext(ctx.Context())
 	p.UpdatedBy = actor.ID
-	p.Version++
+	p.Version = before.Version + 1
 	p.UpdatedAt = time.Now()
 
-	if err := a.eng.Store().UpdatePolicy(ctx.Context(), &p); err != nil {
+	// Conditional on the version read above, so a write that lands in
+	// between (another update, a dashboard edit, a DSL apply) is answered
+	// 409 instead of being silently undone by this one.
+	if err := a.eng.Store().UpdatePolicyIfVersion(ctx.Context(), &p, before.Version); err != nil {
 		return nil, mapError(err)
 	}
 

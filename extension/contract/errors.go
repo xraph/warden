@@ -30,6 +30,15 @@ func mapWardenError(err error) error {
 	switch {
 	case errors.Is(err, warden.ErrNotFound):
 		return &dashcontract.Error{Code: dashcontract.CodeNotFound, Message: err.Error()}
+	// Before ErrAlreadyExists: both are CONFLICT, and details.reason is what
+	// tells a page that the record moved under it (reload) from a name that
+	// is taken (rename).
+	case errors.Is(err, warden.ErrStaleWrite):
+		return &dashcontract.Error{
+			Code:    dashcontract.CodeConflict,
+			Message: staleMessage(err),
+			Details: map[string]any{"reason": "stale"},
+		}
 	case errors.Is(err, warden.ErrAlreadyExists):
 		return &dashcontract.Error{Code: dashcontract.CodeConflict, Message: err.Error()}
 	case errors.Is(err, warden.ErrSystemRoleImmutable),
@@ -47,6 +56,18 @@ func mapWardenError(err error) error {
 	default:
 		return &dashcontract.Error{Code: dashcontract.CodeInternal, Message: err.Error()}
 	}
+}
+
+// staleMessage says why a conditional write was refused. It names no writer:
+// the change that moved the version may have come from this dashboard, the
+// REST API or a DSL apply.
+func staleMessage(err error) string {
+	if errors.Is(err, warden.ErrPolicyVersionConflict) {
+		return "this policy changed after it was opened, so nothing was saved. " +
+			"Reload it to see the current version, then make the change again."
+	}
+	return "this record changed after it was opened, so nothing was saved. " +
+		"Reload it to see the current version, then make the change again."
 }
 
 // requireEngine is the guard every handler opens with.

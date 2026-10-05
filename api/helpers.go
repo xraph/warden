@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -25,6 +26,12 @@ func mapError(err error) error {
 	if isNotFound(err) {
 		return forge.NotFound(err.Error())
 	}
+	// A conditional write found the record at another version than the one
+	// the handler read: another write landed in between, and nothing was
+	// written here.
+	if errors.Is(err, warden.ErrStaleWrite) {
+		return forge.NewHTTPError(http.StatusConflict, staleWriteMessage(err))
+	}
 	if errors.Is(err, warden.ErrSystemRoleImmutable) || errors.Is(err, warden.ErrSystemPermissionImmutable) {
 		return forge.BadRequest(err.Error())
 	}
@@ -41,6 +48,15 @@ func mapError(err error) error {
 		return forge.Forbidden(err.Error())
 	}
 	return err
+}
+
+// staleWriteMessage names no writer: the change may have come from another
+// REST call, the dashboard or a DSL apply.
+func staleWriteMessage(err error) string {
+	if errors.Is(err, warden.ErrPolicyVersionConflict) {
+		return "the policy changed after this request read it, so nothing was written; read it again and retry"
+	}
+	return "the record changed after this request read it, so nothing was written; read it again and retry"
 }
 
 func isNotFound(err error) bool {
