@@ -1891,8 +1891,28 @@ func TestPoliciesUpdateAheadOfTheStoredVersionIsBadInput(t *testing.T) {
 
 // No policy is stored below version 1, so an expected version of 0 or less
 // is bad input, not a stale copy, even when the stored policy has moved on.
-func TestPoliciesUpdateBelowVersionOneIsBadInput(t *testing.T) {
-	for _, v := range []int{0, -1} {
+// A policy written straight through a store without a version sits at 0,
+// and its editor sends 0. That must save.
+func TestPoliciesUpdateAtStoredVersionZeroSaves(t *testing.T) {
+	s := memory.New()
+	orig := fullPolicy(t, s, "eng", "target")
+	if err := s.SetPolicyVersion(context.Background(), "t1", orig.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	h := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})
+	zero := 0
+	if _, err := h(context.Background(), PolicyUpdateInput{
+		ID: orig.ID.String(), ExpectedVersion: &zero, Description: strPtr("x"),
+	}, principalFor("t1")); err != nil {
+		t.Fatalf("update at stored version 0: %v", err)
+	}
+	if got := storedPolicy(t, s, orig.ID.String()); got.Version != 1 || got.Description != "x" {
+		t.Errorf("stored version %d, description %q, want 1 and %q", got.Version, got.Description, "x")
+	}
+}
+
+func TestPoliciesUpdateNegativeVersionIsBadInput(t *testing.T) {
+	for _, v := range []int{-1} {
 		t.Run(fmt.Sprint(v), func(t *testing.T) {
 			s := memory.New()
 			orig := fullPolicy(t, s, "eng", "target")
@@ -1904,9 +1924,9 @@ func TestPoliciesUpdateBelowVersionOneIsBadInput(t *testing.T) {
 			}, principalFor("t1"))
 			ce := wantCode(t, err, dashcontract.CodeBadRequest)
 			if ce.Details["reason"] != nil {
-				t.Errorf("details = %#v, a version below 1 is not stale", ce.Details)
+				t.Errorf("details = %#v, a negative version is not stale", ce.Details)
 			}
-			want := fmt.Sprintf("expectedVersion %d is not a version: policies are stored from version 1", v)
+			want := fmt.Sprintf("expectedVersion %d is not a version: versions are never negative", v)
 			if ce.Message != want {
 				t.Errorf("message = %q, want %q", ce.Message, want)
 			}

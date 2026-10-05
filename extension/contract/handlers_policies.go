@@ -276,8 +276,8 @@ type PolicyCreateInput struct {
 // ExpectedVersion is the version the caller loaded. When it is present and
 // older than the stored version, the update is refused as stale and nothing
 // is written, so an editor cannot save over a change it never saw. A version
-// above the stored one, or below 1, was never stored, so it is refused as bad
-// input. Absent, the update is still guarded against a write that lands
+// above the stored one, or a negative one, was never stored, so it is refused
+// as bad input. Absent, the update is still guarded against a write that lands
 // between this handler's own read and write, but not against anything older.
 type PolicyUpdateInput struct {
 	ID              string             `json:"id"`
@@ -548,16 +548,17 @@ func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, d
 // than the stored one. Versions only grow, so an expected version below the
 // stored one means the policy changed after the caller read it. One above
 // it was never stored, so it is bad input rather than a stale copy, and so
-// is one below 1: every policy is stored from version 1.
+// is a negative one. Equality is tested first: a policy written straight
+// through a store without a version sits at 0, and its editor sends 0.
 func checkExpectedVersion(before *policy.Policy, expected *int) error {
 	if expected == nil {
 		return nil
 	}
-	if *expected < 1 {
-		return badRequest(fmt.Sprintf("expectedVersion %d is not a version: policies are stored from version 1", *expected))
-	}
 	if *expected == before.Version {
 		return nil
+	}
+	if *expected < 0 {
+		return badRequest(fmt.Sprintf("expectedVersion %d is not a version: versions are never negative", *expected))
 	}
 	if *expected > before.Version {
 		return badRequest(fmt.Sprintf("expectedVersion %d is ahead of the stored version %d", *expected, before.Version))
