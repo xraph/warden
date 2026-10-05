@@ -888,3 +888,65 @@ relation doc:readme viewer = user:alice
 		t.Errorf("a diagnostic should return (nil, err), got %v, %v", res, err)
 	}
 }
+
+// bumpOnReadStore lets one read of a policy go stale: the first
+// GetPolicyByName after arm returns the policy as it was, then saves an
+// out of band edit over it through UpdatePolicyIfVersion, the way a
+// dashboard save landing between the applier's read and write would.
+type bumpOnReadStore struct {
+	*memory.Store
+	armed bool
+}
+
+func (s *bumpOnReadStore) GetPolicyByName(ctx context.Context, tenantID, namespacePath, name string) (*policy.Policy, error) {
+	read, err := s.Store.GetPolicyByName(ctx, tenantID, namespacePath, name)
+	if err != nil || !s.armed {
+		return read, err
+	}
+	s.armed = false
+	other, err := s.Store.GetPolicyByName(ctx, tenantID, namespacePath, name)
+	if err != nil {
+		return nil, err
+	}
+	other.Description = "edited out of band"
+	other.Version = read.Version + 1
+	if err := s.UpdatePolicyIfVersion(ctx, other, read.Version); err != nil {
+		return nil, err
+	}
+	return read, nil
+}
+
+// TestApply_StalePolicyReadIsNotWritten: a policy that changes between the
+// applier's read and its write is not overwritten. The apply fails with
+// ErrStaleWrite in its chain and the out of band edit survives, rather than
+// two different contents both carrying the same version.
+func TestApply_StalePolicyReadIsNotWritten(t *testing.T) {
+	ctx := context.Background()
+	s := &bumpOnReadStore{Store: memory.New()}
+	eng, err := warden.NewEngine(warden.WithStore(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := "warden config 1\npolicy \"p\" {\n    effect = allow\n}\n"
+	if _, err := Apply(ctx, eng, mustParse(t, src), ApplyOptions{TenantID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	s.armed = true
+	edited := strings.Replace(src, "effect = allow", "effect = deny", 1)
+	res, err := Apply(ctx, eng, mustParse(t, edited), ApplyOptions{TenantID: "t1"})
+	if !errors.Is(err, warden.ErrStaleWrite) || !errors.Is(err, warden.ErrPolicyVersionConflict) {
+		t.Fatalf("want a stale write error, got %v", err)
+	}
+	if res == nil || len(res.Updated) != 0 {
+		t.Errorf("the refused update was reported as written: %+v", res)
+	}
+	p, err := s.Store.GetPolicyByName(ctx, "t1", "", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Description != "edited out of band" || p.Effect != "allow" || p.Version != 2 {
+		t.Errorf("stored policy: description %q effect %q version %d, want the out of band edit at version 2",
+			p.Description, p.Effect, p.Version)
+	}
+}

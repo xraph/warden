@@ -160,7 +160,7 @@ type applier struct {
 		// Policies
 		CreatePolicy(ctx context.Context, p *policy.Policy) error
 		GetPolicyByName(ctx context.Context, tenantID, namespacePath, name string) (*policy.Policy, error)
-		UpdatePolicy(ctx context.Context, p *policy.Policy) error
+		UpdatePolicyIfVersion(ctx context.Context, p *policy.Policy, expected int) error
 		DeletePolicy(ctx context.Context, tenantID string, polID id.PolicyID) error
 		ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]*policy.Policy, error)
 		// Resource types
@@ -1108,7 +1108,12 @@ func (a *applier) applyPolicies(prog *Program) error {
 			continue
 		}
 		if !a.dryRun {
-			if err := a.store.UpdatePolicy(a.ctx, desired); err != nil {
+			// Written only over the version read above. A save that lands in
+			// between (the dashboard, REST, another apply) moves the version,
+			// and the store refuses this write with ErrStaleWrite rather than
+			// letting it undo that save under the same version number. The
+			// apply stops there like any other failed write.
+			if err := a.store.UpdatePolicyIfVersion(a.ctx, desired, existing.Version); err != nil {
 				return fmt.Errorf("update policy %s: %w", p.Name, err)
 			}
 			a.emitAudit("policy.updated", desired.ID.String(), desired, existing)
