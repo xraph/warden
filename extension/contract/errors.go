@@ -60,14 +60,16 @@ func mapWardenError(err error) error {
 
 // staleMessage says why a conditional write was refused. It names no writer:
 // the change that moved the version may have come from this dashboard, the
-// REST API or a DSL apply.
+// REST API or a DSL apply. It says to reload the page, not the record: the
+// dashboard can hold a cached copy for a while, so opening the policy again
+// may show the same old version.
 func staleMessage(err error) string {
 	if errors.Is(err, warden.ErrPolicyVersionConflict) {
 		return "this policy changed after it was opened, so nothing was saved. " +
-			"Reload it to see the current version, then make the change again."
+			"Reload the page to see the current version, then make the change again."
 	}
 	return "this record changed after it was opened, so nothing was saved. " +
-		"Reload it to see the current version, then make the change again."
+		"Reload the page to see the current version, then make the change again."
 }
 
 // requireEngine is the guard every handler opens with.

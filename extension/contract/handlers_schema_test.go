@@ -1095,13 +1095,17 @@ func TestSchemaApplyAuditsOnceAsTheOperator(t *testing.T) {
 	})
 }
 
-// failingPolicyStore fails every policy write and delegates the rest.
+// failingPolicyStore fails every policy create and update, conditional or
+// not, and delegates the rest (deletes included).
 type failingPolicyStore struct{ *memory.Store }
 
 var errDiskFull = errors.New("disk full")
 
 func (failingPolicyStore) CreatePolicy(context.Context, *policy.Policy) error { return errDiskFull }
 func (failingPolicyStore) UpdatePolicy(context.Context, *policy.Policy) error { return errDiskFull }
+func (failingPolicyStore) UpdatePolicyIfVersion(context.Context, *policy.Policy, int) error {
+	return errDiskFull
+}
 
 // racingStore runs once, just before the first role is written, what another
 // writer could have done between the dry run and the real apply.

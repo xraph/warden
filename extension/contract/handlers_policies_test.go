@@ -1889,6 +1889,45 @@ func TestPoliciesUpdateAheadOfTheStoredVersionIsBadInput(t *testing.T) {
 	}
 }
 
+// No policy is stored below version 1, so an expected version of 0 or less
+// is bad input, not a stale copy, even when the stored policy has moved on.
+func TestPoliciesUpdateBelowVersionOneIsBadInput(t *testing.T) {
+	for _, v := range []int{0, -1} {
+		t.Run(fmt.Sprint(v), func(t *testing.T) {
+			s := memory.New()
+			orig := fullPolicy(t, s, "eng", "target")
+			moved := bumpOutOfBand(t, s, orig.ID)
+			h := policiesUpdateHandler(Deps{Engine: engineOver(t, s)})
+
+			_, err := h(context.Background(), PolicyUpdateInput{
+				ID: orig.ID.String(), ExpectedVersion: &v, Description: strPtr("x"),
+			}, principalFor("t1"))
+			ce := wantCode(t, err, dashcontract.CodeBadRequest)
+			if ce.Details["reason"] != nil {
+				t.Errorf("details = %#v, a version below 1 is not stale", ce.Details)
+			}
+			want := fmt.Sprintf("expectedVersion %d is not a version: policies are stored from version 1", v)
+			if ce.Message != want {
+				t.Errorf("message = %q, want %q", ce.Message, want)
+			}
+			if got := storedPolicy(t, s, orig.ID.String()); !reflect.DeepEqual(got, moved) {
+				t.Errorf("a refused update changed the stored policy: %+v", got)
+			}
+		})
+	}
+}
+
+// The stale message says to reload the page: reopening the policy can show
+// the dashboard's cached copy. The fixture server sends the same words.
+func TestStaleMessageSaysToReloadThePage(t *testing.T) {
+	ce := wantCode(t, mapWardenError(fmt.Errorf("policy x: %w", warden.ErrPolicyVersionConflict)), dashcontract.CodeConflict)
+	want := "this policy changed after it was opened, so nothing was saved. " +
+		"Reload the page to see the current version, then make the change again."
+	if ce.Message != want {
+		t.Errorf("message = %q, want %q", ce.Message, want)
+	}
+}
+
 func TestPoliciesUpdateRenameConflictCarriesNoStaleReason(t *testing.T) {
 	s := memory.New()
 	seedPolicy(t, s, "eng", "taken", nil)
