@@ -26,6 +26,13 @@ type Store interface {
 	// the ID and p.TenantID, and tenant_id is never written.
 	UpdatePolicy(ctx context.Context, p *Policy) error
 
+	// UpdatePolicyIfVersion writes p, as UpdatePolicy does, only if the stored
+	// policy with p's tenant and id has Version == expected. The comparison and
+	// the write are one atomic step. It returns ErrPolicyNotFound when no such
+	// policy exists in p's tenant, and ErrPolicyVersionConflict when it exists
+	// at another version; in both cases nothing is written.
+	UpdatePolicyIfVersion(ctx context.Context, p *Policy, expected int) error
+
 	// DeletePolicy removes a policy by ID within a tenant.
 	DeletePolicy(ctx context.Context, tenantID string, polID id.PolicyID) error
 

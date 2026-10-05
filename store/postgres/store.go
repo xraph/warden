@@ -1380,6 +1380,41 @@ func (s *Store) UpdatePolicy(ctx context.Context, p *policy.Policy) error {
 	return nil
 }
 
+// UpdatePolicyIfVersion writes p as UpdatePolicy does, only if the stored
+// policy is at version expected. The version check is part of the UPDATE's
+// WHERE clause, so the comparison and the write are one statement: under
+// READ COMMITTED a second writer blocks on the row lock, then re-checks the
+// WHERE against the committed row and matches nothing. When no row changes,
+// a read picks the error: not found if the policy is absent from p's
+// tenant, a version conflict otherwise. That read only chooses the error;
+// the refusal itself was atomic.
+//
+// p.UpdatedAt is set only once the write has happened, so a refused caller's
+// struct does not claim a write that did not happen.
+func (s *Store) UpdatePolicyIfVersion(ctx context.Context, p *policy.Policy, expected int) error {
+	now := time.Now().UTC()
+	next := *p
+	next.UpdatedAt = now
+	m := policyToModel(&next)
+	res, err := s.pgdb.NewUpdate(m).
+		Column(policyUpdateColumns...).
+		WherePK().
+		Where("tenant_id = ?", p.TenantID).
+		Where("version = ?", expected).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("warden: update policy: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		if _, err := s.GetPolicy(ctx, p.TenantID, p.ID); err != nil {
+			return err
+		}
+		return fmt.Errorf("policy %s, expected version %d: %w", p.ID, expected, wardenerr.ErrPolicyVersionConflict)
+	}
+	p.UpdatedAt = now
+	return nil
+}
+
 func (s *Store) DeletePolicy(ctx context.Context, tenantID string, polID id.PolicyID) error {
 	res, err := s.pgdb.NewDelete((*policyModel)(nil)).
 		Where("id = ?", polID.String()).

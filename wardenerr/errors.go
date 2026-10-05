@@ -68,3 +68,11 @@ var ErrResourceTypeNotFound = fmt.Errorf("warden: resource type not found: %w", 
 
 // ErrCheckLogNotFound is returned when a check log entry cannot be found in the tenant.
 var ErrCheckLogNotFound = fmt.Errorf("warden: check log not found: %w", ErrNotFound)
+
+// ErrStaleWrite is returned when a conditional write finds the record changed
+// since the caller read it.
+var ErrStaleWrite = errors.New("warden: changed since it was read")
+
+// ErrPolicyVersionConflict is returned by UpdatePolicyIfVersion when the
+// stored policy's version is not the one the caller expected.
+var ErrPolicyVersionConflict = fmt.Errorf("warden: policy changed since it was read: %w", ErrStaleWrite)

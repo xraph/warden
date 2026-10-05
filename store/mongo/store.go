@@ -1479,6 +1479,41 @@ func (s *Store) UpdatePolicy(ctx context.Context, p *policy.Policy) error {
 	return nil
 }
 
+// UpdatePolicyIfVersion writes p as UpdatePolicy does, only if the stored
+// policy is at version expected. The version is part of the update's filter,
+// and a single-document update is atomic, so the comparison and the write
+// are one step: of two writers holding the same version, the second's
+// filter no longer matches. When nothing matches, a read picks the error:
+// not found if the policy is absent from p's tenant, a version conflict
+// otherwise. That read only chooses the error; the refusal itself was
+// atomic.
+//
+// p.UpdatedAt is set only once the write has happened, so a refused caller's
+// struct does not claim a write that did not happen.
+func (s *Store) UpdatePolicyIfVersion(ctx context.Context, p *policy.Policy, expected int) error {
+	ts := now()
+	next := *p
+	next.UpdatedAt = ts
+	m := policyToModel(&next)
+	filter := byID(p.TenantID, m.ID)
+	filter["version"] = expected
+	res, err := s.mdb.NewUpdate(m).
+		Filter(filter).
+		SetUpdate(bson.M{"$set": policyUpdateDoc(m)}).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("warden: update policy: %w", err)
+	}
+	if res.MatchedCount() == 0 {
+		if _, err := s.GetPolicy(ctx, p.TenantID, p.ID); err != nil {
+			return err
+		}
+		return fmt.Errorf("policy %s, expected version %d: %w", p.ID, expected, wardenerr.ErrPolicyVersionConflict)
+	}
+	p.UpdatedAt = ts
+	return nil
+}
+
 func (s *Store) DeletePolicy(ctx context.Context, tenantID string, polID id.PolicyID) error {
 	res, err := s.mdb.NewDelete((*policyModel)(nil)).
 		Filter(byID(tenantID, polID.String())).

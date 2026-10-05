@@ -32,6 +32,17 @@ var (
 	// ErrPolicyNotFound is returned when a policy cannot be found in the tenant.
 	ErrPolicyNotFound = wardenerr.ErrPolicyNotFound
 
+	// ErrStaleWrite is the common base error for a conditional write that
+	// found the record changed since the caller read it. Use
+	// errors.Is(err, ErrStaleWrite) to match any of the specialized
+	// conflict errors, such as ErrPolicyVersionConflict.
+	ErrStaleWrite = wardenerr.ErrStaleWrite
+
+	// ErrPolicyVersionConflict is returned by UpdatePolicyIfVersion when the
+	// stored policy's version is not the one the caller expected. Nothing is
+	// written. Wraps ErrStaleWrite.
+	ErrPolicyVersionConflict = wardenerr.ErrPolicyVersionConflict
+
 	// ErrRelationNotFound is returned when a relation tuple cannot be found in the tenant.
 	ErrRelationNotFound = wardenerr.ErrRelationNotFound
 

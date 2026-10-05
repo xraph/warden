@@ -1037,6 +1037,29 @@ func (s *Store) UpdatePolicy(_ context.Context, p *policy.Policy) error {
 	return nil
 }
 
+// UpdatePolicyIfVersion writes p as UpdatePolicy does, only if the stored
+// policy is at version expected. The lookup, the comparison and the write all
+// happen under one hold of s.mu, so two callers holding the same version
+// cannot both win.
+func (s *Store) UpdatePolicyIfVersion(_ context.Context, p *policy.Policy, expected int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.policies[p.ID.String()]
+	if !ok || existing.TenantID != p.TenantID {
+		return fmt.Errorf("policy %s: %w", p.ID, wardenerr.ErrPolicyNotFound)
+	}
+	if existing.Version != expected {
+		return fmt.Errorf("policy %s, expected version %d: %w", p.ID, expected, wardenerr.ErrPolicyVersionConflict)
+	}
+	updated := copyPolicy(p)
+	updated.TenantID = existing.TenantID
+	updated.ID = existing.ID
+	updated.CreatedAt = existing.CreatedAt
+	updated.CreatedBy = existing.CreatedBy
+	s.policies[p.ID.String()] = updated
+	return nil
+}
+
 func (s *Store) DeletePolicy(_ context.Context, tenantID string, polID id.PolicyID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
