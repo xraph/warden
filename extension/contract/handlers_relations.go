@@ -23,6 +23,7 @@ package contract
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/xraph/warden/id"
@@ -44,6 +45,19 @@ type RelationSummary struct {
 	SubjectRelation string `json:"subjectRelation,omitempty"`
 	CreatedBy       string `json:"createdBy,omitempty"`
 	CreatedAt       string `json:"createdAt"`
+	// Undeclared is set when the resource type governing the tuple's object
+	// type, from the tuple's own namespace, does not declare it: the reason
+	// (resourcetype.UndeclaredTupleError.Reason) a write of this tuple would
+	// be refused now. A tuple stored before the write check existed, by a
+	// writer that skips it, or before its resource type changed can carry
+	// one. It is absent when the tuple
+	// conforms or no resource type governs its object type.
+	//
+	// It judges the tuple by the write check's rule and no other. A check
+	// does not consult declarations: the direct check, the expression
+	// evaluator and the graph walker read stored tuples as they are, so a
+	// marked tuple still counts.
+	Undeclared string `json:"undeclared,omitempty"`
 }
 
 // RelationsListInput filters the tuple list. Every field the store's filter
@@ -146,11 +160,49 @@ func relationsListHandler(deps Deps) func(context.Context, RelationsListInput, d
 			PageMeta: newPageMeta(total, limit, offset),
 			Items:    make([]RelationSummary, 0, len(rows)),
 		}
+		types := &pageTypes{s: s, seen: map[pageTypeKey]pageTypeAnswer{}}
 		for _, tp := range rows {
-			out.Items = append(out.Items, projectTuple(tp))
+			item := projectTuple(tp)
+			err := resourcetype.CheckTupleDeclared(ctx, types, tp)
+			var undeclared *resourcetype.UndeclaredTupleError
+			switch {
+			case errors.As(err, &undeclared):
+				item.Undeclared = undeclared.Reason()
+			case err != nil:
+				// The schema could not be read, so a missing mark would
+				// claim a tuple conforms when nobody knows.
+				return RelationsListResponse{}, mapWardenError(err)
+			}
+			out.Items = append(out.Items, item)
 		}
 		return out, nil
 	}
+}
+
+// pageTypes answers resource type lookups for one page of tuples, reading
+// each (namespace, name) from the store at most once. Rows on a page share
+// object types and namespace chains, so without it a page of 25 tuples
+// would repeat the same reads row after row.
+type pageTypes struct {
+	s    resourcetype.NameGetter
+	seen map[pageTypeKey]pageTypeAnswer
+}
+
+type pageTypeKey struct{ tenantID, namespacePath, name string }
+
+type pageTypeAnswer struct {
+	rt  *resourcetype.ResourceType
+	err error
+}
+
+func (p *pageTypes) GetResourceTypeByName(ctx context.Context, tenantID, namespacePath, name string) (*resourcetype.ResourceType, error) {
+	key := pageTypeKey{tenantID, namespacePath, name}
+	if a, ok := p.seen[key]; ok {
+		return a.rt, a.err
+	}
+	rt, err := p.s.GetResourceTypeByName(ctx, tenantID, namespacePath, name)
+	p.seen[key] = pageTypeAnswer{rt, err}
+	return rt, err
 }
 
 func relationsCreateHandler(deps Deps) func(context.Context, RelationCreateInput, dashcontract.Principal) (AckResponse, error) {

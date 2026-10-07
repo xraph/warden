@@ -88,12 +88,14 @@ intents:
   # A schema change alters what the graph walker can derive, so it affects
   # the relations surface as well as its own. namespaces.list scans resource
   # types, so a create can introduce a namespace and a delete can remove one.
+  # relations.list marks the tuples their governing resource type does not
+  # declare, so every resource type write can add or clear a mark.
   - { name: resourceTypes.create, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [resourceTypes.list, resourceTypes.graph, overview.stats, namespaces.list] }
+      invalidates: [resourceTypes.list, resourceTypes.graph, overview.stats, namespaces.list, relations.list] }
   - { name: resourceTypes.update, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [resourceTypes.list, resourceTypes.detail, resourceTypes.graph] }
+      invalidates: [resourceTypes.list, resourceTypes.detail, resourceTypes.graph, relations.list] }
   - { name: resourceTypes.delete, kind: command, version: 1, requires: { warden: warden.engine }, capability: write,
-      invalidates: [resourceTypes.list, resourceTypes.detail, resourceTypes.graph, overview.stats, namespaces.list] }
+      invalidates: [resourceTypes.list, resourceTypes.detail, resourceTypes.graph, overview.stats, namespaces.list, relations.list] }
   - { name: policies.list, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   - { name: policies.detail, kind: query, version: 1, requires: { warden: warden.engine }, capability: read }
   # policies.validate is a query because it writes nothing: it reports what a

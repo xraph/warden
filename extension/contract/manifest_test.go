@@ -271,6 +271,27 @@ func TestManifest_RelationCommandsInvalidateWhatTheyChange(t *testing.T) {
 	}
 }
 
+func TestManifest_ResourceTypeChangesInvalidateTheRelationMarks(t *testing.T) {
+	// relations.list marks each tuple its governing resource type does not
+	// declare, so a resource type write can add or clear a mark.
+	m := loadManifest(t)
+	byName := map[string][]string{}
+	for _, in := range m.Intents {
+		byName[in.Name] = in.Invalidates
+	}
+	for _, intent := range []string{"resourceTypes.create", "resourceTypes.update", "resourceTypes.delete"} {
+		found := false
+		for _, v := range byName[intent] {
+			if v == "relations.list" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s does not invalidate relations.list", intent)
+		}
+	}
+}
+
 func TestManifest_RelationListQueryIsDeclared(t *testing.T) {
 	m := loadManifest(t)
 	q, ok := m.Queries["relationList"]

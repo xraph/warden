@@ -115,15 +115,24 @@ func (e *UndeclaredTupleError) Error() string {
 		t.ObjectType, t.ObjectID, t.Relation,
 		t.SubjectType, subjectSpecID(t.SubjectID, t.SubjectRelation),
 		namespacePhrase(t.NamespacePath))
+	return head + e.Reason()
+}
+
+// Reason is the refusal without its "tuple ... is refused: " head: what
+// the governing resource type does not declare. It is true of a tuple that
+// is already stored as well as of one being written, so a listing can mark
+// a stored tuple with it.
+func (e *UndeclaredTupleError) Reason() string {
+	t := e.Tuple
 	rt := fmt.Sprintf("resource type %q in %s", e.ResourceType, namespacePhrase(e.Namespace))
 	if !e.RelationDeclared {
 		if len(e.Declared) == 0 {
-			return head + fmt.Sprintf("%s declares no relation %q (it declares no relations)", rt, t.Relation)
+			return fmt.Sprintf("%s declares no relation %q (it declares no relations)", rt, t.Relation)
 		}
-		return head + fmt.Sprintf("%s declares no relation %q (its relations are %s)", rt, t.Relation, quotedList(e.Declared))
+		return fmt.Sprintf("%s declares no relation %q (its relations are %s)", rt, t.Relation, quotedList(e.Declared))
 	}
 	spec := SubjectSpec(t.SubjectType, t.SubjectRelation)
-	return head + fmt.Sprintf("relation %q of %s allows subjects %s, not %q", t.Relation, rt, quotedList(e.Declared), spec)
+	return fmt.Sprintf("relation %q of %s allows subjects %s, not %q", t.Relation, rt, quotedList(e.Declared), spec)
 }
 
 // subjectSpecID spells a subject's id with its subject relation, the way a
@@ -160,7 +169,8 @@ func quotedList(in []string) string {
 // *UndeclaredTupleError.
 //
 // It checks a write. Tuples already stored are not read, and the evaluator
-// does not call it.
+// does not call it. The dashboard's relation list calls it on stored tuples
+// to mark the ones that would be refused today.
 func CheckTupleDeclared(ctx context.Context, s NameGetter, t *relation.Tuple) error {
 	rt, ns, err := Governing(ctx, s, t.TenantID, t.NamespacePath, t.ObjectType)
 	if err != nil || rt == nil {

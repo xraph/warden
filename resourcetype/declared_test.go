@@ -215,3 +215,23 @@ func TestCheckTupleDeclaredReturnsAReadError(t *testing.T) {
 		t.Errorf("err = %v, want it to name the resource type it was reading", err)
 	}
 }
+
+func TestUndeclaredReasonIsTheRefusalWithoutItsHead(t *testing.T) {
+	// Reason is what a stored tuple is marked with: true of a tuple that
+	// was written, which "is refused" is not.
+	s := &fakeTypes{}
+	s.put("t1", docType("eng"))
+	err := CheckTupleDeclared(context.Background(), s, tuple("eng/platform", "viewer", "team", ""))
+	var u *UndeclaredTupleError
+	if !errors.As(err, &u) {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	want := `relation "viewer" of resource type "document" in namespace "eng" allows subjects "user", "group#member", not "team"`
+	if u.Reason() != want {
+		t.Errorf("reason:\n got %s\nwant %s", u.Reason(), want)
+	}
+	head := `tuple document:d1#viewer@team:x in namespace "eng/platform" is refused: `
+	if u.Error() != head+want {
+		t.Errorf("error:\n got %s\nwant %s", u.Error(), head+want)
+	}
+}
