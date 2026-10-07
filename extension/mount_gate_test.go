@@ -136,3 +136,24 @@ func TestMountPaths_SecureDefaultRequiresIdentity(t *testing.T) {
 		t.Fatalf("RegisterRoutes: status = %d, want 401", code)
 	}
 }
+
+// AuthConfig{RequireIdentity: false} set in code with the other two fields
+// false is the zero value, which reads as unset and gets the defaults: the
+// API requires an identity, and no opt-in is needed to mount it. The doc
+// example sets AuditLog: true for this reason (routesOffExt does too).
+func TestConfig_AnAllFalseCodeAuthIsTheDefaults(t *testing.T) {
+	ext := New(
+		WithStore(memory.New()),
+		WithConfig(Config{Auth: AuthConfig{RequireIdentity: false}}),
+		WithDisableRoutes(),
+	)
+	if err := ext.Register(newTestApp("mount-h")); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if ext.config.Auth != DefaultAuthConfig() {
+		t.Fatalf("auth = %+v, want the defaults %+v", ext.config.Auth, DefaultAuthConfig())
+	}
+	if code := anonymousListRoles(ext.Handler()); code != http.StatusUnauthorized {
+		t.Fatalf("Handler: status = %d, want 401", code)
+	}
+}

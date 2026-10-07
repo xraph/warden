@@ -9,11 +9,21 @@ import (
 
 // AuthConfig controls how the extension authenticates and authorizes
 // callers of the warden management/decision HTTP API.
+//
+// An AuthConfig set in code with all three fields false is the zero value,
+// and the extension reads it as unset: it gets DefaultAuthConfig, so
+// identity stays required and the audit log stays on. To turn identity off
+// from code, set another field as well (AuditLog: true, for example). In
+// YAML, auth.require_identity: false is enough on its own.
 type AuthConfig struct {
 	// RequireIdentity, when true (the default), makes every route 401 an
-	// unauthenticated caller. Setting it to false is refused by Register
-	// unless WithInsecureAllowUnauthenticatedRoutes was also passed, so
-	// nobody disables it by accident.
+	// unauthenticated caller, except the three check endpoints when
+	// AllowAnonymousChecks is on. Turning it off is refused wherever the
+	// API can be mounted unless WithInsecureAllowUnauthenticatedRoutes was
+	// also passed, so nobody disables it by accident: with routes enabled
+	// Register returns an error, and with routes disabled Handler panics
+	// and RegisterRoutes returns the error. A code-set false alone does
+	// not turn it off (see AuthConfig).
 	RequireIdentity bool `json:"require_identity" mapstructure:"require_identity" yaml:"require_identity"`
 
 	// AllowAnonymousChecks opens the three check endpoints

@@ -530,10 +530,10 @@ func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, d
 		}
 
 		// A rename onto a name already in this namespace. The guard is what
-		// excludes renaming a policy to its own name. Postgres and sqlite
-		// have the unique index but do not map its violation to
-		// ErrDuplicatePolicy from UpdatePolicy, and the memory store has no
-		// check at all, so ask first.
+		// excludes renaming a policy to its own name. Every store refuses
+		// the rename itself with ErrDuplicatePolicy; asking first gives the
+		// page the refusal before the versioned write, and a rename that
+		// races past this read is still refused by the store.
 		if in.Name != nil && pol.Name != before.Name {
 			_, err := s.GetPolicyByName(ctx, tenantID, before.NamespacePath, pol.Name)
 			switch {

@@ -21,10 +21,12 @@ func (e *SystemPermissionError) Unwrap() error { return wardenerr.ErrSystemPermi
 
 // CheckWritable refuses, with a *SystemPermissionError, an update or delete
 // of a system permission. The REST API and the dashboard contract both call
-// it before they write one; a DSL apply refuses the same writes through
-// dsl.ApplyOptions.ProtectSystem. No store checks IsSystem, so code that
-// writes through the store directly checks nothing. A nil permission
-// passes.
+// it before they write one. The dashboard's schema.plan and schema.apply
+// refuse the same writes through dsl.ApplyOptions.ProtectSystem; `warden
+// apply` and DeclarativeOnStart leave that off on purpose, since they are
+// operator tooling, and can change or delete one. No store checks
+// IsSystem, so code that writes through the store directly checks nothing.
+// A nil permission passes.
 func CheckWritable(p *Permission) error {
 	if p == nil || !p.IsSystem {
 		return nil

@@ -34,12 +34,17 @@ Setting `auth.require_identity: false` is refused unless you also call `WithInse
 
 ```go
 wardenext.New(
-    wardenext.WithConfig(wardenext.Config{Auth: wardenext.AuthConfig{RequireIdentity: false}}),
-    wardenext.WithInsecureAllowUnauthenticatedRoutes(), // required, or Register returns an error
+    wardenext.WithConfig(wardenext.Config{Auth: wardenext.AuthConfig{
+        RequireIdentity: false,
+        AuditLog:        true, // keeps this from being the all-false AuthConfig, which reads as unset
+    }}),
+    wardenext.WithInsecureAllowUnauthenticatedRoutes(), // required, or the API refuses to mount
 )
 ```
 
-The refusal follows the API wherever you mount it. With routes enabled, `Register` returns an error. With `disable_routes: true`, `Register` succeeds, since it mounts nothing, but `ext.Handler()` panics and `ext.RegisterRoutes(router)` returns the same error and registers nothing. The `*api.API` from `ext.API()` is built requiring an identity on every route, so mounting it yourself answers an anonymous caller `401`. Only the opt-in gives you an API without the identity check.
+Mind the `AuditLog: true` there. An `AuthConfig` set in code with all three fields false is the zero value, and the extension reads it as unset: you get the defaults, identity required and audit log on. So `AuthConfig{RequireIdentity: false}` on its own changes nothing. In YAML, `auth.require_identity: false` is enough by itself.
+
+The refusal follows the API wherever you mount it. With routes enabled, `Register` returns an error. With `disable_routes: true`, `Register` succeeds, since it mounts nothing, but `ext.Handler()` panics and `ext.RegisterRoutes(router)` returns the same error and registers nothing. The `*api.API` from `ext.API()` is built requiring an identity on every route (except the three check endpoints when `auth.allow_anonymous_checks` is on), so mounting it yourself answers an anonymous caller `401` everywhere else. Only the opt-in gives you an API without the identity check.
 
 The option name is deliberately long: without it, any network peer that can reach the base path could grant itself roles or read the audit log. Reach for it only for local development or behind a network boundary you already trust completely. See [Hardening](/docs/operations/hardening).
 

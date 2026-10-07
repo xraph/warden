@@ -79,8 +79,9 @@ func (e *Extension) Engine() *warden.Engine { return e.eng }
 
 // API returns the API handler, or nil before Register. With
 // auth.require_identity false and no WithInsecureAllowUnauthenticatedRoutes,
-// it still requires an identity on every route: the insecure opt-in is the
-// only way to get an API that skips the identity check.
+// it still requires an identity on every route, except the three check
+// endpoints when auth.allow_anonymous_checks is on: the insecure opt-in is
+// the only way to get an API that skips the identity check everywhere.
 func (e *Extension) API() *api.API { return e.apiHandler }
 
 // errUnauthenticatedAPI refuses to mount the API with auth.require_identity

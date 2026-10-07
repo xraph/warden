@@ -142,9 +142,10 @@ func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*st
 	//
 	// The read and the delete are two calls, not one transaction: a tuple
 	// with this key written between them is removed without an audit event
-	// of its own. As with the role and policy deletes, a failed read does
-	// not stop the delete; the audit then falls back to one event naming
-	// the key.
+	// of its own. As with the policy, resource type and assignment deletes,
+	// a failed read does not stop the delete; the audit then falls back to
+	// one event naming the key. (The role and permission deletes do stop:
+	// their guards need the row they read.)
 	//
 	// The typed hook clears the check cache for each tuple the read named.
 	// DeleteRelationTuple does not say how many rows it removed, so when

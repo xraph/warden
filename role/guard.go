@@ -11,9 +11,13 @@ import (
 // No store checks IsSystem or the parent graph on a write. The two checks
 // below are what the REST API and the dashboard contract both call before
 // they write a role, so the two cannot refuse different things. A DSL apply
-// holds the same rules its own way: dsl.Resolve rejects a parent cycle in
-// the source, and dsl.ApplyOptions.ProtectSystem refuses a change to a
-// system role. Code that writes through the store directly checks nothing.
+// holds the parent rules its own way: dsl.Resolve rejects a parent cycle in
+// the source and a parent outside the role's namespace. Only the
+// dashboard's schema.plan and schema.apply set
+// dsl.ApplyOptions.ProtectSystem, which refuses a change to a system role;
+// `warden apply` and DeclarativeOnStart leave it off on purpose, since they
+// are operator tooling, and can change one. Code that writes
+// through the store directly checks nothing.
 
 // SystemRoleError refuses a write that would change or delete a system
 // role. It wraps wardenerr.ErrSystemRoleImmutable (warden.ErrSystemRoleImmutable).
@@ -88,6 +92,12 @@ type SlugGetter interface {
 // exist cannot lead back to r. The walk stops at the first slug it has
 // already seen, so a cycle already in the data cannot hang it. A store
 // failure is returned as is.
+//
+// The read and the caller's write are not atomic. Two concurrent updates
+// (a's parent set to b, b's to a) can each pass and store a two-role
+// cycle. The evaluator bounds that: its inheritance walk skips a role it
+// has already visited and stops at depth 20, so a check still finishes.
+// Clearing either parent breaks the cycle.
 func CheckParent(ctx context.Context, s SlugGetter, tenantID string, r *Role, parentSlug string) error {
 	if parentSlug == "" {
 		return nil
