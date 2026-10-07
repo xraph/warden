@@ -5,6 +5,9 @@
 // against it in policy_analysis_test.go by running each case through
 // warden.NewConditionEvaluator. If the engine changes, that test fails,
 // rather than a page quietly describing behaviour the engine no longer has.
+// One rule mirrors the engine instead: requiredFields is the set of fields
+// engine.go's prepareCheck refuses when empty, so it follows Check, not the
+// evaluator.
 //
 // Why this exists: nothing validates a policy on write (policy.Validate has
 // no non-test caller, and the REST create stores whatever it is sent), and
@@ -93,10 +96,12 @@ func fieldResolves(field string) bool {
 // alwaysPresentFields are the fields resolveField returns as a plain string on
 // every request, so the value is never nil, even when the string is empty.
 // Every other resolvable field is an attribute or context lookup and can be
-// nil. Being present fixes only exists and not_exists on these. Check
-// refusing some of them when empty fixes neq "" as well (requiredFields
-// below). Apart from those, and from values that match any string, every
-// operator on them depends on what the check carries.
+// nil. Being present fixes exists and not_exists on these. Check refusing
+// some of them when empty fixes neq "" as well (requiredFields below), and
+// those two rules plus values that match any string are all this file
+// classifies. Other shapes on a required field are fixed too and are not
+// classified: eq "", in [""] and regex ^$ are always false, and
+// not_in [""] is always true.
 var alwaysPresentFields = map[string]struct{}{
 	"subject.kind": {}, "subject.id": {},
 	"resource.type": {}, "resource.id": {},
