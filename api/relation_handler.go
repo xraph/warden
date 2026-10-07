@@ -124,9 +124,17 @@ func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*st
 	// delete can remove several tuples (group:eng and group:eng#member).
 	//
 	// The read and the delete are two calls, not one transaction: a tuple
-	// with this key written between them is removed without an event of its
-	// own. As with the role and policy deletes, a failed read does not stop
-	// the delete; the audit then falls back to one event naming the key.
+	// with this key written between them is removed without an audit event
+	// of its own. As with the role and policy deletes, a failed read does
+	// not stop the delete; the audit then falls back to one event naming
+	// the key.
+	//
+	// The typed hook is what clears the check cache, and DeleteRelationTuple
+	// does not say how many rows it removed. So whenever the read did not
+	// name a tuple (it failed, or found none), the hook fires once with the
+	// zero ID after a successful delete. The cache invalidator ignores the
+	// ID and clears everything: a spurious clear costs a few cache misses,
+	// a missed one leaves a revoked subject allowed until the entry expires.
 	ns := req.NamespacePath
 	matched, listErr := a.eng.Store().ListRelations(ctx.Context(), &relation.ListFilter{
 		TenantID:      tenantID,
@@ -145,6 +153,12 @@ func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*st
 	if a.eng.Plugins() != nil {
 		actor, _ := warden.ActorFromContext(ctx.Context())
 		now := time.Now()
+		for _, t := range matched {
+			a.eng.Plugins().EmitRelationDeleted(ctx.Context(), t.ID)
+		}
+		if len(matched) == 0 {
+			a.eng.Plugins().EmitRelationDeleted(ctx.Context(), id.RelationID{})
+		}
 		if listErr != nil {
 			a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
 				Actor: actor, At: now, Action: "relation.deleted",
