@@ -49,8 +49,57 @@ func TestConfigDetailReportsTheEngineConfig(t *testing.T) {
 	if got.CacheTTLSeconds != 30 {
 		t.Errorf("cacheTtlSeconds = %d, want 30", got.CacheTTLSeconds)
 	}
-	if got.CheckLogRetentionHours != 48 {
-		t.Errorf("checkLogRetentionHours = %d, want 48", got.CheckLogRetentionHours)
+	if got.CheckLogRetentionHours != 48 || got.CheckLogRetentionSeconds != 48*3600 {
+		t.Errorf("retention hours %d, seconds %d; want 48 and %d", got.CheckLogRetentionHours, got.CheckLogRetentionSeconds, 48*3600)
+	}
+}
+
+func TestConfigDetailCarriesASubHourRetentionExactly(t *testing.T) {
+	// The hours field rounds down, so a 30 minute retention reads 0 there,
+	// which a client shows as "kept forever". The seconds fields carry it.
+	eng := testEngine(t, warden.Config{
+		CheckLogRetention:   30 * time.Minute,
+		MaintenanceInterval: 45 * time.Second,
+	})
+	got, err := configDetailHandler(Deps{Engine: eng})(context.Background(), struct{}{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("config.detail: %v", err)
+	}
+	if got.CheckLogRetentionSeconds != 1800 || got.CheckLogRetentionHours != 0 {
+		t.Errorf("retention seconds %d, hours %d; want 1800 and 0", got.CheckLogRetentionSeconds, got.CheckLogRetentionHours)
+	}
+	if got.MaintenanceIntervalSeconds != 45 || got.MaintenanceIntervalMin != 0 {
+		t.Errorf("interval seconds %d, minutes %d; want 45 and 0", got.MaintenanceIntervalSeconds, got.MaintenanceIntervalMin)
+	}
+
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]float64{
+		"checkLogRetentionSeconds":   1800,
+		"maintenanceIntervalSeconds": 45,
+		"checkLogRetentionHours":     0,
+		"maintenanceIntervalMinutes": 0,
+	} {
+		if wire[key] != want {
+			t.Errorf("%s = %v, want %v", key, wire[key], want)
+		}
+	}
+}
+
+func TestConfigDetailNeverRoundsAPositiveDurationToZero(t *testing.T) {
+	for _, d := range []time.Duration{time.Nanosecond, 999 * time.Millisecond, time.Second, 1500 * time.Millisecond} {
+		if got := ceilSeconds(d); got < 1 {
+			t.Errorf("ceilSeconds(%s) = %d, want at least 1", d, got)
+		}
+	}
+	if got := ceilSeconds(0); got != 0 {
+		t.Errorf("ceilSeconds(0) = %d, want 0", got)
 	}
 }
 
