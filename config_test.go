@@ -24,8 +24,6 @@ func TestConfigValidate_RejectsNegatives(t *testing.T) {
 		{"MaxGraphVisited", func(c Config) Config { c.MaxGraphVisited = -1; return c }},
 		{"MaxGraphFanout", func(c Config) Config { c.MaxGraphFanout = -1; return c }},
 		{"CheckLogQueueSize", func(c Config) Config { c.CheckLogQueueSize = -1; return c }},
-		{"CheckLogRetention", func(c Config) Config { c.CheckLogRetention = -time.Hour; return c }},
-		{"MaintenanceInterval", func(c Config) Config { c.MaintenanceInterval = -time.Hour; return c }},
 		{"MaxBatchChecks", func(c Config) Config { c.MaxBatchChecks = -1; return c }},
 	}
 	for _, tc := range tests {
@@ -34,6 +32,18 @@ func TestConfigValidate_RejectsNegatives(t *testing.T) {
 				t.Fatalf("expected error for negative %s", tc.name)
 			}
 		})
+	}
+}
+
+// A negative CheckLogRetention or MaintenanceInterval is how a caller
+// switches purging or the loop off through the Forge extension, which reads
+// 0 as "use the default". Validate must let it through.
+func TestConfigValidate_AcceptsNegativeRetentionAndInterval(t *testing.T) {
+	c := DefaultConfig()
+	c.CheckLogRetention = -time.Hour
+	c.MaintenanceInterval = -time.Nanosecond
+	if err := c.Validate(); err != nil {
+		t.Fatalf("expected a negative retention and interval to validate, got %v", err)
 	}
 }
 

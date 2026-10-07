@@ -1,8 +1,11 @@
 package extension
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xraph/forge"
 
@@ -86,5 +89,46 @@ func TestRegister_SecureDefaultsNeedNoOptIn(t *testing.T) {
 
 	if err := ext.Register(newTestApp("gate-d")); err != nil {
 		t.Fatalf("Register failed with secure defaults: %v", err)
+	}
+}
+
+// TestRegister_NegativeRetentionAndIntervalReachTheEngine is the
+// programmatic path end to end: WithConfig with negative values must
+// validate and arrive at the engine unchanged, not replaced by a default.
+func TestRegister_NegativeRetentionAndIntervalReachTheEngine(t *testing.T) {
+	ext := New(
+		WithStore(memory.New()),
+		WithConfig(Config{CheckLogRetention: -time.Hour, MaintenanceInterval: -time.Minute}),
+		WithDisableRoutes(),
+	)
+	if err := ext.Register(newTestApp("negative-off")); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got := ext.Engine().Config()
+	if got.CheckLogRetention != -time.Hour || got.MaintenanceInterval != -time.Minute {
+		t.Fatalf("engine got retention %v and interval %v, want -1h and -1m", got.CheckLogRetention, got.MaintenanceInterval)
+	}
+}
+
+// TestRegister_NegativeDurationsLoadFromYAML is the same through a config
+// file: a negative duration string must parse and reach the engine.
+func TestRegister_NegativeDurationsLoadFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	yaml := "extensions:\n  warden:\n    disable_routes: true\n    check_log_retention: -1h\n    maintenance_interval: -30m\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := forge.New(
+		forge.WithAppName("negative-off-yaml"),
+		forge.WithConfigSearchPaths(dir),
+		forge.WithEnableAppScopedConfig(false),
+	)
+	ext := New(WithStore(memory.New()))
+	if err := ext.Register(app); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got := ext.Engine().Config()
+	if got.CheckLogRetention != -time.Hour || got.MaintenanceInterval != -30*time.Minute {
+		t.Fatalf("engine got retention %v and interval %v, want -1h and -30m", got.CheckLogRetention, got.MaintenanceInterval)
 	}
 }

@@ -81,7 +81,7 @@ Safe to call repeatedly: the role, its permissions, the attachments, and the ass
 
 1. Runs database migrations (unless `disable_migrate` is true)
 2. Applies declarative `.warden` config, if `declarative_on_start` is set
-3. Starts the engine: logs a summary line (check-log/cache/maintenance settings) and starts the background maintenance loop. The engine skips the loop when its interval is `0`, but the extension never hands it one: `maintenance_interval: 0` becomes the default, `1h` (see the table below)
+3. Starts the engine: logs a summary line (check-log/cache/maintenance settings) and starts the background maintenance loop, unless `maintenance_interval` is negative. `maintenance_interval: 0` doesn't skip it: the extension replaces `0` with the default, `1h` (see the table below)
 
 ### Stop Phase
 
@@ -214,8 +214,8 @@ All defaults below come from `extension.DefaultConfig()`, which itself mirrors `
 | `max_graph_fanout` | `int` | `1000` | Subjects fetched per hop during a graph walk |
 | `evaluate_all_models` | `bool` | `false` | Always evaluate RBAC, ReBAC and ABAC, even after an earlier model allowed |
 | `check_log_queue_size` | `int` | `4096` | Check-log writer's internal channel size |
-| `check_log_retention` | `duration` | `2160h` (90 days) | How long check-log entries are kept before `RunMaintenance` purges them. The extension treats `0` as unset: it takes the programmatic value if there is one, else `2160h`, so purging cannot be turned off here. Only an engine you build yourself with `warden.NewEngine(warden.WithConfig(...))` reads `0` as no purging |
-| `maintenance_interval` | `duration` | `1h` | How often `RunMaintenance` runs in the background. The extension treats `0` as unset, like `check_log_retention`: the programmatic value, else `1h`, so the loop always runs. Only an engine you build yourself reads `0` as no loop |
+| `check_log_retention` | `duration` | `2160h` (90 days) | How long check-log entries are kept before `RunMaintenance` purges them. A negative value (`-1h`) switches purging off: nothing deletes entries by age, so they stay until you delete them yourself. `0` is unset: the extension takes the programmatic value if there is one, else `2160h` |
+| `maintenance_interval` | `duration` | `1h` | How often `RunMaintenance` runs in the background. A negative value (`-1h`) switches the loop off, so nothing purges expired assignments or check logs unless you run maintenance yourself. `0` is unset, like `check_log_retention`: the programmatic value, else `1h` |
 | `max_batch_checks` | `int` | `100` | Cap on checks per batch-check/AuthZEN evaluations call |
 | `require_tenant` | `*bool` | `true` | `Check` returns `ErrTenantRequired` when the resolved scope has no tenant |
 | `enable_check_log` | `*bool` | `true` | Write authorization check results to the check-log store |

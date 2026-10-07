@@ -2,7 +2,7 @@
 //
 // These are the only writes warden's config surface has. maintenance.run
 // purges the caller's tenant's expired assignments and, when
-// CheckLogRetention is set, that tenant's check log entries past it. Cache
+// CheckLogRetention is positive, that tenant's check log entries past it. Cache
 // invalidation is the manual version of what a write would do automatically.
 package contract
 

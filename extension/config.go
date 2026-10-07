@@ -128,15 +128,17 @@ type Config struct {
 	CheckLogQueueSize int `json:"check_log_queue_size" mapstructure:"check_log_queue_size" yaml:"check_log_queue_size"`
 
 	// CheckLogRetention is how long check log entries are kept before
-	// RunMaintenance purges them. 0 counts as unset: the extension fills
-	// it with the programmatic value, else the 90 day default, so it cannot
-	// turn purging off (the engine alone reads 0 as no purging).
+	// RunMaintenance purges them. A negative value turns purging off. 0
+	// counts as unset: the extension fills it with the programmatic value,
+	// else the 90 day default, so 0 cannot turn purging off here (an engine
+	// built directly reads 0 as off too).
 	CheckLogRetention time.Duration `json:"check_log_retention" mapstructure:"check_log_retention" yaml:"check_log_retention"`
 
 	// MaintenanceInterval is how often the engine runs RunMaintenance in
-	// the background. 0 counts as unset: the extension fills it with the
-	// programmatic value, else 1 hour, so the loop always runs (the engine
-	// alone reads 0 as no loop).
+	// the background. A negative value turns the loop off. 0 counts as
+	// unset: the extension fills it with the programmatic value, else 1
+	// hour, so 0 cannot turn the loop off here (an engine built directly
+	// reads 0 as off too).
 	MaintenanceInterval time.Duration `json:"maintenance_interval" mapstructure:"maintenance_interval" yaml:"maintenance_interval"`
 
 	// MaxBatchChecks bounds the number of checks a batch-check or AuthZEN

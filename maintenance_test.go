@@ -319,3 +319,94 @@ func TestRunMaintenance_StillPurgesEveryTenantAndClears(t *testing.T) {
 		t.Errorf("RunMaintenance: clears=%d tenants=%q, want one Clear and no tenant flush", c.clears, c.tenants)
 	}
 }
+
+// negativeOffEngine is tenantMaintenanceEngine with a negative retention and
+// a negative maintenance interval, the values that switch both off.
+func negativeOffEngine(t *testing.T) (*Engine, *memory.Store) {
+	t.Helper()
+	ctx := context.Background()
+	s := memory.New()
+	cfg := DefaultConfig()
+	cfg.CheckLogRetention = -time.Hour
+	cfg.MaintenanceInterval = -time.Hour
+	cfg.EnableCheckLog = boolPtr(false)
+	eng, err := NewEngine(WithStore(s), WithConfig(cfg))
+	if err != nil {
+		t.Fatalf("NewEngine with a negative retention and interval: %v", err)
+	}
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	eng.nowFn = fakeClock(now)
+	past := now.Add(-time.Hour)
+	for _, tenant := range []string{"t1", "t2"} {
+		if err := s.CreateAssignment(ctx, &assignment.Assignment{
+			ID: id.NewAssignmentID(), TenantID: tenant, RoleID: id.NewRoleID(),
+			SubjectKind: "user", SubjectID: "expired", ExpiresAt: &past,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CreateCheckLog(ctx, &checklog.Entry{
+			ID: id.NewCheckLogID(), TenantID: tenant, CreatedAt: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return eng, s
+}
+
+func TestRunMaintenance_NegativeRetentionPurgesNoCheckLogs(t *testing.T) {
+	ctx := context.Background()
+	eng, s := negativeOffEngine(t)
+
+	report, err := eng.RunMaintenance(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CheckLogsPurged != 0 {
+		t.Fatalf("CheckLogsPurged = %d with a negative retention, want 0", report.CheckLogsPurged)
+	}
+	if report.AssignmentsPurged != 2 {
+		t.Errorf("AssignmentsPurged = %d, want 2: expired assignments go whatever the retention", report.AssignmentsPurged)
+	}
+	if n, _ := s.CountCheckLogs(ctx, &checklog.QueryFilter{}); n != 2 {
+		t.Errorf("%d check logs left, want both", n)
+	}
+}
+
+func TestRunTenantMaintenance_NegativeRetentionPurgesNoCheckLogs(t *testing.T) {
+	ctx := context.Background()
+	eng, s := negativeOffEngine(t)
+
+	report, err := eng.RunTenantMaintenance(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CheckLogsPurged != 0 {
+		t.Fatalf("CheckLogsPurged = %d with a negative retention, want 0", report.CheckLogsPurged)
+	}
+	if n, _ := s.CountCheckLogs(ctx, &checklog.QueryFilter{TenantID: "t1"}); n != 1 {
+		t.Errorf("t1 has %d check logs left, want its 1", n)
+	}
+}
+
+func TestStart_NegativeIntervalStartsNoLoop(t *testing.T) {
+	ctx := context.Background()
+	eng, s := negativeOffEngine(t)
+
+	if err := eng.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = eng.Stop(ctx) }()
+	if eng.maintCancel != nil {
+		t.Fatal("Start set up a maintenance loop with a negative interval")
+	}
+
+	// StartMaintenance called directly must not start one either. A started
+	// loop would panic on a negative ticker, or purge the expired rows.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	eng.StartMaintenance(runCtx)
+	time.Sleep(50 * time.Millisecond)
+	if n, _ := s.CountAssignments(ctx, &assignment.ListFilter{TenantID: "t1"}); n != 1 {
+		t.Fatalf("t1 has %d assignments, want its expired one untouched: no loop should run", n)
+	}
+}

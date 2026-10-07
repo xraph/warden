@@ -115,3 +115,62 @@ func TestToEngineConfig_MirrorsFields(t *testing.T) {
 		t.Fatalf("toEngineConfig did not mirror every field: %+v", ec)
 	}
 }
+
+// A negative retention or interval is the extension's way to switch purging
+// or the maintenance loop off, so the merge must hand it to the engine as is.
+// 0 still means unset and gets the default.
+func TestMergeWithDefaults_KeepsANegativeRetentionAndInterval(t *testing.T) {
+	e := New()
+	got := e.mergeWithDefaults(Config{CheckLogRetention: -time.Hour, MaintenanceInterval: -time.Minute})
+	if got.CheckLogRetention != -time.Hour {
+		t.Errorf("CheckLogRetention = %v, want -1h passed through", got.CheckLogRetention)
+	}
+	if got.MaintenanceInterval != -time.Minute {
+		t.Errorf("MaintenanceInterval = %v, want -1m passed through", got.MaintenanceInterval)
+	}
+
+	zero := e.mergeWithDefaults(Config{})
+	d := DefaultConfig()
+	if zero.CheckLogRetention != d.CheckLogRetention || zero.MaintenanceInterval != d.MaintenanceInterval {
+		t.Errorf("0 got %v and %v, want the defaults %v and %v",
+			zero.CheckLogRetention, zero.MaintenanceInterval, d.CheckLogRetention, d.MaintenanceInterval)
+	}
+}
+
+func TestMergeConfigurations_KeepsANegativeRetentionAndInterval(t *testing.T) {
+	e := New()
+	d := DefaultConfig()
+
+	// A negative value from YAML wins over a programmatic one.
+	yaml := DefaultConfig()
+	yaml.CheckLogRetention = -time.Hour
+	yaml.MaintenanceInterval = -time.Hour
+	got := e.mergeConfigurations(yaml, Config{CheckLogRetention: time.Hour, MaintenanceInterval: time.Hour})
+	if got.CheckLogRetention != -time.Hour || got.MaintenanceInterval != -time.Hour {
+		t.Errorf("YAML negative: got %v and %v, want both -1h", got.CheckLogRetention, got.MaintenanceInterval)
+	}
+
+	// YAML 0 is unset, so a negative programmatic value fills it.
+	yaml = DefaultConfig()
+	yaml.CheckLogRetention = 0
+	yaml.MaintenanceInterval = 0
+	got = e.mergeConfigurations(yaml, Config{CheckLogRetention: -time.Second, MaintenanceInterval: -time.Second})
+	if got.CheckLogRetention != -time.Second || got.MaintenanceInterval != -time.Second {
+		t.Errorf("programmatic negative: got %v and %v, want both -1s", got.CheckLogRetention, got.MaintenanceInterval)
+	}
+
+	// 0 on both sides still gets the default.
+	got = e.mergeConfigurations(yaml, Config{})
+	if got.CheckLogRetention != d.CheckLogRetention || got.MaintenanceInterval != d.MaintenanceInterval {
+		t.Errorf("0 everywhere: got %v and %v, want the defaults", got.CheckLogRetention, got.MaintenanceInterval)
+	}
+}
+
+func TestConfig_Validate_AcceptsANegativeRetentionAndInterval(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.CheckLogRetention = -time.Hour
+	cfg.MaintenanceInterval = -time.Hour
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil: a negative value switches the feature off", err)
+	}
+}

@@ -34,11 +34,13 @@ type ConfigDetail struct {
 	CheckLogQueueSize int  `json:"checkLogQueueSize"`
 	// CheckLogRetentionSeconds and MaintenanceIntervalSeconds carry the
 	// durations in whole seconds, rounded up, so a positive duration never
-	// reads as 0, and 0 means the engine keeps every check log entry (or
-	// runs no maintenance loop). CheckLogRetentionHours and
-	// MaintenanceIntervalMin stay for clients older than the seconds
-	// fields. They are rounded down, so there a retention under an hour
-	// reads 0, the same as no retention at all.
+	// reads as 0, and 0 means off: the engine purges no check log entries
+	// (or runs no maintenance loop). The engine reads a 0 or negative
+	// duration as off, and both are sent as 0, so the wire never carries a
+	// negative number. CheckLogRetentionHours and MaintenanceIntervalMin
+	// stay for clients older than the seconds fields. They are rounded down
+	// and also 0 when off, so there a retention under an hour reads 0, the
+	// same as no retention at all.
 	CheckLogRetentionSeconds   int64 `json:"checkLogRetentionSeconds"`
 	MaintenanceIntervalSeconds int64 `json:"maintenanceIntervalSeconds"`
 	CheckLogRetentionHours     int64 `json:"checkLogRetentionHours"`
@@ -92,18 +94,29 @@ func configDetailHandler(deps Deps) func(context.Context, struct{}, dashcontract
 			CheckLogQueueSize:          c.CheckLogQueueSize,
 			CheckLogRetentionSeconds:   ceilSeconds(c.CheckLogRetention),
 			MaintenanceIntervalSeconds: ceilSeconds(c.MaintenanceInterval),
-			CheckLogRetentionHours:     int64(c.CheckLogRetention.Hours()),
-			MaintenanceIntervalMin:     int64(c.MaintenanceInterval.Minutes()),
+			CheckLogRetentionHours:     floorUnits(c.CheckLogRetention, time.Hour),
+			MaintenanceIntervalMin:     floorUnits(c.MaintenanceInterval, time.Minute),
 			Plugins:                    pluginNames(deps),
 		}, nil
 	}
 }
 
 // ceilSeconds is d in whole seconds, rounded up, so a positive duration
-// never reads as 0 (which the page shows as "kept forever" or "off").
+// never reads as 0 (which the page shows as "off"). A 0 or negative d is
+// off and reads 0.
 func ceilSeconds(d time.Duration) int64 {
 	if d <= 0 {
 		return 0
 	}
 	return int64((d + time.Second - 1) / time.Second)
+}
+
+// floorUnits is d in whole units, rounded down, for the fields older
+// clients read. A 0 or negative d is off and reads 0, never a negative
+// number.
+func floorUnits(d, unit time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return int64(d / unit)
 }

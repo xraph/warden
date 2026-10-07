@@ -92,6 +92,40 @@ func TestConfigDetailCarriesASubHourRetentionExactly(t *testing.T) {
 	}
 }
 
+// A negative retention or interval switches purging or the loop off. The
+// wire reports off as 0 in every field, the seconds ones and the older hours
+// and minutes, so no client ever shows a negative number and an older one
+// reads 0 the way it always has.
+func TestConfigDetailReportsANegativeDurationAsOff(t *testing.T) {
+	eng := testEngine(t, warden.Config{
+		CheckLogRetention:   -90 * time.Minute,
+		MaintenanceInterval: -2 * time.Hour,
+	})
+	got, err := configDetailHandler(Deps{Engine: eng})(context.Background(), struct{}{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("config.detail: %v", err)
+	}
+
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		"checkLogRetentionSeconds",
+		"maintenanceIntervalSeconds",
+		"checkLogRetentionHours",
+		"maintenanceIntervalMinutes",
+	} {
+		if wire[key] != float64(0) {
+			t.Errorf("%s = %v, want 0 (off)", key, wire[key])
+		}
+	}
+}
+
 func TestConfigDetailNeverRoundsAPositiveDurationToZero(t *testing.T) {
 	for _, d := range []time.Duration{time.Nanosecond, 999 * time.Millisecond, time.Second, 1500 * time.Millisecond} {
 		if got := ceilSeconds(d); got < 1 {

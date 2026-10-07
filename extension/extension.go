@@ -409,7 +409,10 @@ func (e *Extension) tryLoadFromConfigFile() (Config, bool, error) {
 	return Config{}, false, lastErr
 }
 
-// mergeWithDefaults fills zero-valued fields with defaults.
+// mergeWithDefaults fills zero-valued fields with defaults. Only an exact 0
+// is replaced: a negative CheckLogRetention or MaintenanceInterval is how a
+// caller switches purging or the maintenance loop off, so it passes through
+// to the engine untouched.
 func (e *Extension) mergeWithDefaults(cfg Config) Config {
 	defaults := DefaultConfig()
 	if cfg.MaxGraphDepth == 0 {

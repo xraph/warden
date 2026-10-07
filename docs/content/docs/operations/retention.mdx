@@ -5,7 +5,7 @@ description: Check-log retention, the maintenance loop, and erasure requests.
 
 ## check_log_retention and the maintenance loop
 
-`Config.CheckLogRetention` (YAML: `check_log_retention`, default 90 days, `2160h`) controls how long `warden_check_logs` rows live before they're purged. On the engine, `0` disables purging entirely: rows accumulate forever, which is only appropriate if something else outside Warden is responsible for pruning them. That holds only for an engine you build yourself with `warden.NewEngine(warden.WithConfig(...))`. The Forge extension treats `0` as unset and replaces it with the programmatic value if there is one, else the 90-day default, so through the extension purging always runs.
+`Config.CheckLogRetention` (YAML: `check_log_retention`, default 90 days, `2160h`) controls how long `warden_check_logs` rows live before they're purged. A negative value (say `-1h`) switches purging off: maintenance never deletes a check-log row by age, so rows pile up until something else removes them (the erasure deletes below, or your own pruning). Only switch it off when something does. Through the Forge extension a negative value is the only way to switch it off, because the extension treats `0` as unset and replaces it with the programmatic value if there is one, else the 90-day default. An engine you build yourself with `warden.NewEngine(warden.WithConfig(...))` gets no such substitution, so there `0` switches purging off too.
 
 `RunMaintenance` does the purging:
 
@@ -16,10 +16,10 @@ func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error)
 Each run:
 
 1. Deletes expired role assignments (`DeleteExpiredAssignments`), regardless of `CheckLogRetention`.
-2. If `CheckLogRetention > 0`, deletes check-log entries older than `now - CheckLogRetention` (`PurgeCheckLogs`).
+2. If `CheckLogRetention > 0` (`0` or negative is off), deletes check-log entries older than `now - CheckLogRetention` (`PurgeCheckLogs`).
 3. If either purge actually removed rows and a cache is configured, clears the whole cache (`Cache.Clear`). There's no per-tenant "list every tenant" cache operation, and a maintenance run is infrequent enough that a full flush is cheap next to serving one stale permission.
 
-`Config.MaintenanceInterval` (YAML: `maintenance_interval`, default 1 hour) controls how often this runs in the background. `Engine.Start` calls `StartMaintenance`, which starts a goroutine ticking on that interval until the engine's `Stop` context is cancelled. On an engine you build yourself, an interval of `0` disables the loop (you'd then need to call `RunMaintenance` yourself, e.g. from a cron job, to get any purging at all). The Forge extension treats `0` as unset, the same as the retention, and runs the loop every hour unless you set another interval.
+`Config.MaintenanceInterval` (YAML: `maintenance_interval`, default 1 hour) controls how often this runs in the background. `Engine.Start` calls `StartMaintenance`, which starts a goroutine ticking on that interval until the engine's `Stop` context is cancelled. A negative interval switches the loop off, and then nothing runs `RunMaintenance` unless you call it yourself (from a cron job, say, or the dashboard's `maintenance.run`). That goes for expired assignments too, not just check logs. The Forge extension treats `0` as unset, the same as the retention, and runs the loop every hour unless you set another interval, so there only a negative value switches it off. On an engine you build yourself, `0` switches it off as well.
 
 Every run above covers every tenant. If you want one tenant only, call `RunTenantMaintenance`:
 
@@ -60,7 +60,7 @@ Practically, this means:
 
 - Include `request_ip` explicitly when you scope a data-processing or privacy impact assessment for the check log, not just `subject_id`.
 - `DeleteCheckLogsBySubject` removes it along with the rest of that subject's check-log rows when you service an erasure request. There's no separate "redact just the IP" operation, so erasure is row-level, not field-level.
-- If your `check_log_retention` window is longer than your IP-retention policy requires, shorten it; there's no independent retention knob for `request_ip` alone.
+- If your `check_log_retention` window is longer than your IP-retention policy requires, or switched off, set one that fits; there's no independent retention knob for `request_ip` alone.
 
 ## The Postgres append-only trigger
 

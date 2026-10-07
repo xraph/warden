@@ -65,11 +65,15 @@ type Config struct {
 	CheckLogQueueSize int `json:"check_log_queue_size,omitempty"`
 
 	// CheckLogRetention is how long check log entries are kept before
-	// RunMaintenance purges them. Defaults to 90 days; 0 disables purging.
+	// RunMaintenance purges them. Defaults to 90 days. The engine reads 0 or
+	// any negative value as no purging. The Forge extension reads 0 as unset
+	// and fills in a default, so there only a negative value turns it off.
 	CheckLogRetention time.Duration `json:"check_log_retention,omitempty"`
 
 	// MaintenanceInterval is how often Engine.Start runs RunMaintenance in
-	// the background. Defaults to 1 hour; 0 disables the loop.
+	// the background. Defaults to 1 hour. The engine reads 0 or any negative
+	// value as no loop. The Forge extension reads 0 as unset and fills in a
+	// default, so there only a negative value turns it off.
 	MaintenanceInterval time.Duration `json:"maintenance_interval,omitempty"`
 
 	// MaxBatchChecks bounds the number of checks a batch-check API call may
@@ -105,8 +109,9 @@ func (c Config) checkLogEnabled() bool { return c.EnableCheckLog == nil || *c.En
 func (c Config) requireTenant() bool   { return c.RequireTenant == nil || *c.RequireTenant }
 
 // Validate checks the configuration for internally inconsistent or unsafe
-// values: negative durations/counts, a cache TTL over 24h, and a graph
-// depth over 64.
+// values: negative counts, a negative cache TTL, a cache TTL over 24h, and a
+// graph depth over 64. A negative CheckLogRetention or MaintenanceInterval
+// is allowed: it switches purging or the maintenance loop off.
 func (c Config) Validate() error {
 	if c.MaxGraphDepth < 0 {
 		return fmt.Errorf("warden: config: MaxGraphDepth must not be negative, got %d", c.MaxGraphDepth)
@@ -131,12 +136,6 @@ func (c Config) Validate() error {
 	}
 	if c.CheckLogQueueSize < 0 {
 		return fmt.Errorf("warden: config: CheckLogQueueSize must not be negative, got %d", c.CheckLogQueueSize)
-	}
-	if c.CheckLogRetention < 0 {
-		return fmt.Errorf("warden: config: CheckLogRetention must not be negative, got %s", c.CheckLogRetention)
-	}
-	if c.MaintenanceInterval < 0 {
-		return fmt.Errorf("warden: config: MaintenanceInterval must not be negative, got %s", c.MaintenanceInterval)
 	}
 	if c.MaxBatchChecks < 0 {
 		return fmt.Errorf("warden: config: MaxBatchChecks must not be negative, got %d", c.MaxBatchChecks)

@@ -16,7 +16,7 @@ type MaintenanceReport struct {
 }
 
 // RunMaintenance purges role assignments that have expired and, when
-// Config.CheckLogRetention > 0, check log entries older than the retention
+// Config.CheckLogRetention > 0 (0 or negative is off), check log entries older than the retention
 // window, in every tenant. When either purge actually removed rows and a
 // Cache is configured, it also does a full Cache.Clear: Cache has no "list
 // every tenant" operation, so a targeted per-tenant invalidation isn't
@@ -57,7 +57,7 @@ func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error) 
 
 // RunTenantMaintenance is RunMaintenance for one tenant. It purges that
 // tenant's role assignments that have expired and, when
-// Config.CheckLogRetention > 0, that tenant's check log entries older than
+// Config.CheckLogRetention > 0 (0 or negative is off), that tenant's check log entries older than
 // the retention window. No other tenant's rows are touched. When either
 // purge removed rows and a Cache is configured, it invalidates that
 // tenant's cached decisions (Cache.InvalidateTenant), not the whole cache.
@@ -102,7 +102,8 @@ func (e *Engine) RunTenantMaintenance(ctx context.Context, tenantID string) (Mai
 }
 
 // StartMaintenance runs RunMaintenance on Config.MaintenanceInterval until
-// ctx is cancelled. A no-op when MaintenanceInterval <= 0. Engine.Start
+// ctx is cancelled. A no-op when MaintenanceInterval is 0 or negative, the
+// values that switch the loop off. Engine.Start
 // calls this automatically; it is also safe to call directly for full
 // control over the maintenance context's lifetime.
 func (e *Engine) StartMaintenance(ctx context.Context) {
