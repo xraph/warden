@@ -75,7 +75,7 @@ The runtime semantics, per entity kind:
 | Lookup | Behavior |
 |---|---|
 | **Roles** assigned to a subject | Cascades from the assignment's namespace down to descendants. A role assigned at `engineering` applies for the subject in `engineering/platform`. |
-| **Permissions** referenced from a role's grants | Resolved at the role's own namespace first, then walks ancestors. So a tenant-root permission catalog is accessible from any sub-namespace. |
+| **Permissions** referenced from a role's grants | Resolved at the role's own namespace, then at the root, and nowhere in between. So a tenant-root permission catalog is accessible from any sub-namespace; a permission in any other namespace needs a qualified grant. |
 | **Resource types** | Same walk — define `document` at the root, every namespace can use it. |
 | **Policies** at namespace `N` | Apply to checks in `N` and **all descendants**. Sub-namespace policies stack on top of ancestor policies in the merge. |
 | **Relation tuples** | **Located** at a namespace; do **not** cascade. A tuple `document:d1 viewer = user:alice` at `engineering` is invisible from `billing` — even though both are in the same tenant. This keeps tuple namespaces partition-clean. |
@@ -145,12 +145,12 @@ _ = store.CreateRole(ctx, &role.Role{
     Name:          "Engineering Viewer",
 })
 
-// Platform-team role, inherits from engineering's role.
+// Platform-team role. It has no parent: a parent is looked up in the
+// role's own namespace only, and eng-viewer lives in engineering.
 _ = store.CreateRole(ctx, &role.Role{
     TenantID:      "acme",
     NamespacePath: "engineering/platform",
     Slug:          "platform-admin",
-    ParentSlug:    "eng-viewer",   // resolved up the namespace chain
     Name:          "Platform Admin",
 })
 ```
@@ -229,7 +229,7 @@ The same goes for a bare slug that the resolver only finds in an ancestor namesp
 |---|---|
 | `role X : viewer` (bare) | `viewer` must be declared in this role's namespace. One found only in an ancestor is refused. |
 | `role X : /eng/admin` (absolute) | Accepted only when `eng` is this role's own namespace. |
-| Permission name in `grants = ["doc:read"]` | Try at this role's namespace, then ancestors. |
+| Permission name in `grants = ["doc:read"]` | Try at this role's namespace, then at the root. Use a qualified grant for any other namespace. |
 | Permission shorthand `permission "x:y" (document : read)` | `document` is resolved at the permission's namespace, then ancestors. |
 | Resource type referenced in a permission expression | Same — namespace-of-the-permission, then ancestors. |
 | Relation tuple lookup at Check time | Exact namespace match (no walk). |
@@ -279,12 +279,13 @@ engViewer := &role.Role{
 }
 _ = store.CreateRole(ctx, engViewer)
 
-// Platform admin inherits from eng-viewer via the ancestor walk.
+// A parent is looked up in the role's own namespace only, so platform-admin
+// cannot inherit eng-viewer from engineering. Assign eng-viewer to the same
+// subjects instead when they need both.
 _ = store.CreateRole(ctx, &role.Role{
     TenantID:      "acme",
     NamespacePath: "engineering/platform",
     Slug:          "platform-admin",
-    ParentSlug:    "eng-viewer",
     Name:          "Platform Admin",
 })
 
@@ -297,12 +298,12 @@ _ = store.CreateRole(ctx, &role.Role{
     Name:          "SRE",
 })
 
-// Frontend developer inherits from eng-viewer (different namespace, same parent).
+// Frontend developer lives in engineering/frontend, so it has no parent
+// here either: eng-viewer is in engineering.
 _ = store.CreateRole(ctx, &role.Role{
     TenantID:      "acme",
     NamespacePath: "engineering/frontend",
     Slug:          "frontend-developer",
-    ParentSlug:    "eng-viewer",
     Name:          "Frontend Developer",
 })
 

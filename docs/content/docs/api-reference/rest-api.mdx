@@ -233,7 +233,7 @@ A 4xx response carries the status as a number in `code` and the message in `erro
 }
 ```
 
-A 422 has `"error": "Validation failed"` and adds a `validationErrors` list, one entry per field with `field`, `message`, `value` and `code`. A 500 is different: `code` is the string `INTERNAL_SERVER_ERROR` and `message` is `Internal Server Error`, unless the app exposes internal errors, in which case `message` holds the error text.
+A 422 has `"error": "Validation failed"` and adds a `validationErrors` list, one entry per field with `field` and `message`, plus `value` and `code` when they are set. A 500 is different: `code` is the string `INTERNAL_SERVER_ERROR` and `message` is `Internal Server Error`, unless the app exposes internal errors, in which case `message` holds the error text.
 
 | Status | Meaning |
 |--------|---------|
