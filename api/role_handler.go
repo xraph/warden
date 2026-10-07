@@ -8,6 +8,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/warden"
+	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/plugin"
@@ -202,6 +203,12 @@ func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role,
 		r.Description = req.Description
 	}
 	if req.MaxMembers != nil {
+		// Lowering the cap below the live member count is refused (409).
+		// The count read and the write below are not atomic; see
+		// assignment.CheckCapLowering.
+		if err := assignment.CheckCapLowering(ctx.Context(), a.eng.Store(), tenantID, before.ID, before.Name, before.MaxMembers, *req.MaxMembers, time.Now()); err != nil {
+			return nil, mapError(err)
+		}
 		r.MaxMembers = *req.MaxMembers
 	}
 	if req.IsDefault != nil {

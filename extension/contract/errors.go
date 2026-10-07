@@ -12,6 +12,7 @@ import (
 	"errors"
 
 	"github.com/xraph/warden"
+	"github.com/xraph/warden/assignment"
 
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
@@ -27,7 +28,12 @@ func mapWardenError(err error) error {
 	if err == nil {
 		return nil
 	}
+	var capErr *assignment.CapBelowMembersError
 	switch {
+	// Its own text, not err.Error(): a DSL apply wraps it as "update role
+	// <slug>: ...", and the page shows the refusal, not the call chain.
+	case errors.As(err, &capErr):
+		return &dashcontract.Error{Code: dashcontract.CodeConflict, Message: capErr.Error()}
 	case errors.Is(err, warden.ErrNotFound):
 		return &dashcontract.Error{Code: dashcontract.CodeNotFound, Message: err.Error()}
 	// Before ErrAlreadyExists: both are CONFLICT, and details.reason is what

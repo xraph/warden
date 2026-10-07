@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xraph/warden"
+	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/plugin"
@@ -172,6 +173,9 @@ type applier struct {
 		// Relations
 		CreateRelation(ctx context.Context, t *relation.Tuple) error
 		ListRelations(ctx context.Context, filter *relation.ListFilter) ([]*relation.Tuple, error)
+		// Assignments, read only: the member count a lowered cap is
+		// checked against.
+		ListSubjectsForRole(ctx context.Context, tenantID string, roleID id.RoleID) ([]*assignment.Assignment, error)
 	}
 
 	tenantID string
@@ -625,6 +629,15 @@ func (a *applier) applyRoles(prog *Program) error {
 		if len(changed) == 0 {
 			a.result.NoOps++
 			continue
+		}
+		// A cap lowered below the role's live member count stops the apply
+		// as a failed write does. It is checked in a dry run too, so the
+		// plan refuses what the apply would. The count read and the write
+		// are not atomic; see assignment.CheckCapLowering.
+		if roleFieldsChanged {
+			if err := assignment.CheckCapLowering(a.ctx, a.store, a.tenantID, existing.ID, existing.Name, existing.MaxMembers, desired.MaxMembers, time.Now()); err != nil {
+				return fmt.Errorf("update role %s: %w", r.Slug, err)
+			}
 		}
 		// A grant-only change is written by applyRolePermissions; the role
 		// row itself is left alone. The line is recorded once the row write,

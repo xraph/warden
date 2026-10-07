@@ -363,6 +363,9 @@ func rolesUpdateHandler(deps Deps) func(context.Context, RoleUpdateInput, dashco
 			r.Description = *in.Description
 		}
 		if in.MaxMembers != nil {
+			if err := guardCapLowering(ctx, s, tenantID, &before, *in.MaxMembers, time.Now()); err != nil {
+				return AckResponse{}, err
+			}
 			r.MaxMembers = *in.MaxMembers
 		}
 		if in.IsDefault != nil {

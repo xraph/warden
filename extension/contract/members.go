@@ -61,14 +61,8 @@ func guardMemberCap(ctx context.Context, s store.Store, tenantID string, r *role
 	if err != nil {
 		return mapWardenError(err)
 	}
-	type member struct{ kind, id string }
-	members := map[member]struct{}{}
-	for _, a := range held {
-		if isLive(a, now) {
-			members[member{a.SubjectKind, a.SubjectID}] = struct{}{}
-		}
-	}
-	if _, already := members[member{subjectKind, subjectID}]; already {
+	members := assignment.LiveMembers(held, now)
+	if _, already := members[assignment.Member{Kind: subjectKind, ID: subjectID}]; already {
 		return nil
 	}
 	if len(members) < r.MaxMembers {
@@ -81,12 +75,22 @@ func guardMemberCap(ctx context.Context, s store.Store, tenantID string, r *role
 	}
 }
 
-// isLive reports whether an assignment grants anything at instant now.
+// guardCapLowering refuses a role update that lowers the member cap below
+// the role's live member count. before is the role as stored; newCap is the
+// cap the update would write. The count is assignment.LiveMembers, the same
+// one guardMemberCap counts against, so when this checks a lowered cap it
+// counts exactly the members the assignment guard would.
 //
-// This is the same test the engine applies when resolving roles
-// (store/memory/store.go's ListRolesForSubject), and it is the definition of
-// "expired" the whole assignment surface uses. A nil ExpiresAt never
-// expires.
+// The count read and the update's write are not atomic: an assignment made
+// in between can leave the role over its new cap. See
+// assignment.CheckCapLowering.
+func guardCapLowering(ctx context.Context, s store.Store, tenantID string, before *role.Role, newCap int, now time.Time) error {
+	return mapWardenError(assignment.CheckCapLowering(ctx, s, tenantID, before.ID, before.Name, before.MaxMembers, newCap, now))
+}
+
+// isLive reports whether an assignment grants anything at instant now. It
+// is assignment.IsLive, the definition of "expired" the whole assignment
+// surface uses.
 func isLive(a *assignment.Assignment, now time.Time) bool {
-	return a.ExpiresAt == nil || a.ExpiresAt.After(now)
+	return assignment.IsLive(a, now)
 }

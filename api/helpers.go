@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/warden"
+	"github.com/xraph/warden/assignment"
 )
 
 // scopeFromForgeContext extracts appID and tenantID from a forge.Context
@@ -25,6 +26,10 @@ func mapError(err error) error {
 	}
 	if isNotFound(err) {
 		return forge.NotFound(err.Error())
+	}
+	var capErr *assignment.CapBelowMembersError
+	if errors.As(err, &capErr) {
+		return forge.NewHTTPError(http.StatusConflict, capErr.Error())
 	}
 	// A conditional write found the record at another version than the one
 	// the handler read: another write landed in between, and nothing was
