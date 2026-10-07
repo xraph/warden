@@ -31,7 +31,12 @@ func mapWardenError(err error) error {
 	var capErr *assignment.CapBelowMembersError
 	switch {
 	// Its own text, not err.Error(): a DSL apply wraps it as "update role
-	// <slug>: ...", and the page shows the refusal, not the call chain.
+	// <slug>: ...", and the page shows the refusal, not the call chain. That
+	// holds for roles.update and for the dry run schema.plan and
+	// schema.apply share. It carries no details.reason, which is how a page
+	// tells it from schema.apply's "schema_changed" CONFLICT. A cap refusal
+	// from apply's write pass, after the dry run passed, does not come
+	// through here: it is a half apply, INTERNAL with the full chain.
 	case errors.As(err, &capErr):
 		return &dashcontract.Error{Code: dashcontract.CodeConflict, Message: capErr.Error()}
 	case errors.Is(err, warden.ErrNotFound):

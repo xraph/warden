@@ -255,10 +255,16 @@ func dryRunSchema(ctx context.Context, deps Deps, tenantID, src string, prune bo
 // errSchemaChanged is the refusal for a digest that does not match the plan
 // apply just computed, for any reason: the store changed, the source or the
 // prune flag is not the one planned, or there was no plan.
+//
+// details.reason is what tells a page this CONFLICT from the other one
+// schema.apply returns: apply's own dry run refuses a member cap lowered
+// below the role's live members (mapWardenError), and planning again does
+// not clear that one.
 func errSchemaChanged() error {
 	return &dashcontract.Error{
 		Code:    dashcontract.CodeConflict,
 		Message: "the schema changed since you planned: plan again",
+		Details: map[string]any{"reason": "schema_changed"},
 	}
 }
 

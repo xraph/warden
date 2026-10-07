@@ -895,9 +895,21 @@ func TestSchemaApplyWithPruneDeletesWhatWasPlanned(t *testing.T) {
 	}
 }
 
-func TestSchemaApplyRefusesAStalePlanAndWritesNothing(t *testing.T) {
-	const want = "the schema changed since you planned: plan again"
+// schemaChangedRefusal asserts err is the stale-plan refusal: CONFLICT, its
+// message, and details.reason "schema_changed". The reason is what lets a
+// page tell it from the cap refusal, which is also CONFLICT.
+func schemaChangedRefusal(t *testing.T, err error) {
+	t.Helper()
+	ce := refusal(t, err, dashcontract.CodeConflict)
+	if want := "the schema changed since you planned: plan again"; ce.Message != want {
+		t.Errorf("message = %q, want %q", ce.Message, want)
+	}
+	if got := ce.Details["reason"]; got != "schema_changed" {
+		t.Errorf("details.reason = %v, want schema_changed", got)
+	}
+}
 
+func TestSchemaApplyRefusesAStalePlanAndWritesNothing(t *testing.T) {
 	t.Run("the store changed between plan and apply", func(t *testing.T) {
 		s := seedApplyStore(t)
 		h := newSchemaHarness(t, s)
@@ -907,10 +919,7 @@ func TestSchemaApplyRefusesAStalePlanAndWritesNothing(t *testing.T) {
 		before := storeSnapshot(t, s)
 
 		_, err := h.applyRaw(applySource, false, plan.Digest)
-		ce := refusal(t, err, dashcontract.CodeConflict)
-		if ce.Message != want {
-			t.Errorf("message = %q, want %q", ce.Message, want)
-		}
+		schemaChangedRefusal(t, err)
 		if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
 			t.Error("a refused apply changed the store")
 		}
@@ -923,10 +932,7 @@ func TestSchemaApplyRefusesAStalePlanAndWritesNothing(t *testing.T) {
 		before := storeSnapshot(t, s)
 
 		_, err := h.applyRaw(applySource, true, plan.Digest)
-		ce := refusal(t, err, dashcontract.CodeConflict)
-		if ce.Message != want {
-			t.Errorf("message = %q, want %q", ce.Message, want)
-		}
+		schemaChangedRefusal(t, err)
 		if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
 			t.Error("a refused apply changed the store")
 		}
@@ -939,10 +945,7 @@ func TestSchemaApplyRefusesAStalePlanAndWritesNothing(t *testing.T) {
 			before := storeSnapshot(t, s)
 
 			_, err := h.applyRaw(applySource, false, digest)
-			ce := refusal(t, err, dashcontract.CodeConflict)
-			if ce.Message != want {
-				t.Errorf("message = %q, want %q", ce.Message, want)
-			}
+			schemaChangedRefusal(t, err)
 			if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
 				t.Error("a refused apply changed the store")
 			}
@@ -956,7 +959,7 @@ func TestSchemaApplyRefusesAStalePlanAndWritesNothing(t *testing.T) {
 		before := storeSnapshot(t, s)
 
 		_, err := h.applyRaw(applySource+"\nrole sneaky {\n}\n", false, plan.Digest)
-		refusal(t, err, dashcontract.CodeConflict)
+		schemaChangedRefusal(t, err)
 		if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
 			t.Error("a refused apply changed the store")
 		}
@@ -1384,10 +1387,7 @@ func TestSchemaApplyRefusesSameLinesDifferentValues(t *testing.T) {
 
 	before := storeSnapshot(t, s)
 	_, err := h.applyRaw(dangerous, false, planned.Digest)
-	ce := refusal(t, err, dashcontract.CodeConflict)
-	if ce.Message != "the schema changed since you planned: plan again" {
-		t.Errorf("message = %q", ce.Message)
-	}
+	schemaChangedRefusal(t, err)
 	if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
 		t.Error("a refused apply changed the store")
 	}
@@ -1395,6 +1395,94 @@ func TestSchemaApplyRefusesSameLinesDifferentValues(t *testing.T) {
 	// The source that was planned still applies.
 	if _, err := h.applyRaw(scoped, false, planned.Digest); err != nil {
 		t.Errorf("the planned source was refused: %v", err)
+	}
+}
+
+// smallCapSource declares role small, named Small, with the given cap.
+func smallCapSource(maxMembers int) string {
+	return fmt.Sprintf("warden config 1\n\nrole small {\n    name = \"Small\"\n    max_members = %d\n}\n", maxMembers)
+}
+
+// noSchemaChangedReason fails when a cap refusal carries the stale-plan
+// reason: a page that saw it would tell the operator to plan again, and the
+// new plan would be refused the same way.
+func noSchemaChangedReason(t *testing.T, ce *dashcontract.Error) {
+	t.Helper()
+	if got, ok := ce.Details["reason"]; ok {
+		t.Errorf("details.reason = %v, want none on a cap refusal", got)
+	}
+}
+
+func TestMapWardenErrorGivesTheCapRefusalItsOwnTextAndNoReason(t *testing.T) {
+	// The cap case comes first in mapWardenError, so a wrapped refusal keeps
+	// its own text, and it sets no details.reason, so it never reads as
+	// "stale" or "schema_changed".
+	capErr := &assignment.CapBelowMembersError{RoleName: "Small", Members: 3, Cap: 2}
+	for name, err := range map[string]error{
+		"bare":                 capErr,
+		"wrapped by dsl.Apply": fmt.Errorf("update role small: %w", capErr),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ce := refusal(t, mapWardenError(err), dashcontract.CodeConflict)
+			if want := `"Small" has 3 members, so its cap cannot be lowered to 2`; ce.Message != want {
+				t.Errorf("message = %q, want %q", ce.Message, want)
+			}
+			if ce.Details != nil {
+				t.Errorf("details = %#v, want none", ce.Details)
+			}
+		})
+	}
+}
+
+func TestSchemaPlanRefusesACapBelowTheLiveMembersAsAConflict(t *testing.T) {
+	s := memory.New()
+	cappedRoleWithMembers(t, s, 5, []string{"a", "b", "c"}, nil)
+	h := newSchemaHarness(t, s)
+	before := storeSnapshot(t, s)
+
+	_, err := schemaPlanHandler(h.deps)(context.Background(), SchemaPlanInput{Source: smallCapSource(2)}, principalFor("t1"))
+	ce := refusal(t, err, dashcontract.CodeConflict)
+	if want := `"Small" has 3 members, so its cap cannot be lowered to 2`; ce.Message != want {
+		t.Errorf("message = %q, want %q", ce.Message, want)
+	}
+	noSchemaChangedReason(t, ce)
+	if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
+		t.Error("a refused plan changed the store")
+	}
+}
+
+func TestSchemaApplyRefusesACapThatMembersOutgrewAfterThePlan(t *testing.T) {
+	// The plan fits: two members under a cap of 2. A third member arrives
+	// before apply. The schema did not change, so the refusal is the cap's,
+	// not the stale plan's, and planning again gives the same refusal.
+	s := memory.New()
+	r := cappedRoleWithMembers(t, s, 5, []string{"a", "b"}, nil)
+	h := newSchemaHarness(t, s)
+	src := smallCapSource(2)
+	plan := h.plan(src, false)
+	if !plan.Valid || len(plan.Updated) != 1 {
+		t.Fatalf("setup: the plan should update the role: %+v", plan)
+	}
+	seedAssignment(t, s, r.ID.String(), "c", nil)
+	before := storeSnapshot(t, s)
+
+	_, err := h.applyRaw(src, false, plan.Digest)
+	ce := refusal(t, err, dashcontract.CodeConflict)
+	const want = `"Small" has 3 members, so its cap cannot be lowered to 2`
+	if ce.Message != want {
+		t.Errorf("message = %q, want %q", ce.Message, want)
+	}
+	noSchemaChangedReason(t, ce)
+	if after := storeSnapshot(t, s); !reflect.DeepEqual(before, after) {
+		t.Error("a refused apply changed the store")
+	}
+	if got := storedRole(t, s, r); got.MaxMembers != 5 {
+		t.Errorf("cap = %d, want 5 (unchanged)", got.MaxMembers)
+	}
+
+	_, err = schemaPlanHandler(h.deps)(context.Background(), SchemaPlanInput{Source: src}, principalFor("t1"))
+	if again := refusal(t, err, dashcontract.CodeConflict); again.Message != want {
+		t.Errorf("planning again: message = %q, want %q", again.Message, want)
 	}
 }
 
