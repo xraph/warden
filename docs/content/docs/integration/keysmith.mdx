@@ -1,0 +1,44 @@
+---
+title: Keysmith
+description: Give Keysmith API keys a Warden role and keep their scopes as permissions.
+---
+
+Keysmith's `warden_hook` extension can hand every new API key a Warden role and make sure the key's scopes exist as permissions. It talks to Warden through a three method interface it defines for itself, so Keysmith never imports Warden. `keysmithbridge.Bridge` is the Warden side of that interface.
+
+```go
+import (
+    wardenhook "github.com/xraph/keysmith/warden_hook"
+    "github.com/xraph/warden/keysmithbridge"
+)
+
+bridge := keysmithbridge.New(eng) // eng is your *warden.Engine
+hook := wardenhook.New(bridge)
+```
+
+Create the role before the first key. The hook assigns the slug `api-key` by default (change it with the hook's own option), and the bridge returns an error naming the slug if the tenant has no such role. It never creates one for you, because what a key may do is your call. Attach the permissions you want to the role as you would for any other.
+
+## What each call does
+
+`AssignRoleToAPIKey` looks the role up by slug in the tenant's root namespace and assigns it to the subject `api_key:<key id>`. Assigning a role the key already holds does nothing. A role with a member cap refuses a new key once it is full, the same as it does for a user.
+
+`UnassignRoleFromAPIKey` deletes every assignment the key holds in the tenant. Run it when a key is revoked.
+
+`SyncScopesToPermissions` creates a permission for each scope that does not have one yet. Permissions that already exist are left alone. It never attaches them to a role, so a new scope grants nothing until you decide it should.
+
+Every call needs a tenant. An empty tenant in a Warden filter matches every tenant, so the bridge returns `warden.ErrTenantRequired` instead.
+
+## How a scope becomes a permission
+
+Warden matches a check against `resource:action`, and the bridge names permissions the same way.
+
+| Scope | Permission name | Resource | Action |
+|---|---|---|---|
+| `billing:read` | `billing:read` | `billing` | `read` |
+| `billing:invoices:read` | `billing:invoices:read` | `billing:invoices` | `read` |
+| `admin` | `admin:access` | `admin` | `access` |
+
+The scope is split at its last colon. A scope with no colon gets the action `access`, since a permission needs both halves. Scopes with an empty side, or with a `*` anywhere in them, are refused. The bridge will not create a wildcard permission, because one of those would cover every check that matches it. If a key should have a broad grant, put a wildcard on its role deliberately.
+
+## Caches and audit
+
+Each assignment change drops the key's cached decisions, so a new key works and a revoked one stops working straight away. The bridge also emits the usual plugin events (role assigned, role unassigned, permission created, and the audit event), so anything listening for Warden changes sees what Keysmith did. Writes are attributed to the actor on the context, or to a service actor named `keysmith`. Pass `keysmithbridge.WithActor` to change that default.

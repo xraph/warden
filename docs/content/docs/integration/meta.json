@@ -4,6 +4,7 @@
     "forge-extension",
     "middleware",
     "plugin-system",
+    "keysmith",
     "dsl-tooling",
     "dsl-reference"
   ]
