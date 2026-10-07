@@ -1111,6 +1111,21 @@ func (s *Store) CreateRelation(ctx context.Context, t *relation.Tuple) error {
 	return nil
 }
 
+func (s *Store) GetRelation(ctx context.Context, tenantID string, relID id.RelationID) (*relation.Tuple, error) {
+	m := new(relationModel)
+	err := s.pgdb.NewSelect(m).
+		Where("id = ?", relID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("relation %s: %w", relID, wardenerr.ErrRelationNotFound)
+		}
+		return nil, fmt.Errorf("warden: get relation: %w", err)
+	}
+	return relationFromModel(m), nil
+}
+
 func (s *Store) DeleteRelation(ctx context.Context, tenantID string, relID id.RelationID) error {
 	res, err := s.pgdb.NewDelete((*relationModel)(nil)).
 		Where("id = ?", relID.String()).

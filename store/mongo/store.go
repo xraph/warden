@@ -1205,6 +1205,20 @@ func (s *Store) CreateRelation(ctx context.Context, t *relation.Tuple) error {
 	return nil
 }
 
+func (s *Store) GetRelation(ctx context.Context, tenantID string, relID id.RelationID) (*relation.Tuple, error) {
+	var m relationModel
+	err := s.mdb.NewFind(&m).
+		Filter(byID(tenantID, relID.String())).
+		Scan(ctx)
+	if err != nil {
+		if isNoDocuments(err) {
+			return nil, fmt.Errorf("relation %s: %w", relID, wardenerr.ErrRelationNotFound)
+		}
+		return nil, fmt.Errorf("warden: get relation: %w", err)
+	}
+	return relationFromModel(&m), nil
+}
+
 func (s *Store) DeleteRelation(ctx context.Context, tenantID string, relID id.RelationID) error {
 	res, err := s.mdb.NewDelete((*relationModel)(nil)).
 		Filter(byID(tenantID, relID.String())).

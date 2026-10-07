@@ -1228,6 +1228,25 @@ func (s *Store) CreateRelation(ctx context.Context, t *relation.Tuple) error {
 	return nil
 }
 
+func (s *Store) GetRelation(ctx context.Context, tenantID string, relID id.RelationID) (*relation.Tuple, error) {
+	m := new(relationModel)
+	err := s.sdb.NewSelect(m).
+		Where("id = ?", relID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
+	if err != nil {
+		if isNoRows(err) {
+			return nil, fmt.Errorf("relation %s: %w", relID, wardenerr.ErrRelationNotFound)
+		}
+		return nil, fmt.Errorf("warden: get relation: %w", err)
+	}
+	t, err := relationFromModel(m)
+	if err != nil {
+		return nil, fmt.Errorf("warden: get relation: %w", err)
+	}
+	return t, nil
+}
+
 func (s *Store) DeleteRelation(ctx context.Context, tenantID string, relID id.RelationID) error {
 	res, err := s.sdb.NewDelete((*relationModel)(nil)).
 		Where("id = ?", relID.String()).

@@ -11,6 +11,11 @@ type Store interface {
 	// CreateRelation persists a new relation tuple.
 	CreateRelation(ctx context.Context, t *Tuple) error
 
+	// GetRelation returns a relation tuple by ID within a tenant. Returns
+	// ErrRelationNotFound when no tuple has that ID in the tenant, including
+	// when the ID belongs to another tenant.
+	GetRelation(ctx context.Context, tenantID string, relID id.RelationID) (*Tuple, error)
+
 	// DeleteRelation removes a relation tuple by ID within a tenant. Returns
 	// ErrRelationNotFound when the tuple is not in the tenant.
 	DeleteRelation(ctx context.Context, tenantID string, relID id.RelationID) error

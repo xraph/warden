@@ -2,6 +2,7 @@ package contract
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/xraph/warden"
@@ -279,6 +280,84 @@ func TestRelationsWritesEmitAuditAndTheTypedHooks(t *testing.T) {
 	}
 	if probe.ctxActor != wantActor {
 		t.Errorf("the context reaching the delete hooks carries actor %+v, want %+v", probe.ctxActor, wantActor)
+	}
+}
+
+func TestRelationsDeleteAuditsTheWholeTuple(t *testing.T) {
+	// An audit row that says only "relation <id> deleted" cannot be read
+	// back once the row is gone. The event must carry the tuple itself as
+	// the before entity, the same shape policy and role deletes use.
+	s := memory.New()
+	probe := relationProbe{&auditProbe{}}
+	eng, err := warden.NewEngine(warden.WithStore(s), warden.WithPlugin(probe))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	ctx := context.Background()
+	tp := &relation.Tuple{
+		TenantID: "t1", NamespacePath: "eng",
+		ObjectType: "document", ObjectID: "readme", Relation: "viewer",
+		SubjectType: "group", SubjectID: "engineering", SubjectRelation: "member",
+		CreatedBy: "seeder",
+	}
+	if err := s.CreateRelation(ctx, tp); err != nil {
+		t.Fatalf("create tuple: %v", err)
+	}
+	stored, err := s.GetRelation(ctx, "t1", tp.ID)
+	if err != nil {
+		t.Fatalf("get tuple: %v", err)
+	}
+
+	if _, err := relationsDeleteHandler(Deps{Engine: eng})(ctx, RelationDeleteInput{ID: tp.ID.String()}, principalFor("t1")); err != nil {
+		t.Fatalf("relations.delete: %v", err)
+	}
+	del := probe.event(t, "relation.deleted")
+	if del.EntityID != tp.ID.String() || del.TenantID != "t1" {
+		t.Errorf("delete event = %+v", del)
+	}
+	if del.Entity != nil {
+		t.Errorf("delete entity = %#v, want nil (the tuple no longer exists)", del.Entity)
+	}
+	if b, ok := del.Before.(*relation.Tuple); !ok || !reflect.DeepEqual(b, stored) {
+		t.Errorf("delete before = %#v, want the stored tuple %#v", del.Before, stored)
+	}
+}
+
+func TestRelationsDeleteOfAForeignOrMissingIDAuditsNothing(t *testing.T) {
+	s := memory.New()
+	probe := relationProbe{&auditProbe{}}
+	eng, err := warden.NewEngine(warden.WithStore(s), warden.WithPlugin(probe))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	ctx := context.Background()
+	theirs := &relation.Tuple{
+		TenantID: "t2", ObjectType: "document", ObjectID: "theirs",
+		Relation: "viewer", SubjectType: "user", SubjectID: "bob",
+	}
+	if err := s.CreateRelation(ctx, theirs); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	h := relationsDeleteHandler(Deps{Engine: eng})
+
+	for name, rid := range map[string]string{
+		"foreign": theirs.ID.String(),
+		"missing": id.NewRelationID().String(),
+	} {
+		_, err := h(ctx, RelationDeleteInput{ID: rid}, principalFor("t1"))
+		var ce *dashcontract.Error
+		if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeNotFound {
+			t.Errorf("%s id: want CodeNotFound, got %v", name, err)
+		}
+	}
+	probe.mu.Lock()
+	events, typed := len(probe.events), len(probe.typed)
+	probe.mu.Unlock()
+	if events != 0 || typed != 0 {
+		t.Errorf("a refused delete emitted %d audit events and %d typed hooks, want none", events, typed)
+	}
+	if _, err := s.GetRelation(ctx, "t2", theirs.ID); err != nil {
+		t.Errorf("t2's tuple is gone after t1's refused delete: %v", err)
 	}
 }
 

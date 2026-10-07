@@ -217,12 +217,21 @@ func relationsDeleteHandler(deps Deps) func(context.Context, RelationDeleteInput
 		if err != nil {
 			return AckResponse{}, err
 		}
+		s := deps.Engine.Store()
+		// Read first: it makes another tenant's tuple NOT_FOUND before
+		// anything is deleted or audited, and gives the audit event the tuple
+		// that is about to disappear rather than a bare ID.
+		//
+		// The read and the delete are two calls, not one transaction. A
+		// tuple has no update path, so the row cannot change between them;
+		// if a concurrent request deletes it first, DeleteRelation returns
+		// ErrRelationNotFound below and this request audits nothing.
+		before, err := s.GetRelation(ctx, tenantID, rid)
+		if err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
 		ctx = withActor(ctx, p)
-		// relation.Store has no GetRelation, so there is no read-first and no
-		// "before" snapshot to audit. DeleteRelation itself checks the tenant
-		// and returns ErrRelationNotFound for another tenant's row, so the
-		// cross-tenant case is NOT_FOUND rather than a silent no-op.
-		if err := deps.Engine.Store().DeleteRelation(ctx, tenantID, rid); err != nil {
+		if err := s.DeleteRelation(ctx, tenantID, rid); err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
 		// Load-bearing: the typed hook clears the decision cache and the
@@ -231,7 +240,7 @@ func relationsDeleteHandler(deps Deps) func(context.Context, RelationDeleteInput
 		if pl := deps.Engine.Plugins(); pl != nil {
 			pl.EmitRelationDeleted(ctx, rid)
 		}
-		emitAudit(ctx, deps, p, "relation.deleted", tenantID, rid.String(), nil, map[string]string{"id": rid.String()})
+		emitAudit(ctx, deps, p, "relation.deleted", tenantID, rid.String(), nil, before)
 		return AckResponse{}, nil
 	}
 }

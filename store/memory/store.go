@@ -844,6 +844,16 @@ func (s *Store) CreateRelation(_ context.Context, t *relation.Tuple) error {
 	return nil
 }
 
+func (s *Store) GetRelation(_ context.Context, tenantID string, relID id.RelationID) (*relation.Tuple, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.relations[relID.String()]
+	if !ok || t.TenantID != tenantID {
+		return nil, fmt.Errorf("relation %s: %w", relID, wardenerr.ErrRelationNotFound)
+	}
+	return copyTuple(t), nil
+}
+
 func (s *Store) DeleteRelation(_ context.Context, tenantID string, relID id.RelationID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
