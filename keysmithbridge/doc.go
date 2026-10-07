@@ -23,20 +23,23 @@
 //
 // # Scope names to permissions
 //
-// Warden's evaluator matches a check against Resource + ":" + Action, and
-// every permission Warden writes itself is named that way. The bridge keeps to
-// the same shape, so a scope becomes a permission like this:
+// Keysmith writes a scope action first: "read:users" is a child of "read" in
+// Keysmith's own scope tree. Warden names a permission the other way round,
+// because its evaluator matches a check against Resource + ":" + Action and
+// every permission Warden writes itself is named that way. The bridge reads
+// the scope Keysmith's way and names the permission Warden's way:
 //
-//   - "billing:read" becomes name "billing:read", resource "billing",
-//     action "read".
-//   - The split is at the last colon, so "billing:invoices:read" becomes
-//     resource "billing:invoices", action "read". That matches how Warden
-//     writes permissions such as "warden:role:read".
-//   - A scope with no colon, such as "admin", becomes name "admin:access",
-//     resource "admin", action "access". A permission needs both a resource and
-//     an action, and "access" is the plainest action for a scope that names
-//     only a thing. The scope "admin:access" maps to the same permission.
-//   - A scope with an empty side (":read", "billing:") or a "*" anywhere in it
+//   - "read:users" becomes name "users:read", resource "users", action
+//     "read". A check for action "read" on resource type "users" then finds it.
+//   - The split is at the first colon, and the resource is everything after
+//     it. So "read:users:profile" becomes name "users:profile:read", resource
+//     "users:profile", action "read".
+//   - A scope with no colon, such as "read" or "admin", is skipped. It names
+//     an action on every resource, and Warden can only say that with a
+//     wildcard, which the bridge never creates. There is no error, and the
+//     rest of the list still syncs. If a key should hold that much, put a
+//     wildcard on its role yourself.
+//   - A scope with an empty side (":users", "read:") or a "*" anywhere in it
 //     is refused with an error. The bridge never creates a wildcard
 //     permission, because one grant would then cover every matching check. If
 //     a key should hold a broad grant, give its role a wildcard on purpose.

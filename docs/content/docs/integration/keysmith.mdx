@@ -29,15 +29,20 @@ Every call needs a tenant. An empty tenant in a Warden filter matches every tena
 
 ## How a scope becomes a permission
 
-Warden matches a check against `resource:action`, and the bridge names permissions the same way.
+Keysmith writes its scopes action first. `read:users` is a child of `read` in Keysmith's scope tree. Warden names a permission the other way round, `resource:action`, because that's what its evaluator matches a check against. So the bridge reads each scope Keysmith's way and writes the permission Warden's way.
 
-| Scope | Permission name | Resource | Action |
+| Keysmith scope | Permission name | Resource | Action |
 |---|---|---|---|
-| `billing:read` | `billing:read` | `billing` | `read` |
-| `billing:invoices:read` | `billing:invoices:read` | `billing:invoices` | `read` |
-| `admin` | `admin:access` | `admin` | `access` |
+| `read:users` | `users:read` | `users` | `read` |
+| `write:users` | `users:write` | `users` | `write` |
+| `read:users:profile` | `users:profile:read` | `users:profile` | `read` |
+| `read` | none, skipped | | |
 
-The scope is split at its last colon. A scope with no colon gets the action `access`, since a permission needs both halves. Scopes with an empty side, or with a `*` anywhere in them, are refused. The bridge will not create a wildcard permission, because one of those would cover every check that matches it. If a key should have a broad grant, put a wildcard on its role deliberately.
+The scope is split at its first colon. Everything before it is the action and everything after it is the resource, colons included. A key with `read:users` then passes a check for action `read` on resource type `users`, once you attach `users:read` to its role.
+
+A scope with no colon, like `read` or `admin`, names an action on every resource. Warden could only say that with a wildcard, and the bridge never creates one, so it skips the scope. You get no error and the rest of the list still syncs. If a key really should hold that much, put a wildcard on its role yourself.
+
+Scopes with an empty side (`:users`, `read:`), or with a `*` anywhere in them, are refused with an error naming the scope. One wildcard permission would cover every check that matches it, which is too much to create on a key's say-so.
 
 ## Caches and audit
 

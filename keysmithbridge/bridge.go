@@ -14,9 +14,6 @@ import (
 	"github.com/xraph/warden/plugin"
 )
 
-// defaultAction is the action given to a scope that has no colon in it.
-const defaultAction = "access"
-
 // pageSize bounds one read when unassign walks a key's assignments.
 const pageSize = 500
 
@@ -179,9 +176,13 @@ func (b *Bridge) UnassignRoleFromAPIKey(ctx context.Context, tenantID, keyID str
 }
 
 // SyncScopesToPermissions makes sure a permission exists for every scope, in
-// the tenant's root namespace. See the package comment for how a scope name
-// maps onto a permission. Permissions that already exist are left alone, and
-// a concurrent create of the same permission counts as success.
+// the tenant's root namespace. Keysmith writes a scope action first, so
+// "read:users" becomes the permission "users:read" with resource "users" and
+// action "read". A scope with no colon, such as "read", is skipped without an
+// error, because it covers every resource and only a wildcard could say that.
+// See the package comment for the full mapping. Permissions that already
+// exist are left alone, and a concurrent create of the same permission counts
+// as success.
 //
 // Every scope is tried even when an earlier one fails. The returned error
 // joins one error per scope that could not be synced, each naming its scope.
@@ -193,9 +194,12 @@ func (b *Bridge) SyncScopesToPermissions(ctx context.Context, tenantID string, s
 	var errs []error
 	seen := make(map[string]struct{}, len(scopes))
 	for _, scope := range scopes {
-		name, resource, action, err := permissionFor(scope)
+		name, resource, action, skip, err := permissionFor(scope)
 		if err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		if skip {
 			continue
 		}
 		if _, dup := seen[name]; dup {
@@ -292,21 +296,25 @@ func (b *Bridge) actorFor(ctx context.Context) warden.Actor {
 	return b.actor
 }
 
-// permissionFor maps a scope name onto a permission name, resource and action.
-func permissionFor(scope string) (name, resource, action string, err error) {
+// permissionFor maps a keysmith scope onto a permission name, resource and
+// action. Keysmith puts the action first ("read:users"), so the split is at
+// the first colon and the resource is everything after it. The name follows
+// Warden's own convention, resource then action. skip is true for a scope
+// with no colon: it names an action on every resource, which only a wildcard
+// permission could express.
+func permissionFor(scope string) (name, resource, action string, skip bool, err error) {
 	if strings.TrimSpace(scope) == "" {
-		return "", "", "", errors.New("keysmithbridge: a scope name cannot be empty")
+		return "", "", "", false, errors.New("keysmithbridge: a scope name cannot be empty")
 	}
 	if strings.Contains(scope, "*") {
-		return "", "", "", fmt.Errorf("keysmithbridge: scope %q contains a wildcard, and the bridge never creates wildcard permissions", scope)
+		return "", "", "", false, fmt.Errorf("keysmithbridge: scope %q contains a wildcard, and the bridge never creates wildcard permissions", scope)
 	}
-	i := strings.LastIndex(scope, ":")
-	if i < 0 {
-		return scope + ":" + defaultAction, scope, defaultAction, nil
+	action, resource, found := strings.Cut(scope, ":")
+	if !found {
+		return "", "", "", true, nil
 	}
-	resource, action = scope[:i], scope[i+1:]
-	if strings.TrimSpace(resource) == "" || strings.TrimSpace(action) == "" {
-		return "", "", "", fmt.Errorf("keysmithbridge: scope %q needs a resource and an action on both sides of the colon", scope)
+	if strings.TrimSpace(action) == "" || strings.TrimSpace(resource) == "" {
+		return "", "", "", false, fmt.Errorf("keysmithbridge: scope %q needs an action and a resource on both sides of the first colon", scope)
 	}
-	return scope, resource, action, nil
+	return resource + ":" + action, resource, action, false, nil
 }

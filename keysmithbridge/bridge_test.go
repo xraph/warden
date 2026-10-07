@@ -290,7 +290,7 @@ func TestAssignHonoursTheMemberCap(t *testing.T) {
 	}
 }
 
-func TestAssignReplacesAnExpiredGrant(t *testing.T) {
+func TestAssignIsNotFooledByAnExpiredResourceScopedRow(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
 	ro := r.seedRole(t, tenant, "api-key", 0)
@@ -420,14 +420,14 @@ func permissions(t *testing.T, r *rig, tenantID string) map[string]*permission.P
 	return out
 }
 
-func TestSyncMapsScopesOntoResourceAndAction(t *testing.T) {
+func TestSyncMapsKeysmithScopesOntoResourceAndAction(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
 
 	err := r.b.SyncScopesToPermissions(ctx, tenant, []string{
-		"billing:read",          // plain resource:action
-		"billing:invoices:read", // split at the last colon
-		"admin",                 // no separator
+		"read:users",         // keysmith puts the action first
+		"write:users",        // same resource, another action
+		"read:users:profile", // split at the first colon, the resource keeps the rest
 	})
 	if err != nil {
 		t.Fatalf("sync: %v", err)
@@ -435,9 +435,9 @@ func TestSyncMapsScopesOntoResourceAndAction(t *testing.T) {
 
 	got := permissions(t, r, tenant)
 	want := []struct{ name, resource, action string }{
-		{"billing:read", "billing", "read"},
-		{"billing:invoices:read", "billing:invoices", "read"},
-		{"admin:access", "admin", "access"},
+		{"users:read", "users", "read"},
+		{"users:write", "users", "write"},
+		{"users:profile:read", "users:profile", "read"},
 	}
 	if len(got) != len(want) {
 		t.Errorf("got %d permissions, want %d: %v", len(got), len(want), got)
@@ -466,6 +466,73 @@ func TestSyncMapsScopesOntoResourceAndAction(t *testing.T) {
 	}
 }
 
+func TestSyncSkipsAScopeWithNoColon(t *testing.T) {
+	for _, scope := range []string{"read", "admin"} {
+		t.Run(scope, func(t *testing.T) {
+			r := newRig(t)
+			if err := r.b.SyncScopesToPermissions(context.Background(), tenant, []string{scope}); err != nil {
+				t.Fatalf("scope %q: want no error, got %v", scope, err)
+			}
+			if n := len(permissions(t, r, tenant)); n != 0 {
+				t.Errorf("scope %q created %d permissions, want none", scope, n)
+			}
+			if n := r.rec.count("permission.created"); n != 0 {
+				t.Errorf("scope %q emitted %d creation events", scope, n)
+			}
+		})
+	}
+}
+
+func TestSyncMixedListSkipsParentsAndSyncsTheRest(t *testing.T) {
+	r := newRig(t)
+	err := r.b.SyncScopesToPermissions(context.Background(), tenant, []string{
+		"read", "read:users", "write", "write:users", "read:users",
+	})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	got := permissions(t, r, tenant)
+	if len(got) != 2 {
+		t.Errorf("got %d permissions, want 2: %v", len(got), got)
+	}
+	for _, name := range []string{"users:read", "users:write"} {
+		if _, ok := got[name]; !ok {
+			t.Errorf("permission %q missing", name)
+		}
+	}
+	if n := r.rec.count("permission.created"); n != 2 {
+		t.Errorf("permission.created emitted %d times, want 2", n)
+	}
+}
+
+func TestSyncedScopeGrantsTheCheckItNames(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	ro := &role.Role{ID: id.NewRoleID(), TenantID: tenant, Name: "api-key", Slug: "api-key"}
+	if err := r.st.CreateRole(ctx, ro); err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+
+	// A key scoped read:invoices should pass a check for action read on
+	// resource type invoices once an admin attaches the synced permission.
+	if err := r.b.SyncScopesToPermissions(ctx, tenant, []string{"read:invoices"}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	p, ok := permissions(t, r, tenant)["invoices:read"]
+	if !ok {
+		t.Fatal(`read:invoices did not create the permission "invoices:read"`)
+	}
+	if err := r.st.AttachPermission(ctx, tenant, ro.ID, permission.Ref{Name: p.Name}); err != nil {
+		t.Fatalf("AttachPermission: %v", err)
+	}
+	if err := r.b.AssignRoleToAPIKey(ctx, tenant, "k1", "api-key"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if !r.can(t, tenant) {
+		t.Fatal("key denied: the synced permission does not match a read check on invoices")
+	}
+}
+
 func TestSyncLeavesExistingPermissionsAlone(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
@@ -477,7 +544,7 @@ func TestSyncLeavesExistingPermissionsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := r.b.SyncScopesToPermissions(ctx, tenant, []string{"billing:read", "billing:read"}); err != nil {
+		if err := r.b.SyncScopesToPermissions(ctx, tenant, []string{"read:billing", "read:billing"}); err != nil {
 			t.Fatalf("sync #%d: %v", i, err)
 		}
 	}
@@ -497,13 +564,13 @@ func TestSyncLeavesExistingPermissionsAlone(t *testing.T) {
 func TestSyncStaysInsideTheTenant(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
-	if err := r.b.SyncScopesToPermissions(ctx, tenant, []string{"billing:read"}); err != nil {
+	if err := r.b.SyncScopesToPermissions(ctx, tenant, []string{"read:billing"}); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(permissions(t, r, "other")); n != 0 {
 		t.Errorf("the other tenant got %d permissions", n)
 	}
-	if err := r.b.SyncScopesToPermissions(ctx, "other", []string{"billing:read"}); err != nil {
+	if err := r.b.SyncScopesToPermissions(ctx, "other", []string{"read:billing"}); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(permissions(t, r, "other")); n != 1 {
@@ -512,7 +579,7 @@ func TestSyncStaysInsideTheTenant(t *testing.T) {
 }
 
 func TestSyncRefusesWildcardsAndMalformedScopes(t *testing.T) {
-	bad := []string{"*", "billing:*", "*:read", "bill*", "", "   ", ":read", "billing:", ":"}
+	bad := []string{"*", "read:*", "*:users", "read*", "", "   ", ":users", "read:", "read: ", ":"}
 	for _, scope := range bad {
 		t.Run(scope, func(t *testing.T) {
 			r := newRig(t)
@@ -529,19 +596,19 @@ func TestSyncRefusesWildcardsAndMalformedScopes(t *testing.T) {
 
 func TestSyncKeepsGoingPastABadScope(t *testing.T) {
 	r := newRig(t)
-	err := r.b.SyncScopesToPermissions(context.Background(), tenant, []string{"billing:*", "billing:read", "", "reports:run"})
+	err := r.b.SyncScopesToPermissions(context.Background(), tenant, []string{"read:*", "read:billing", "", "run:reports"})
 	if err == nil {
 		t.Fatal("want the bad scopes reported")
 	}
-	if !strings.Contains(err.Error(), `"billing:*"`) {
+	if !strings.Contains(err.Error(), `"read:*"`) {
 		t.Errorf("error %q does not name the wildcard scope", err)
 	}
 	got := permissions(t, r, tenant)
 	if _, ok := got["billing:read"]; !ok {
-		t.Error("billing:read was skipped because of an earlier bad scope")
+		t.Error("read:billing was skipped because of an earlier bad scope")
 	}
 	if _, ok := got["reports:run"]; !ok {
-		t.Error("reports:run was skipped because of an earlier bad scope")
+		t.Error("run:reports was skipped because of an earlier bad scope")
 	}
 }
 
@@ -573,7 +640,7 @@ func TestSyncTreatsADuplicateFromARaceAsSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := keysmithbridge.New(eng)
-	if err := b.SyncScopesToPermissions(context.Background(), tenant, []string{"billing:read"}); err != nil {
+	if err := b.SyncScopesToPermissions(context.Background(), tenant, []string{"read:billing"}); err != nil {
 		t.Fatalf("a duplicate from a concurrent create must count as success, got %v", err)
 	}
 }
