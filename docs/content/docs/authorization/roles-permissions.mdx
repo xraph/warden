@@ -109,6 +109,10 @@ A permission represents a single (resource, action) authorization grant.
 | `IsSystem` | `bool` | System permissions cannot be deleted |
 | `Metadata` | `map[string]any` | Custom key-value data |
 
+An action may not contain `:`. The engine checks a grant by joining resource and action with `:`, so `(warden, role:manage)` and `(warden:role, manage)` would be the same permission. The dashboard and the REST API refuse to create a permission whose action has one. `warden apply` refuses to create one or to change a permission's action to one, before it writes anything. A resource may contain `:` (`warden:role`), and `*` is a valid action. `BootstrapAdmin` seeds no action with a `:`.
+
+A store call does not check this. A permission written straight to the store, or stored before the rule, keeps its action, and Warden still loads, checks and deletes it. `warden apply` leaves it alone when the source declares it with the action it already has, so exporting a tenant and applying it back still works.
+
 ### Create a Permission
 
 <Tabs items={["Go", "DSL"]}>

@@ -265,6 +265,10 @@ func (a *applier) run(prog *Program) error {
 	if err := a.checkGrants(prog); err != nil {
 		return err
 	}
+	// So is a permission action with a ':'.
+	if err := a.checkPermissionActions(prog); err != nil {
+		return err
+	}
 	// So is a change to a system entity, when the caller protects them.
 	if a.protect {
 		if err := a.checkSystem(prog); err != nil {
@@ -899,6 +903,33 @@ func (a *applier) checkGrants(prog *Program) error {
 	for _, r := range prog.Roles {
 		_, ds := a.desiredGrants(r)
 		diags = append(diags, ds...)
+	}
+	if len(diags) > 0 {
+		return &DiagnosticError{Diags: diags}
+	}
+	return nil
+}
+
+// checkPermissionActions refuses, before anything is written, every
+// permission the apply would write with a ':' in its action
+// (permission.CheckAction), as a diagnostic at the declaration. The engine
+// joins resource and action with ':', so (warden, role:manage) and
+// (warden:role, manage) would be the same grant. A permission stored with
+// that action already is left alone: declaring it with the action it has
+// writes no new action, so exporting a tenant and applying it back still
+// works. It runs in a dry run and a real apply alike.
+func (a *applier) checkPermissionActions(prog *Program) error {
+	var diags []*Diagnostic
+	for _, p := range prog.Permissions {
+		err := permission.CheckAction(p.Action)
+		if err == nil {
+			continue
+		}
+		existing, _ := a.store.GetPermissionByName(a.ctx, a.tenantID, p.NamespacePath, p.Name) //nolint:errcheck // missing → create
+		if existing != nil && existing.Action == p.Action {
+			continue
+		}
+		diags = append(diags, &Diagnostic{Pos: p.Pos, Msg: fmt.Sprintf("permission %q: %v", p.Name, err)})
 	}
 	if len(diags) > 0 {
 		return &DiagnosticError{Diags: diags}

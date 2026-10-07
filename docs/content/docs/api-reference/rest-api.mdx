@@ -111,6 +111,8 @@ POST /v1/permissions
 }
 ```
 
+The action may not contain `:`. The engine joins resource and action with `:` when it checks a grant, so `(warden, role:manage)` and `(warden:role, manage)` would be the same permission. A request whose action has one is 400 and writes nothing. The resource may contain `:` (`warden:role`), and `*` is still a valid action. A permission stored with `:` in its action before this rule still reads, checks and deletes.
+
 ## Assignments
 
 | Method | Path | Operation |
@@ -216,7 +218,7 @@ All error responses follow this format:
 
 | Status | Meaning |
 |--------|---------|
-| 400 | Bad request: a body that does not bind or leaves out a field the request requires, an invalid ID, timestamp or namespace path, a missing tenant, a parent role that does not exist, or a relation tuple its resource type does not declare |
+| 400 | Bad request: a body that does not bind or leaves out a field the request requires, an invalid ID, timestamp or namespace path, a missing tenant, a parent role that does not exist, a permission action that contains `:`, or a relation tuple its resource type does not declare |
 | 401 | Authentication required |
 | 403 | Forbidden (authorization denied, or an AuthZEN context naming another tenant or namespace) |
 | 404 | Entity not found |

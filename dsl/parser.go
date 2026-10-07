@@ -400,9 +400,12 @@ func (p *parser) parsePermission() *PermissionDecl {
 		return nil
 	}
 	d := &PermissionDecl{Name: p.cur.Value, Pos: pos}
-	if res, act, ok := strings.Cut(d.Name, ":"); ok {
-		d.Resource = res
-		d.Action = act
+	// The name alone splits at its last ':', because a resource may hold
+	// one (warden:role) and an action may not: "warden:role:read" is the
+	// resource warden:role and the action read.
+	if i := strings.LastIndex(d.Name, ":"); i >= 0 {
+		d.Resource = d.Name[:i]
+		d.Action = d.Name[i+1:]
 	}
 	p.advance()
 

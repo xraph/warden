@@ -7,6 +7,7 @@ import (
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
+	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/store/memory"
 )
@@ -326,5 +327,16 @@ func TestBootstrapAdmin_SecondCallEmitsNothing(t *testing.T) {
 	}
 	if got := rec.counts(); len(got) != 1 || got["assignment.created"] != 1 {
 		t.Fatalf("a second subject emitted %v, want one assignment.created", got)
+	}
+}
+
+// BootstrapAdmin writes its permissions straight to the store, so it holds
+// the rule the other write paths check: no action contains ':'. Resources
+// keep theirs (warden:role).
+func TestBootstrapPermissionsHaveNoColonInTheirActions(t *testing.T) {
+	for _, bp := range bootstrapPermissions {
+		if err := permission.CheckAction(bp.action); err != nil {
+			t.Errorf("bootstrap permission %s: %v", bp.name(), err)
+		}
 	}
 }

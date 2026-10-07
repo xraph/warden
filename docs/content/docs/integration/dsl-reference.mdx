@@ -12,6 +12,8 @@ This page is the canonical reference for the `.warden` declarative configuration
 - **A relation written twice is refused.** The store holds one row per tuple, so the second line never wrote anything, but a plan counted it as a write. It's now a diagnostic at the second line, and a `DeclarativeOnStart` deployment that repeats a tuple fails at startup the same way.
 - **A relation its resource type doesn't declare is refused.** When a resource type named after the tuple's object type governs the tuple's namespace (the nearest one up the namespace chain, the rule a check uses to find a resource type's permissions), it must declare the tuple's relation, and that relation must allow the subject: `user` allows `user:alice`, `group#member` allows `group:eng#member`, and neither allows the other. A relation that lists no subject types allows any subject, but it must still be declared. A tuple that breaks this is a diagnostic at its line, checked against the resource types as the apply will leave them, and `warden apply` writes nothing, dry run or not. An object type with no resource type anywhere up the chain isn't checked, and neither is a tuple already stored. The dashboard and the REST API refuse the same writes. A `DeclarativeOnStart` deployment whose files hold such a tuple: with `DeclarativeStrict` set the extension won't start; without it you get a warning in the log, and nothing from those files is applied.
 - **An apply can't lower `max_members` below the role's members.** If a role has 3 members and your file sets `max_members = 2`, the apply stops at that role with `"Small" has 3 members, so its cap cannot be lowered to 2`. Before, it lowered the cap and left all 3 members in place. `warden apply --dry-run` reports it and writes nothing. A real `warden apply` stops part way: the store isn't transactional, so whatever it wrote before reaching that role (resource types, permissions, the roles it got to first) stays written. A `DeclarativeOnStart` apply stops the same way. With `DeclarativeStrict` set the extension won't start; without it you get a warning in the log and the extension starts with what was written before the failure. Raise the cap in your file, or remove members, and apply again.
+- **A permission action with a `:` is refused.** The engine joins resource and action with `:` when it checks a grant, so `(warden, role:manage)` and `(warden:role, manage)` would be the same permission. A declaration that would create a permission with such an action, or change one's action to it, is a diagnostic at its line, and `warden apply` writes nothing, dry run or not. A permission already stored with that action and declared with it unchanged is left alone. See [Permissions](#permissions).
+- **A permission written as its name alone splits at the last `:`.** `permission "warden:role:read"` is the resource `warden:role` and the action `read`. Before, it split at the first `:` and made the resource `warden` and the action `role:read`.
 - **Names follow the store.** Any name the store accepts is valid, quoted when a bare identifier can't spell it. See [Identifier conventions](#identifier-conventions).
 - **Plan lines name the fields that changed**, for example `~ role//viewer (grants)`.
 
@@ -207,6 +209,10 @@ permission "doc:write" (document : edit)
 The shorthand form binds the catalog entry to the `read` (or `edit`) permission expression declared in the `resource document { ... }` block.
 
 Names follow the format `<resource>:<action>`. Resources are snake_case identifiers; actions can include `*` for glob matching at check time.
+
+**Name alone**: `permission "warden:role:read"` with no body takes the resource from before the last `:` and the action from after it, here `warden:role` and `read`.
+
+An action may not contain `:`, because the engine joins resource and action with `:` when it checks a grant. A resource may (`warden:role`). The apply refuses, before it writes anything, a declaration that would create a permission whose action has a `:` or change a permission's action to one. A permission already stored with such an action, declared with that same action, is left alone, so `warden export` and an apply back still work.
 
 ## Roles
 
@@ -604,6 +610,7 @@ traverse      = IDENT { "->" IDENT }
 (* — Permission catalog — *)
 permission_decl = "permission" STRING "{" { kv } "}"
                 | "permission" STRING "(" IDENT ":" IDENT ")"
+                | "permission" STRING
 
 (* — Roles — *)
 role_decl     = "role" IDENT [ ":" parent_ref ] "{" { role_member } "}"

@@ -228,6 +228,9 @@ func permissionsCreateHandler(deps Deps) func(context.Context, PermissionCreateI
 		if in.Resource == "" || in.Action == "" {
 			return AckResponse{}, badRequest("a permission needs a resource and an action")
 		}
+		if err := permission.CheckAction(in.Action); err != nil {
+			return AckResponse{}, badRequest(err.Error())
+		}
 		if err := validateNamespace(in.NamespacePath); err != nil {
 			return AckResponse{}, err
 		}

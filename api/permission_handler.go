@@ -77,6 +77,9 @@ func (a *API) createPermission(ctx forge.Context, req *CreatePermissionRequest) 
 			return nil, verr
 		}
 	}
+	if err := permission.CheckAction(req.Action); err != nil {
+		return nil, forge.BadRequest(err.Error())
+	}
 
 	appID, tenantID := scopeFromForgeContext(ctx)
 	actor, _ := warden.ActorFromContext(ctx.Context())
