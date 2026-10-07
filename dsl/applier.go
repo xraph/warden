@@ -271,6 +271,10 @@ func (a *applier) run(prog *Program) error {
 			return err
 		}
 	}
+	// So is a tuple its resource type does not declare.
+	if err := a.checkRelations(prog); err != nil {
+		return err
+	}
 	if err := a.applyResourceTypes(prog); err != nil {
 		return err
 	}
@@ -1347,45 +1351,8 @@ func (a *applier) applyRelations(prog *Program) error {
 		// the full tuple, so creating an existing tuple is a no-op (driver-
 		// dependent: we ignore the error class for now).
 		// ID is auto-assigned by the store on CreateRelation.
-		t := &relation.Tuple{
-			TenantID:        a.tenantID,
-			NamespacePath:   r.NamespacePath,
-			AppID:           a.appID,
-			ObjectType:      r.ObjectType,
-			ObjectID:        r.ObjectID,
-			Relation:        r.Relation,
-			SubjectType:     r.SubjectType,
-			SubjectID:       r.SubjectID,
-			SubjectRelation: r.SubjectRelation,
-			CreatedBy:       declarativeActor.ID,
-			CreatedAt:       a.now,
-		}
-		// Check if the tuple already exists. The filter pins every column
-		// but the namespace, so this normally comes back in one page; it
-		// pages anyway so a tenant with many namespaces cannot hide a
-		// duplicate behind the store's default limit.
-		existing, _ := collectPages(func(limit, offset int) ([]*relation.Tuple, error) { //nolint:errcheck // empty list → create
-			return a.store.ListRelations(a.ctx, &relation.ListFilter{
-				TenantID:        a.tenantID,
-				NamespacePath:   nil, // exact-match below via SubjectRelation comparison
-				ObjectType:      r.ObjectType,
-				ObjectID:        r.ObjectID,
-				Relation:        r.Relation,
-				SubjectType:     r.SubjectType,
-				SubjectID:       r.SubjectID,
-				SubjectRelation: r.SubjectRelation,
-				Limit:           limit,
-				Offset:          offset,
-			})
-		})
-		dup := false
-		for _, e := range existing {
-			if e.NamespacePath == r.NamespacePath {
-				dup = true
-				break
-			}
-		}
-		if dup {
+		t := a.relationTuple(r)
+		if a.relationStored(r) {
 			a.result.NoOps++
 			continue
 		}
@@ -1398,6 +1365,114 @@ func (a *applier) applyRelations(prog *Program) error {
 		a.result.Created = append(a.result.Created, fmt.Sprintf("+ relation/%s/%s:%s#%s", r.NamespacePath, r.ObjectType, r.ObjectID, r.Relation))
 	}
 	return nil
+}
+
+// relationTuple is the row the program declares for r.
+func (a *applier) relationTuple(r *RelationDecl) *relation.Tuple {
+	return &relation.Tuple{
+		TenantID:        a.tenantID,
+		NamespacePath:   r.NamespacePath,
+		AppID:           a.appID,
+		ObjectType:      r.ObjectType,
+		ObjectID:        r.ObjectID,
+		Relation:        r.Relation,
+		SubjectType:     r.SubjectType,
+		SubjectID:       r.SubjectID,
+		SubjectRelation: r.SubjectRelation,
+		CreatedBy:       declarativeActor.ID,
+		CreatedAt:       a.now,
+	}
+}
+
+// relationStored reports whether r's tuple is already stored, in r's
+// namespace exactly. The filter pins every column but the namespace, so
+// this normally comes back in one page; it pages anyway so a tenant with
+// many namespaces cannot hide a duplicate behind the store's default
+// limit. A failed read counts as not stored, and the write then decides.
+func (a *applier) relationStored(r *RelationDecl) bool {
+	existing, _ := collectPages(func(limit, offset int) ([]*relation.Tuple, error) { //nolint:errcheck // empty list → create
+		return a.store.ListRelations(a.ctx, &relation.ListFilter{
+			TenantID:        a.tenantID,
+			NamespacePath:   nil, // exact-match below via SubjectRelation comparison
+			ObjectType:      r.ObjectType,
+			ObjectID:        r.ObjectID,
+			Relation:        r.Relation,
+			SubjectType:     r.SubjectType,
+			SubjectID:       r.SubjectID,
+			SubjectRelation: r.SubjectRelation,
+			Limit:           limit,
+			Offset:          offset,
+		})
+	})
+	for _, e := range existing {
+		if e.NamespacePath == r.NamespacePath {
+			return true
+		}
+	}
+	return false
+}
+
+// checkRelations refuses, before anything is written, every tuple the apply
+// would write that its governing resource type does not declare
+// (resourcetype.CheckTupleDeclared), as a diagnostic at the tuple's line.
+// It runs in a dry run and in a real apply alike, so a plan refuses what
+// the apply would, and a refused apply writes nothing.
+//
+// The check reads resource types as this apply will leave them
+// (plannedTypes): a resource type the program declares is checked as
+// declared, not as stored, and one prune would delete governs nothing. A
+// tuple already stored is a no-op for the apply and is not checked: the
+// check refuses writes, and leaves stored tuples alone.
+func (a *applier) checkRelations(prog *Program) error {
+	if len(prog.Relations) == 0 {
+		return nil
+	}
+	planned := &plannedTypes{a: a, declared: make(map[string]*resourcetype.ResourceType, len(prog.ResourceTypes))}
+	for _, rt := range prog.ResourceTypes {
+		planned.declared[keyOf(rt.NamespacePath, rt.Name)] = &resourcetype.ResourceType{
+			TenantID:      a.tenantID,
+			NamespacePath: rt.NamespacePath,
+			Name:          rt.Name,
+			Relations:     rtRelations(rt),
+		}
+	}
+	var diags []*Diagnostic
+	for _, r := range prog.Relations {
+		if a.relationStored(r) {
+			continue
+		}
+		err := resourcetype.CheckTupleDeclared(a.ctx, planned, a.relationTuple(r))
+		var undeclared *resourcetype.UndeclaredTupleError
+		switch {
+		case err == nil:
+		case errors.As(err, &undeclared):
+			diags = append(diags, &Diagnostic{Pos: r.Pos, Msg: undeclared.Error()})
+		default:
+			return err
+		}
+	}
+	if len(diags) > 0 {
+		return &DiagnosticError{Diags: diags}
+	}
+	return nil
+}
+
+// plannedTypes answers for resource types as the apply will leave them: the
+// program's declaration where it has one, nothing where prune would delete
+// the stored one, and the store otherwise.
+type plannedTypes struct {
+	a        *applier
+	declared map[string]*resourcetype.ResourceType
+}
+
+func (p *plannedTypes) GetResourceTypeByName(ctx context.Context, tenantID, namespacePath, name string) (*resourcetype.ResourceType, error) {
+	if rt, ok := p.declared[keyOf(namespacePath, name)]; ok {
+		return rt, nil
+	}
+	if p.a.prune && p.a.covers(namespacePath) {
+		return nil, fmt.Errorf("resource type %q in ns %q is pruned by this apply: %w", name, namespacePath, warden.ErrResourceTypeNotFound)
+	}
+	return p.a.store.GetResourceTypeByName(ctx, tenantID, namespacePath, name)
 }
 
 // ─────────────────────────────────────────────────────────────────────────

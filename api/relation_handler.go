@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/relation"
+	"github.com/xraph/warden/resourcetype"
 )
 
 func (a *API) registerRelationRoutes(router forge.Router) error {
@@ -97,6 +98,14 @@ func (a *API) writeRelation(ctx forge.Context, req *WriteRelationRequest) (*rela
 		CreatedAt:       now,
 	}
 
+	// The resource type governing the object type, if there is one, must
+	// declare the relation and allow the subject (the dashboard's
+	// relations.create runs the same check). REST writes every tuple at the
+	// tenant root, so only a root declaration can govern it. The read and
+	// the write are not atomic.
+	if err := resourcetype.CheckTupleDeclared(ctx.Context(), a.eng.Store(), t); err != nil {
+		return nil, mapError(err)
+	}
 	if err := a.eng.Store().CreateRelation(ctx.Context(), t); err != nil {
 		return nil, mapError(err)
 	}

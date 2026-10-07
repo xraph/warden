@@ -27,6 +27,7 @@ import (
 
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/relation"
+	"github.com/xraph/warden/resourcetype"
 
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
@@ -188,6 +189,13 @@ func relationsCreateHandler(deps Deps) func(context.Context, RelationCreateInput
 			SubjectID:       in.SubjectID,
 			SubjectRelation: in.SubjectRelation,
 			CreatedBy:       actorFor(p).ID,
+		}
+		// The resource type governing the object type, if there is one,
+		// must declare the relation and allow the subject. The read and the
+		// write are not atomic: a schema change landing between them is not
+		// seen by this write.
+		if err := resourcetype.CheckTupleDeclared(ctx, deps.Engine.Store(), tp); err != nil {
+			return AckResponse{}, mapWardenError(err)
 		}
 		if err := deps.Engine.Store().CreateRelation(ctx, tp); err != nil {
 			return AckResponse{}, mapWardenError(err)

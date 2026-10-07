@@ -13,6 +13,7 @@ import (
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
+	"github.com/xraph/warden/resourcetype"
 
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
@@ -30,6 +31,7 @@ func mapWardenError(err error) error {
 	}
 	var capErr *assignment.CapBelowMembersError
 	var fullErr *assignment.RoleFullError
+	var undeclared *resourcetype.UndeclaredTupleError
 	switch {
 	// Its own text, not err.Error(): a DSL apply wraps it as "update role
 	// <slug>: ...", and the page shows the refusal, not the call chain. That
@@ -44,6 +46,11 @@ func mapWardenError(err error) error {
 	// assignment create returns as 409.
 	case errors.As(err, &fullErr):
 		return &dashcontract.Error{Code: dashcontract.CodeConflict, Message: fullErr.Error()}
+	// A tuple its resource type does not declare: the operator can fix the
+	// input, so BAD_REQUEST, with the refusal's own text naming the tuple,
+	// the resource type and what it allows.
+	case errors.As(err, &undeclared):
+		return &dashcontract.Error{Code: dashcontract.CodeBadRequest, Message: undeclared.Error()}
 	case errors.Is(err, warden.ErrNotFound):
 		return &dashcontract.Error{Code: dashcontract.CodeNotFound, Message: err.Error()}
 	// Before ErrAlreadyExists: both are CONFLICT, and details.reason is what

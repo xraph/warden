@@ -11,6 +11,7 @@ import (
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
+	"github.com/xraph/warden/resourcetype"
 )
 
 // scopeFromForgeContext extracts appID and tenantID from a forge.Context
@@ -49,6 +50,13 @@ func mapError(err error) error {
 	}
 	if errors.Is(err, warden.ErrCyclicRoleInheritance) || errors.Is(err, warden.ErrMaxMembersExceeded) {
 		return forge.BadRequest(err.Error())
+	}
+	// A tuple its resource type does not declare: the caller can fix the
+	// request, and the refusal names the tuple, the resource type and what
+	// it allows.
+	var undeclared *resourcetype.UndeclaredTupleError
+	if errors.As(err, &undeclared) {
+		return forge.BadRequest(undeclared.Error())
 	}
 	if errors.Is(err, warden.ErrInvalidCondition) {
 		return forge.BadRequest(err.Error())
