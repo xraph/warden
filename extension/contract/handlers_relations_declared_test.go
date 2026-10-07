@@ -3,6 +3,7 @@ package contract
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -111,12 +112,12 @@ func (c *countingTypes) GetResourceTypeByName(ctx context.Context, tenantID, ns,
 	return c.Store.GetResourceTypeByName(ctx, tenantID, ns, name)
 }
 
-func TestRelationsListMarksTuplesThatBreakTheirResourceType(t *testing.T) {
-	s := memory.New()
-	seedDocumentType(t, s, "eng")
+// seedMarkedTuples writes, straight into the store as a tuple from before
+// the write check would be, one conforming tuple and two that eng's
+// document type does not declare, beside tuples nothing governs.
+func seedMarkedTuples(t *testing.T, s *memory.Store) {
+	t.Helper()
 	ctx := context.Background()
-	// Written straight into the store, as a tuple from before the write
-	// check would be: the list must judge what is stored, not trust it.
 	seed := []relation.Tuple{
 		{ObjectType: "document", ObjectID: "ok", Relation: "viewer", SubjectType: "user", SubjectID: "alice", NamespacePath: "eng"},
 		{ObjectType: "document", ObjectID: "old", Relation: "editor", SubjectType: "user", SubjectID: "alice", NamespacePath: "eng"},
@@ -133,6 +134,15 @@ func TestRelationsListMarksTuplesThatBreakTheirResourceType(t *testing.T) {
 			t.Fatalf("seed %s: %v", tp.ObjectID, err)
 		}
 	}
+}
+
+func TestRelationsListMarksTuplesThatBreakTheirResourceType(t *testing.T) {
+	s := memory.New()
+	seedDocumentType(t, s, "eng")
+	ctx := context.Background()
+	// The list must judge what is stored, not trust it.
+	seedMarkedTuples(t, s)
+	grantUser(t, s, "tester", "warden:relation:read", "warden:resourcetype:read")
 	counting := &countingTypes{Store: s, reads: map[string]int{}}
 	eng, err := warden.NewEngine(warden.WithStore(counting))
 	if err != nil {
@@ -151,6 +161,9 @@ func TestRelationsListMarksTuplesThatBreakTheirResourceType(t *testing.T) {
 		"child2": "",
 		"root":   "",
 		"f":      "",
+	}
+	if out.MarksWithheld {
+		t.Error("marks withheld from a caller who may read resource types")
 	}
 	if len(out.Items) != len(want) {
 		t.Fatalf("listed %d tuples, want %d", len(out.Items), len(want))
@@ -182,5 +195,75 @@ func TestRelationsListMarkIsOmittedWhenTheTupleConforms(t *testing.T) {
 	}
 	if strings.Contains(string(b), "undeclared") {
 		t.Errorf("conforming tuple serialised the mark: %s", b)
+	}
+}
+
+func TestRelationsListWithholdsMarksFromACallerWhoCannotReadResourceTypes(t *testing.T) {
+	// A reason names the governing type's relations or allowed subjects,
+	// which resourceTypes.* keeps behind read on warden:resourcetype. A
+	// relation reader alone gets the rows, no reasons, and a flag that
+	// says the rows were not checked, so no mark cannot read as "conforms".
+	s := memory.New()
+	seedDocumentType(t, s, "eng")
+	seedMarkedTuples(t, s)
+	grantUser(t, s, "tester", "warden:relation:read")
+	h := relationsListHandler(Deps{Engine: engineOver(t, s)})
+
+	out, err := h(context.Background(), RelationsListInput{}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !out.MarksWithheld {
+		t.Error("marksWithheld = false for a caller without read on warden:resourcetype")
+	}
+	if len(out.Items) != 6 {
+		t.Errorf("listed %d tuples, want 6: withholding marks must not withhold rows", len(out.Items))
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(b)
+	for _, secret := range []string{"undeclared", "its relations are", "allows subjects"} {
+		if strings.Contains(raw, secret) {
+			t.Errorf("the JSON reveals %q: %s", secret, raw)
+		}
+	}
+	if !strings.Contains(raw, `"marksWithheld":true`) {
+		t.Errorf("the JSON lacks marksWithheld: %s", raw)
+	}
+}
+
+// brokenTypes answers relation reads normally and fails every resource
+// type read with an error that is not a not-found.
+type brokenTypes struct {
+	*memory.Store
+}
+
+func (brokenTypes) GetResourceTypeByName(context.Context, string, string, string) (*resourcetype.ResourceType, error) {
+	return nil, errors.New("resource types unreadable")
+}
+
+func TestRelationsListFailsWhenTheSchemaCannotBeRead(t *testing.T) {
+	// An unmarked row would claim a check that never ran, so a schema read
+	// error fails the list rather than returning rows without marks.
+	s := memory.New()
+	seedDocumentType(t, s, "eng")
+	seedMarkedTuples(t, s)
+	grantUser(t, s, "tester", "warden:relation:read", "warden:resourcetype:read")
+	eng, err := warden.NewEngine(warden.WithStore(brokenTypes{s}))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	out, err := relationsListHandler(Deps{Engine: eng})(context.Background(), RelationsListInput{}, principalFor("t1"))
+	if err == nil {
+		t.Fatalf("list succeeded with %d items, want an error", len(out.Items))
+	}
+	// From the mark's schema read, not the grant check before it.
+	if !strings.Contains(err.Error(), "resource types unreadable") {
+		t.Errorf("err = %v, want the resource type read's error", err)
+	}
+	if len(out.Items) != 0 {
+		t.Errorf("a failed list carried %d items", len(out.Items))
 	}
 }

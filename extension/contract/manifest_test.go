@@ -271,27 +271,6 @@ func TestManifest_RelationCommandsInvalidateWhatTheyChange(t *testing.T) {
 	}
 }
 
-func TestManifest_ResourceTypeChangesInvalidateTheRelationMarks(t *testing.T) {
-	// relations.list marks each tuple its governing resource type does not
-	// declare, so a resource type write can add or clear a mark.
-	m := loadManifest(t)
-	byName := map[string][]string{}
-	for _, in := range m.Intents {
-		byName[in.Name] = in.Invalidates
-	}
-	for _, intent := range []string{"resourceTypes.create", "resourceTypes.update", "resourceTypes.delete"} {
-		found := false
-		for _, v := range byName[intent] {
-			if v == "relations.list" {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("%s does not invalidate relations.list", intent)
-		}
-	}
-}
-
 func TestManifest_RelationListQueryIsDeclared(t *testing.T) {
 	m := loadManifest(t)
 	q, ok := m.Queries["relationList"]
@@ -410,10 +389,12 @@ func TestManifest_ResourceTypeCommandsInvalidateWhatTheyChange(t *testing.T) {
 		}
 		return false
 	}
+	// relations.list marks the tuples their governing resource type does
+	// not declare, so every resource type write can add or clear a mark.
 	want := map[string][]string{
-		"resourceTypes.create": {"resourceTypes.list", "overview.stats", "namespaces.list"},
-		"resourceTypes.update": {"resourceTypes.list", "resourceTypes.detail"},
-		"resourceTypes.delete": {"resourceTypes.list", "resourceTypes.detail", "overview.stats", "namespaces.list"},
+		"resourceTypes.create": {"resourceTypes.list", "overview.stats", "namespaces.list", "relations.list"},
+		"resourceTypes.update": {"resourceTypes.list", "resourceTypes.detail", "relations.list"},
+		"resourceTypes.delete": {"resourceTypes.list", "resourceTypes.detail", "overview.stats", "namespaces.list", "relations.list"},
 	}
 	for intent, targets := range want {
 		for _, target := range targets {

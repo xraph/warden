@@ -50,13 +50,15 @@ type RelationSummary struct {
 	// (resourcetype.UndeclaredTupleError.Reason) a write of this tuple would
 	// be refused now. A tuple stored before the write check existed, by a
 	// writer that skips it, or before its resource type changed can carry
-	// one. It is absent when the tuple
-	// conforms or no resource type governs its object type.
+	// one. It is absent when the tuple conforms, when no resource type
+	// governs its object type, and on every row when the response says
+	// MarksWithheld.
 	//
 	// It judges the tuple by the write check's rule and no other. A check
-	// does not consult declarations: the direct check, the expression
-	// evaluator and the graph walker read stored tuples as they are, so a
-	// marked tuple still counts.
+	// reads stored tuples as they are, without consulting the resource
+	// type's relations or allowed subjects: the direct check and the graph
+	// walker read no resource type, and the expression evaluator reads only
+	// its permissions. So a marked tuple still counts.
 	Undeclared string `json:"undeclared,omitempty"`
 }
 
@@ -78,6 +80,13 @@ type RelationsListInput struct {
 type RelationsListResponse struct {
 	PageMeta
 	Items []RelationSummary `json:"items"`
+	// MarksWithheld is true when the caller may not read resource types
+	// (read on warden:resourcetype), so no row was checked against its
+	// resource type and none carries Undeclared. A mark's reason names the
+	// type's relations or allowed subjects, which resourceTypes.* keeps
+	// behind that grant, and this list must not be a way around it. An
+	// unmarked row then says nothing about whether the tuple conforms.
+	MarksWithheld bool `json:"marksWithheld"`
 }
 
 // RelationCreateInput writes one tuple. Every part of the triple is
@@ -159,6 +168,22 @@ func relationsListHandler(deps Deps) func(context.Context, RelationsListInput, d
 		out := RelationsListResponse{
 			PageMeta: newPageMeta(total, limit, offset),
 			Items:    make([]RelationSummary, 0, len(rows)),
+		}
+		// The intent's grant is read on warden:relation. The marks need
+		// read on warden:resourcetype as well, checked here the way
+		// subjects.detail checks its sections: dry run, since a query
+		// writes no check log, and an engine that cannot decide fails the
+		// request as the authorizer does.
+		mayReadTypes, err := principalHolds(ctx, deps.Engine, p, tenantID, "read", "warden:resourcetype", false)
+		if err != nil {
+			return RelationsListResponse{}, mapWardenError(err)
+		}
+		if !mayReadTypes {
+			out.MarksWithheld = true
+			for _, tp := range rows {
+				out.Items = append(out.Items, projectTuple(tp))
+			}
+			return out, nil
 		}
 		types := &pageTypes{s: s, seen: map[pageTypeKey]pageTypeAnswer{}}
 		for _, tp := range rows {
