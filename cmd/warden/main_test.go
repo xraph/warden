@@ -103,6 +103,33 @@ func TestCLI_LintInvalidExitsNonZero(t *testing.T) {
 	}
 }
 
+// A ':' in a permission action is a warning in lint, not a failure: apply
+// refuses it unless the store already holds that permission with exactly
+// that resource and action, and lint reads no store.
+func TestCLI_LintWarnsOnAColonAction(t *testing.T) {
+	bin := buildBin(t)
+
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "colon.warden")
+	if err := os.WriteFile(src, []byte("warden config 1\npermission \"warden:role:manage\" (\"warden\" : \"role:manage\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(context.Background(), bin, "lint", src)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("lint exited %v; a warning must not fail it\nstderr: %s", err, stderr.String())
+	}
+	want := `warning: ` + src + `:2:1: permission "warden:role:manage" has action "role:manage", which contains ':'; the engine joins resource and action with ':', so apply refuses it unless the store already holds this permission with exactly this resource and action`
+	if !strings.Contains(stderr.String(), want) {
+		t.Errorf("stderr = %q, want it to contain %q", stderr.String(), want)
+	}
+	if !strings.Contains(stdout.String(), "OK") {
+		t.Errorf("stdout = %q, want OK", stdout.String())
+	}
+}
+
 func TestResolveStoreDSN(t *testing.T) {
 	t.Run("flag wins when set", func(t *testing.T) {
 		t.Setenv("WARDEN_STORE_DSN", "postgres://env-user:env-pass@env-host/db")

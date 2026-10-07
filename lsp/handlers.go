@@ -89,11 +89,19 @@ func (s *server) handleDidClose(raw json.RawMessage) {
 // for the given document, converting parse + resolve diagnostics into LSP
 // form.
 func (s *server) publishDiagnostics(doc *document) {
-	diags := make([]lspDiagnostic, 0, len(doc.diags))
+	diags := make([]lspDiagnostic, 0, len(doc.diags)+len(doc.warnings))
 	for _, d := range doc.diags {
 		diags = append(diags, lspDiagnostic{
 			Range:    dslRangeFromPos(d.Pos),
 			Severity: diagError,
+			Source:   "warden",
+			Message:  formatErrorMsg(d.Msg),
+		})
+	}
+	for _, d := range doc.warnings {
+		diags = append(diags, lspDiagnostic{
+			Range:    dslRangeFromPos(d.Pos),
+			Severity: diagWarning,
 			Source:   "warden",
 			Message:  formatErrorMsg(d.Msg),
 		})

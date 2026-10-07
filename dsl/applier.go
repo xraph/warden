@@ -915,9 +915,11 @@ func (a *applier) checkGrants(prog *Program) error {
 // (permission.CheckAction), as a diagnostic at the declaration. The engine
 // joins resource and action with ':', so (warden, role:manage) and
 // (warden:role, manage) would be the same grant. A permission stored with
-// that action already is left alone: declaring it with the action it has
-// writes no new action, so exporting a tenant and applying it back still
-// works. It runs in a dry run and a real apply alike.
+// that action already is left alone when the source declares it with the
+// resource and action it has, so exporting a tenant and applying it back
+// still works; moving it to another resource while it keeps the ':' is
+// refused, since that changes the grant. It runs in a dry run and a real
+// apply alike.
 func (a *applier) checkPermissionActions(prog *Program) error {
 	var diags []*Diagnostic
 	for _, p := range prog.Permissions {
@@ -926,7 +928,7 @@ func (a *applier) checkPermissionActions(prog *Program) error {
 			continue
 		}
 		existing, _ := a.store.GetPermissionByName(a.ctx, a.tenantID, p.NamespacePath, p.Name) //nolint:errcheck // missing → create
-		if existing != nil && existing.Action == p.Action {
+		if existing != nil && existing.Resource == p.Resource && existing.Action == p.Action {
 			continue
 		}
 		diags = append(diags, &Diagnostic{Pos: p.Pos, Msg: fmt.Sprintf("permission %q: %v", p.Name, err)})

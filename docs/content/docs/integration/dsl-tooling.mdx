@@ -93,7 +93,7 @@ Pre-built archives ship `linux`, `darwin`, `windows` × `amd64`, `arm64` from ev
 
 | Subcommand | Purpose |
 |---|---|
-| `warden lint <path>` | Static checks only — parser + type checker, no DB. Per-file/line diagnostics. |
+| `warden lint <path>` | Static checks only: parser and type checker, no DB. Per-file/line diagnostics. A line starting `warning:` (for example a permission action with a `:`, which apply refuses unless the store already holds that permission with exactly that resource and action) does not fail lint. |
 | `warden apply -f <path> --store DSN` | Apply config to a tenant. Idempotent. |
 | `warden diff -f <path> --store DSN` | Equivalent to `apply --dry-run`. Shows what would change. |
 | `warden fmt <path>` | Format file(s) in place. `-d` prints diff, `--check` exits 1 if reformatting needed. |

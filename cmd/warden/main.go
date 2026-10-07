@@ -177,6 +177,11 @@ func runLint(args []string) int {
 	for _, d := range allErrs {
 		fmt.Fprintln(os.Stderr, d.String())
 	}
+	// Warnings do not fail lint: whether apply refuses them depends on
+	// what the store holds, and lint reads no store.
+	for _, d := range dsl.Warnings(prog) {
+		fmt.Fprintln(os.Stderr, "warning: "+d.String())
+	}
 	if len(allErrs) > 0 {
 		return 1
 	}

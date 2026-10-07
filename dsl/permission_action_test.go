@@ -170,3 +170,95 @@ func TestApply_AStoredColonActionIsLeftAlone(t *testing.T) {
 		}
 	})
 }
+
+// A block that sets only one of resource and action takes the other from
+// the name, and is refused when the name does not hold the one it set, so
+// the block never grants something its name does not say.
+func TestParse_APermissionBlockWithOneFieldTakesTheOtherFromTheName(t *testing.T) {
+	taken := []struct {
+		name, body, resource, action string
+	}{
+		{"resource only", `resource = "warden:role"`, "warden:role", "manage"},
+		{"resource only, shorter", `resource = "warden"`, "warden", "role:manage"},
+		{"action only", `action = manage`, "warden:role", "manage"},
+		{"action only, longer", `action = "role:manage"`, "warden", "role:manage"},
+		{"neither", `description = "Manage roles"`, "warden:role", "manage"},
+	}
+	for _, tc := range taken {
+		t.Run(tc.name, func(t *testing.T) {
+			prog := mustParse(t, "warden config 1\npermission \"warden:role:manage\" {\n    "+tc.body+"\n}\n")
+			p := prog.Permissions[0]
+			if p.Resource != tc.resource || p.Action != tc.action {
+				t.Errorf("resource %q action %q, want %q %q", p.Resource, p.Action, tc.resource, tc.action)
+			}
+		})
+	}
+
+	refused := []struct {
+		name, body, want string
+	}{
+		{
+			"resource the name does not start with",
+			`resource = "other"`,
+			`test.warden:2:1: permission "warden:role:manage" sets resource "other" and no action, and its name does not start with "other:", so the action cannot be taken from the name; set action too`,
+		},
+		{
+			"action the name does not end with",
+			`action = read`,
+			`test.warden:2:1: permission "warden:role:manage" sets action "read" and no resource, and its name does not end with ":read", so the resource cannot be taken from the name; set resource too`,
+		},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, errs := Parse("test.warden", []byte("warden config 1\npermission \"warden:role:manage\" {\n    "+tc.body+"\n}\n"))
+			if len(errs) != 1 || errs[0].String() != tc.want {
+				t.Fatalf("errs = %v\nwant [%s]", errs, tc.want)
+			}
+			// An apply that runs despite the parse diagnostic, as a
+			// DeclarativeOnStart load does, is refused and writes nothing.
+			s := memory.New()
+			if _, err := Apply(context.Background(), engineOverStore(t, s), prog, ApplyOptions{TenantID: "t1"}); err == nil {
+				t.Error("apply of the refused block succeeded")
+			}
+			if n := permissionCount(t, s); n != 0 {
+				t.Errorf("stored %d permissions, want 0", n)
+			}
+		})
+	}
+}
+
+// The legacy carve-out holds only when resource and action are both
+// unchanged: moving a stored ':' action to another resource changes the
+// grant, so it is refused.
+func TestApply_AStoredColonActionCannotMoveToAnotherResource(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	seedColonAction(t, s)
+	src := "warden config 1\npermission \"warden:role:manage\" (other : \"role:manage\")\n"
+	planErr, applyErr := applyBoth(t, s, src, false)
+	want := `test.warden:2:1: permission "warden:role:manage": action "role:manage" contains ':': the engine joins resource and action with ':', so an action may not contain one`
+	for name, err := range map[string]error{"plan": planErr, "apply": applyErr} {
+		if err == nil || err.Error() != want {
+			t.Errorf("%s:\n got %v\nwant %s", name, err, want)
+		}
+	}
+	got, err := s.GetPermissionByName(ctx, "t1", "", "warden:role:manage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Resource != "warden" || got.Action != "role:manage" {
+		t.Errorf("stored %s / %s, want warden / role:manage untouched", got.Resource, got.Action)
+	}
+}
+
+func TestWarnings_ReportAColonAction(t *testing.T) {
+	prog := mustParse(t, "warden config 1\npermission \"doc:read\" (doc : read)\npermission \"warden:role:manage\" (\"warden\" : \"role:manage\")\n")
+	ws := Warnings(prog)
+	want := `test.warden:3:1: permission "warden:role:manage" has action "role:manage", which contains ':'; the engine joins resource and action with ':', so apply refuses it unless the store already holds this permission with exactly this resource and action`
+	if len(ws) != 1 || ws[0].String() != want {
+		t.Fatalf("warnings = %v\nwant [%s]", ws, want)
+	}
+	if errs := Resolve(prog); len(errs) != 0 {
+		t.Errorf("resolve reported %v; a ':' action is a warning, not an error", errs)
+	}
+}

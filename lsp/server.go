@@ -46,11 +46,14 @@ type server struct {
 
 // document caches the most recent text + parsed AST for a URI.
 type document struct {
-	uri     string
-	text    string
-	prog    *dsl.Program
-	diags   []*dsl.Diagnostic // parse + resolve diagnostics
-	lineIdx []int             // byte offset of each line start; len = lineCount + 1
+	uri   string
+	text  string
+	prog  *dsl.Program
+	diags []*dsl.Diagnostic // parse + resolve diagnostics
+	// warnings are what dsl.Warnings reports: source that parses and
+	// resolves but that an apply may refuse, depending on the store.
+	warnings []*dsl.Diagnostic
+	lineIdx  []int // byte offset of each line start; len = lineCount + 1
 }
 
 func newServer(in io.Reader, out io.Writer) *server {
@@ -178,6 +181,7 @@ func (s *server) setDoc(uri, text string) *document {
 	d.prog = prog
 	d.diags = append(d.diags, errs...)
 	d.diags = append(d.diags, dsl.Resolve(prog)...)
+	d.warnings = dsl.Warnings(prog)
 	s.docs[uri] = d
 	s.workspace.set(uri, prog)
 	return d
@@ -280,14 +284,29 @@ func formatErrorMsg(msg string) string {
 	// dsl.Diagnostic.Msg is the bare text (no prefix); but if a caller
 	// stringified it via .Error() they'd get the prefixed form. Keep both.
 	if i := strings.Index(msg, ": "); i >= 0 && i < 80 {
-		// Only strip if the prefix is a position label (line:col) followed
-		// by ": ".
-		prefix := msg[:i]
-		if strings.Count(prefix, ":") >= 2 {
+		// Only strip if the prefix is a position label (file:line:col)
+		// followed by ": ". A message may quote a name with colons, such
+		// as permission "warden:role:manage", and that is not a position.
+		if isPositionLabel(msg[:i]) {
 			return msg[i+2:]
 		}
 	}
 	return msg
+}
+
+// isPositionLabel reports whether s ends in ":<line>:<col>" after a
+// non-empty file part.
+func isPositionLabel(s string) bool {
+	parts := strings.Split(s, ":")
+	if len(parts) < 3 || parts[0] == "" {
+		return false
+	}
+	for _, n := range parts[len(parts)-2:] {
+		if n == "" || strings.Trim(n, "0123456789") != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // debugf is a placeholder for an LSP-window/logMessage notification;

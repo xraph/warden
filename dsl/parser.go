@@ -431,6 +431,7 @@ func (p *parser) parsePermission() *PermissionDecl {
 		}
 	case LBRACE:
 		p.advance()
+		setResource, setAction := false, false
 		for p.cur.Kind != RBRACE && p.cur.Kind != EOF {
 			switch p.cur.Kind {
 			case RESOURCE:
@@ -440,6 +441,7 @@ func (p *parser) parsePermission() *PermissionDecl {
 				}
 				if v, ok := p.name(); ok {
 					d.Resource = v
+					setResource = true
 				} else {
 					p.errf(p.cur.Pos, "expected resource identifier")
 				}
@@ -454,6 +456,7 @@ func (p *parser) parsePermission() *PermissionDecl {
 					switch p.cur.Kind {
 					case IDENT, STRING:
 						d.Action = p.cur.Value
+						setAction = true
 					default:
 						p.errf(p.cur.Pos, "expected action identifier")
 					}
@@ -486,10 +489,40 @@ func (p *parser) parsePermission() *PermissionDecl {
 			}
 		}
 		p.expect(RBRACE)
+		p.fillFromName(d, pos, setResource, setAction)
 	default:
-		// Naked permission, no body — name is enough if it's already resource:action.
+		// No body: the name, split above, gives resource and action.
 	}
 	return d
+}
+
+// fillFromName completes a permission block that sets only one of resource
+// and action, taking the other from the name: "a:b:c" with resource "a" has
+// the action "b:c", and with action "c" has the resource "a:b". When the
+// name does not hold the field that was set, the other one cannot be taken
+// from it, and the block is refused rather than given a grant its name does
+// not say. The field left unset stays empty, so Resolve refuses the
+// declaration too, and an apply that runs despite the parse diagnostic (a
+// DeclarativeOnStart load logs them and carries on) writes nothing.
+func (p *parser) fillFromName(d *PermissionDecl, pos Pos, setResource, setAction bool) {
+	switch {
+	case setResource && !setAction:
+		if rest, ok := strings.CutPrefix(d.Name, d.Resource+":"); ok {
+			d.Action = rest
+			return
+		}
+		d.Action = ""
+		p.errf(pos, "permission %q sets resource %q and no action, and its name does not start with %q, so the action cannot be taken from the name; set action too",
+			d.Name, d.Resource, d.Resource+":")
+	case setAction && !setResource:
+		if head, ok := strings.CutSuffix(d.Name, ":"+d.Action); ok {
+			d.Resource = head
+			return
+		}
+		d.Resource = ""
+		p.errf(pos, "permission %q sets action %q and no resource, and its name does not end with %q, so the resource cannot be taken from the name; set resource too",
+			d.Name, d.Action, ":"+d.Action)
+	}
 }
 
 func (p *parser) parseRole() *RoleDecl {
