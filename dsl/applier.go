@@ -1384,14 +1384,15 @@ func (a *applier) relationTuple(r *RelationDecl) *relation.Tuple {
 	}
 }
 
-// relationStored reports whether r's tuple is already stored: a row in r's
-// namespace whose every tuple column equals r's. The store filter narrows
-// the read, but it cannot decide on its own: an empty filter field means
-// "any" in every store, so with SubjectRelation empty it also returns
-// group:eng#member for group:eng. Each column is therefore compared here.
-// The read pages so a tenant with many namespaces cannot hide a duplicate
-// behind the store's default limit. A failed read counts as not stored, and
-// the write then decides.
+// relationStored reports whether r's tuple is already stored: a row in this
+// apply's tenant and r's namespace whose every tuple column equals r's. The
+// store filter narrows the read, but it cannot decide on its own: an empty
+// filter field means "any" in every store. With SubjectRelation empty it
+// also returns group:eng#member for group:eng, and with TenantID empty (a
+// global-scope apply) it returns every tenant's rows. Each column, the
+// tenant included, is therefore compared here. The read pages so a tenant
+// with many namespaces cannot hide a duplicate behind the store's default
+// limit. A failed read counts as not stored, and the write then decides.
 func (a *applier) relationStored(r *RelationDecl) bool {
 	existing, _ := collectPages(func(limit, offset int) ([]*relation.Tuple, error) { //nolint:errcheck // empty list → create
 		return a.store.ListRelations(a.ctx, &relation.ListFilter{
@@ -1408,7 +1409,8 @@ func (a *applier) relationStored(r *RelationDecl) bool {
 		})
 	})
 	for _, e := range existing {
-		if e.NamespacePath == r.NamespacePath &&
+		if e.TenantID == a.tenantID &&
+			e.NamespacePath == r.NamespacePath &&
 			e.ObjectType == r.ObjectType &&
 			e.ObjectID == r.ObjectID &&
 			e.Relation == r.Relation &&

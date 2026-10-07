@@ -306,6 +306,61 @@ func TestApply_ATupleDifferingOnlyInSubjectRelationIsNotStored(t *testing.T) {
 	})
 }
 
+func TestApply_GlobalScopeDoesNotTakeAnotherTenantsTupleAsStored(t *testing.T) {
+	// A global-scope apply has an empty tenant, and the store reads an
+	// empty TenantID as every tenant. t1's copy of the tuple must not make
+	// the global apply skip its own write, or the declaration check.
+	ctx := context.Background()
+	seed := func(t *testing.T) *memory.Store {
+		t.Helper()
+		s := memory.New()
+		if err := s.CreateRelation(ctx, &relation.Tuple{
+			TenantID: "t1", ObjectType: "document", ObjectID: "d1", Relation: "viewer",
+			SubjectType: "user", SubjectID: "alice",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	t.Run("planned as a create and written", func(t *testing.T) {
+		s := seed(t)
+		eng := engineOverStore(t, s)
+		src := "warden config 1\nrelation document:d1 viewer = user:alice\n"
+		plan, err := Apply(ctx, eng, mustParse(t, src), ApplyOptions{DryRun: true})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		if !contains(plan.Created, "+ relation//document:d1#viewer") || plan.NoOps != 0 {
+			t.Errorf("plan created %v, noOps %d; want the tuple as a create and no no-op", plan.Created, plan.NoOps)
+		}
+		if _, err := Apply(ctx, eng, mustParse(t, src), ApplyOptions{}); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		rows, err := s.ListRelations(ctx, &relation.ListFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tenants := map[string]int{}
+		for _, r := range rows {
+			tenants[r.TenantID]++
+		}
+		if len(rows) != 2 || tenants["t1"] != 1 || tenants[""] != 1 {
+			t.Errorf("stored %+v; want t1's tuple and the global one", rows)
+		}
+	})
+
+	t.Run("checked against the declaration", func(t *testing.T) {
+		eng := engineOverStore(t, seed(t))
+		src := "warden config 1\nresource document {\n    relation viewer: group\n}\nrelation document:d1 viewer = user:alice\n"
+		_, err := Apply(ctx, eng, mustParse(t, src), ApplyOptions{DryRun: true})
+		want := `tuple document:d1#viewer@user:alice in the tenant root is refused`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("plan: err = %v\nwant %s", err, want)
+		}
+	})
+}
+
 // walkRecorder answers not-found for every namespace and records the order
 // it was asked in, which is the ancestor walk Governing makes.
 type walkRecorder struct{ asked []string }
