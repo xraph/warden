@@ -77,9 +77,11 @@ func WithGroveDatabase(name string) Option {
 }
 
 // WithInsecureAllowUnauthenticatedRoutes is the explicit, unmissable opt-in
-// required to register HTTP routes with auth.require_identity set to
-// false. Without it, Register refuses to start rather than silently
-// mounting an unauthenticated management API: any network peer would
+// required to mount the HTTP API with auth.require_identity set to false.
+// Without it, nothing mounts an unauthenticated management API: Register
+// refuses to start when routes are enabled, Extension.Handler panics,
+// Extension.RegisterRoutes returns an error, and the *api.API that
+// Extension.API returns still requires an identity. Any network peer would
 // otherwise be able to grant roles or read the audit log.
 //
 // The name is deliberately long and says exactly what it does, so nobody

@@ -56,8 +56,10 @@ type Extension struct {
 	useGrove   bool
 
 	// insecureAllowUnauthenticatedRoutes is set only by
-	// WithInsecureAllowUnauthenticatedRoutes. Register refuses to mount
-	// HTTP routes with auth.require_identity false unless this is set.
+	// WithInsecureAllowUnauthenticatedRoutes. With auth.require_identity
+	// false, nothing mounts the API without it: Register refuses when routes
+	// are enabled, Handler panics, RegisterRoutes returns an error, and the
+	// API that API() returns still requires an identity.
 	insecureAllowUnauthenticatedRoutes bool
 }
 
@@ -75,8 +77,23 @@ func New(opts ...Option) *Extension {
 // Engine returns the underlying Warden engine.
 func (e *Extension) Engine() *warden.Engine { return e.eng }
 
-// API returns the API handler.
+// API returns the API handler, or nil before Register. With
+// auth.require_identity false and no WithInsecureAllowUnauthenticatedRoutes,
+// it still requires an identity on every route: the insecure opt-in is the
+// only way to get an API that skips the identity check.
 func (e *Extension) API() *api.API { return e.apiHandler }
+
+// errUnauthenticatedAPI refuses to mount the API with auth.require_identity
+// false unless WithInsecureAllowUnauthenticatedRoutes was passed. It is nil
+// when identity is required or the opt-in is set.
+func (e *Extension) errUnauthenticatedAPI() error {
+	if e.config.Auth.RequireIdentity || e.insecureAllowUnauthenticatedRoutes {
+		return nil
+	}
+	return errors.New("warden: auth.require_identity is false; " +
+		"call extension.WithInsecureAllowUnauthenticatedRoutes() to mount the API without an identity check " +
+		"(without it, any network peer could grant roles or read the audit log)")
+}
 
 // Register implements [forge.Extension]. It loads configuration,
 // initializes the engine, registers it in the DI container, and optionally
@@ -94,10 +111,13 @@ func (e *Extension) Register(fapp forge.App) error {
 		return fmt.Errorf("warden: %w", err)
 	}
 
-	if !e.config.DisableRoutes && !e.config.Auth.RequireIdentity && !e.insecureAllowUnauthenticatedRoutes {
-		return errors.New("warden: auth.require_identity is false with routes enabled; " +
-			"call extension.WithInsecureAllowUnauthenticatedRoutes() to allow this explicitly " +
-			"(without it, any network peer could grant roles or read the audit log)")
+	// With routes disabled nothing is mounted here, so an engine-only
+	// setup needs no opt-in. Handler and RegisterRoutes run the same check
+	// when something mounts the API later.
+	if !e.config.DisableRoutes {
+		if err := e.errUnauthenticatedAPI(); err != nil {
+			return err
+		}
 	}
 
 	if err := e.init(fapp); err != nil {
@@ -218,9 +238,12 @@ func (e *Extension) init(fapp forge.App) error {
 	if e.config.Auth.AllowAnonymousChecks {
 		apiOpts = append(apiOpts, api.AllowAnonymousChecks())
 	}
-	if !e.config.Auth.RequireIdentity {
-		// Register already refused to reach here unless
-		// WithInsecureAllowUnauthenticatedRoutes was passed.
+	if !e.config.Auth.RequireIdentity && e.insecureAllowUnauthenticatedRoutes {
+		// Only with the opt-in. Without it, routes are disabled (Register
+		// refused otherwise), and the API is built requiring an identity,
+		// so whoever mounts it later, through API() or a router of their
+		// own, cannot get one without the identity check. Handler and
+		// RegisterRoutes refuse outright.
 		apiOpts = append(apiOpts, api.WithInsecureAllowUnauthenticatedRoutes())
 	}
 	e.apiHandler = api.New(eng, fapp.Router(), apiOpts...)
@@ -301,20 +324,38 @@ func (e *Extension) Health(ctx context.Context) error {
 	return s.Ping(ctx)
 }
 
-// Handler returns the HTTP handler for all API routes.
+// Handler returns the HTTP handler for all API routes, or a handler that
+// answers 404 before Register.
+//
+// It panics when auth.require_identity is false and
+// WithInsecureAllowUnauthenticatedRoutes was not passed, the same refusal
+// Register returns when routes are enabled: handing out the API would
+// otherwise mount it with no opt-in. It has no error to return, and
+// api.API.Handler panics on a failed registration the same way.
 func (e *Extension) Handler() http.Handler {
 	if e.apiHandler == nil {
 		return http.NotFoundHandler()
 	}
+	if err := e.errUnauthenticatedAPI(); err != nil {
+		panic(err.Error())
+	}
 	return e.apiHandler.Handler()
 }
 
-// RegisterRoutes registers all warden API routes into a Forge router.
+// RegisterRoutes registers all warden API routes into a Forge router. It
+// registers nothing before Register.
+//
+// It returns an error, and registers nothing, when auth.require_identity
+// is false and WithInsecureAllowUnauthenticatedRoutes was not passed: the
+// same refusal Register returns when routes are enabled.
 func (e *Extension) RegisterRoutes(router forge.Router) error {
-	if e.apiHandler != nil {
-		return e.apiHandler.RegisterRoutes(router)
+	if e.apiHandler == nil {
+		return nil
 	}
-	return nil
+	if err := e.errUnauthenticatedAPI(); err != nil {
+		return err
+	}
+	return e.apiHandler.RegisterRoutes(router)
 }
 
 // --- Config Loading (mirrors grove extension pattern) ---

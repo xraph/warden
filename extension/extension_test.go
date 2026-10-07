@@ -62,9 +62,10 @@ func TestRegister_SucceedsWithInsecureOption(t *testing.T) {
 }
 
 // TestRegister_SucceedsWithRequireIdentityFalseWhenRoutesDisabled proves
-// the gate is specifically about routes being reachable, not about the
-// RequireIdentity value in isolation: with DisableRoutes=true nothing is
-// exposed over HTTP, so RequireIdentity=false needs no escape hatch.
+// Register's gate is specifically about routes being reachable, not about
+// the RequireIdentity value in isolation: with DisableRoutes=true Register
+// exposes nothing over HTTP, so RequireIdentity=false needs no escape hatch
+// to register. Mounting the API afterwards still does (mount_gate_test.go).
 func TestRegister_SucceedsWithRequireIdentityFalseWhenRoutesDisabled(t *testing.T) {
 	ext := New(
 		WithStore(memory.New()),

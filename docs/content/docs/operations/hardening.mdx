@@ -63,6 +63,8 @@ extensions:
     disable_routes: true
 ```
 
+If you later mount the API yourself with `ext.Handler()` or `ext.RegisterRoutes(router)`, `auth.require_identity: false` still needs `WithInsecureAllowUnauthenticatedRoutes()`: without it, `Handler` panics and `RegisterRoutes` returns an error.
+
 ## Lock down declarative apply in production
 
 If you use the `.warden` DSL with `declarative_on_start: true`, also set `declarative_strict: true` in production:
