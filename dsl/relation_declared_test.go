@@ -3,6 +3,8 @@ package dsl
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -238,5 +240,93 @@ func TestApply_AStoredTupleIsNotRechecked(t *testing.T) {
 	planErr, applyErr := applyBoth(t, s, src, false)
 	if planErr != nil || applyErr != nil {
 		t.Fatalf("plan %v, apply %v; want both clean", planErr, applyErr)
+	}
+}
+
+func TestApply_ATupleDifferingOnlyInSubjectRelationIsNotStored(t *testing.T) {
+	// The store filter reads an empty SubjectRelation as "any", so with
+	// group:eng#member stored a read for group:eng returns it. The apply
+	// must still treat group:eng as a new tuple: plan it as a create, check
+	// it against the declaration, and write it.
+	ctx := context.Background()
+	seed := func(t *testing.T) *memory.Store {
+		t.Helper()
+		s := memory.New()
+		if err := s.CreateRelation(ctx, &relation.Tuple{
+			TenantID: "t1", ObjectType: "document", ObjectID: "d1", Relation: "viewer",
+			SubjectType: "group", SubjectID: "eng", SubjectRelation: "member",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	t.Run("allowed: planned as a create and written", func(t *testing.T) {
+		s := seed(t)
+		src := "warden config 1\nresource document {\n    relation viewer: user | group | group#member\n}\nrelation document:d1 viewer = group:eng\n"
+		eng := engineOverStore(t, s)
+		plan, err := Apply(ctx, eng, mustParse(t, src), ApplyOptions{TenantID: "t1", DryRun: true})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		if !contains(plan.Created, "+ relation//document:d1#viewer") || plan.NoOps != 0 {
+			t.Errorf("plan created %v, noOps %d; want the tuple as a create and no no-op", plan.Created, plan.NoOps)
+		}
+		if _, err := Apply(ctx, eng, mustParse(t, src), ApplyOptions{TenantID: "t1"}); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		rows, err := s.ListRelations(ctx, &relation.ListFilter{TenantID: "t1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var bare bool
+		for _, r := range rows {
+			if r.SubjectType == "group" && r.SubjectID == "eng" && r.SubjectRelation == "" {
+				bare = true
+			}
+		}
+		if len(rows) != 2 || !bare {
+			t.Errorf("stored %+v; want group:eng#member and group:eng", rows)
+		}
+	})
+
+	t.Run("refused: checked against the declaration", func(t *testing.T) {
+		s := seed(t)
+		src := "warden config 1\n" + docSchema + "\nrelation document:d1 viewer = group:eng\n"
+		planErr, applyErr := applyBoth(t, s, src, false)
+		want := `tuple document:d1#viewer@group:eng in the tenant root is refused: relation "viewer" of resource type "document" in the tenant root allows subjects "user", "group#member", not "group"`
+		for name, err := range map[string]error{"plan": planErr, "apply": applyErr} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: err = %v\nwant %s", name, err, want)
+			}
+		}
+		if n := relationCount(t, s); n != 1 {
+			t.Errorf("stored %d tuples, want only the seeded one", n)
+		}
+	})
+}
+
+// walkRecorder answers not-found for every namespace and records the order
+// it was asked in, which is the ancestor walk Governing makes.
+type walkRecorder struct{ asked []string }
+
+func (w *walkRecorder) GetResourceTypeByName(_ context.Context, _, ns, name string) (*resourcetype.ResourceType, error) {
+	w.asked = append(w.asked, ns)
+	return nil, fmt.Errorf("resource type %q in ns %q: %w", name, ns, warden.ErrResourceTypeNotFound)
+}
+
+// TestGoverningWalksWardenAncestorNamespaces holds resourcetype's own copy
+// of the ancestor walk to warden.AncestorNamespaces on inputs the namespace
+// validator would refuse as well as valid ones.
+func TestGoverningWalksWardenAncestorNamespaces(t *testing.T) {
+	for _, ns := range []string{"", "/", "a/", "/a/b/", "a//b", "eng", "eng/platform", "a/b/c/d/e/f/g/h", "a/b/c/d/e/f/g/h/i/j/k"} {
+		w := &walkRecorder{}
+		rt, at, err := resourcetype.Governing(context.Background(), w, "t1", ns, "document")
+		if err != nil || rt != nil || at != "" {
+			t.Errorf("%q: Governing = (%v, %q, %v), want nothing found", ns, rt, at, err)
+		}
+		if want := warden.AncestorNamespaces(ns); !reflect.DeepEqual(w.asked, want) {
+			t.Errorf("%q: walked %q, warden.AncestorNamespaces gives %q", ns, w.asked, want)
+		}
 	}
 }
