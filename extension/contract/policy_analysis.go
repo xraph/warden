@@ -20,6 +20,7 @@ import (
 	"net"
 	"reflect"
 	"regexp"
+	"regexp/syntax"
 	"strconv"
 	"strings"
 	"time"
@@ -92,22 +93,68 @@ func fieldResolves(field string) bool {
 // alwaysPresentFields are the fields resolveField returns as a plain string on
 // every request, so the value is never nil, even when the string is empty.
 // Every other resolvable field is an attribute or context lookup and can be
-// nil. Only exists and not_exists have a fixed outcome on these: every other
-// operator still depends on what the check carries.
+// nil. Being present fixes only exists and not_exists on these. Check
+// refusing some of them when empty fixes neq "" as well (requiredFields
+// below). Apart from those, and from values that match any string, every
+// operator on them depends on what the check carries.
 var alwaysPresentFields = map[string]struct{}{
 	"subject.kind": {}, "subject.id": {},
 	"resource.type": {}, "resource.id": {},
 	"action.name": {},
 }
 
-// matchEveryRegex is the set of patterns recognised as matching every string.
-// Whether an arbitrary pattern matches everything is undecidable in general,
-// so anything outside this set that happens to match everything (for
-// example "(?s).*" or "(.*)") is NOT detected and is classified as
-// request-dependent. "^.*$" is deliberately absent: without (?s) the dot does
-// not match a newline, so it fails on a value containing one. The four here
-// are unanchored at one end or empty, so an empty match always exists.
-var matchEveryRegex = map[string]struct{}{"": {}, ".*": {}, "^.*": {}, ".*$": {}}
+// requiredFields are the fields Engine.Check refuses to evaluate when empty
+// (prepareCheck: subject ID, action name, resource type). Check and Explain
+// are the only engine paths that evaluate policies, and both refuse first,
+// so on every check warden evaluates these are never "". This holds for the
+// engine's own evaluation; a caller that runs an Evaluator directly, or a
+// BeforeCheck plugin that rewrites the request, is outside it.
+var requiredFields = map[string]struct{}{
+	"subject.id": {}, "action.name": {}, "resource.type": {},
+}
+
+// matchEveryRegex is the set of anchored patterns recognised as matching
+// every string. Patterns with no anchor or other empty-width assertion are
+// judged by regexMatchesEverything instead. "^.*$" is deliberately absent:
+// without (?s) the dot does not match a newline, so it fails on a value
+// containing one. Each entry here has an empty match on every string: "^"
+// at the start, "$" at the end (without (?m) it is the end of the text,
+// which every string has), "^.*" at the start and ".*$" at the end.
+var matchEveryRegex = map[string]struct{}{"^": {}, "$": {}, "^.*": {}, ".*$": {}}
+
+// regexMatchesEverything reports whether pattern, compiled as the evaluator
+// compiles it, matches every string. It is true for the entries in
+// matchEveryRegex, and for any pattern that has no empty-width assertion
+// (^, $, \A, \z, \b, \B) and matches the empty string: such a pattern's empty
+// match does not depend on what surrounds it, so MatchString finds it at the
+// start of any value, newline or not. That covers "", ".*", "(?s).*", "(.*)"
+// and "a*". Anything else that happens to match everything, "(?m)^.*$" for
+// one, is not detected and is classified as request-dependent.
+func regexMatchesEverything(pattern string) bool {
+	if _, ok := matchEveryRegex[pattern]; ok {
+		return true
+	}
+	tree, err := syntax.Parse(pattern, syntax.Perl) // what regexp.Compile parses with
+	if err != nil || hasEmptyWidthAssertion(tree) {
+		return false
+	}
+	re, err := regexp.Compile(pattern)
+	return err == nil && re.MatchString("")
+}
+
+func hasEmptyWidthAssertion(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText,
+		syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		return true
+	}
+	for _, sub := range re.Sub {
+		if hasEmptyWidthAssertion(sub) {
+			return true
+		}
+	}
+	return false
+}
 
 // listOf mirrors inSlice's accepted shapes: []string and []any, nothing
 // else.
@@ -270,7 +317,7 @@ func classifyCondition(c policy.Condition) (ConditionProblem, ConditionReason) {
 			return ProblemAlwaysTrue, ReasonMatchesAnything
 		}
 	case policy.OpRegex:
-		if _, ok := matchEveryRegex[fmt.Sprint(c.Value)]; ok {
+		if regexMatchesEverything(fmt.Sprint(c.Value)) {
 			return ProblemAlwaysTrue, ReasonMatchesAnything
 		}
 	}
@@ -281,6 +328,12 @@ func classifyCondition(c policy.Condition) (ConditionProblem, ConditionReason) {
 		case policy.OpNotExists:
 			return ProblemAlwaysFalse, ReasonAlwaysPresent
 		}
+	}
+	// neq compares fmt.Sprint of both sides, and a required field is never
+	// empty on a check warden evaluates. No reason fits: the field is not
+	// absent, and the value does not match anything, so none is given.
+	if _, ok := requiredFields[c.Field]; ok && c.Operator == policy.OpNotEquals && fmt.Sprint(c.Value) == "" {
+		return ProblemAlwaysTrue, ReasonNone
 	}
 	switch c.Operator {
 	case policy.OpIn, policy.OpNotIn:

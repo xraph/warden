@@ -113,11 +113,16 @@ func parsePolicyID(raw string) (id.PolicyID, error) {
 
 func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
+// rfc3339Ptr formats a window bound at full precision. A stored bound can
+// carry a fraction of a second (the policy writes here parse one, and a Go
+// caller can set any time), and a projection cut to the second would show a
+// different instant from the one EffectiveAt compares. A whole-second bound
+// has no fraction to print, so it reads as it always has.
 func rfc3339Ptr(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
-	return rfc3339(*t)
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // projectPolicySummary is the list row, analysed as of now.

@@ -2,11 +2,13 @@ package contract
 
 import (
 	"context"
+	"regexp"
 	"testing"
 	"time"
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/policy"
+	"github.com/xraph/warden/store/memory"
 )
 
 var fixedNow = time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
@@ -115,6 +117,14 @@ func TestClassifyConditionMatchesTheEvaluator(t *testing.T) {
 		{"regex ^.* is always true, newline or not", policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: "^.*"}, ProblemAlwaysTrue, ReasonMatchesAnything},
 		{"regex .*$ is always true, newline or not", policy.Condition{Field: "context.note", Operator: policy.OpRegex, Value: ".*$"}, ProblemAlwaysTrue, ReasonMatchesAnything},
 		{"regex ^.*$ fails on a value with a newline, so it is not fixed", policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: "^.*$"}, ProblemNone, ReasonNone},
+		{"regex ^ alone is always true", policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: "^"}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"regex $ alone is always true", policy.Condition{Field: "context.note", Operator: policy.OpRegex, Value: "$"}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"regex a* matches the empty prefix of anything", policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: "a*"}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"regex (?s).* is always true", policy.Condition{Field: "context.note", Operator: policy.OpRegex, Value: "(?s).*"}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"regex (.*) is always true", policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: "(.*)"}, ProblemAlwaysTrue, ReasonMatchesAnything},
+		{"regex a+ needs an a, so it is not fixed", policy.Condition{Field: "context.note", Operator: policy.OpRegex, Value: "a+"}, ProblemNone, ReasonNone},
+		{"regex ^$ needs an empty value, so it is not fixed", policy.Condition{Field: "resource.id", Operator: policy.OpRegex, Value: "^$"}, ProblemNone, ReasonNone},
+		{"regex \\b needs a word, so it is not fixed", policy.Condition{Field: "resource.id", Operator: policy.OpRegex, Value: `\b`}, ProblemNone, ReasonNone},
 		{"gt against NaN is always false", policy.Condition{Field: "subject.level", Operator: policy.OpGreaterThan, Value: "NaN"}, ProblemAlwaysFalse, ReasonNotANumber},
 		{"lt against nan in any case is always false", policy.Condition{Field: "subject.level", Operator: policy.OpLessThan, Value: "nan"}, ProblemAlwaysFalse, ReasonNotANumber},
 		{"gte against NaN is TRUE for a numeric actual, so not fixed", policy.Condition{Field: "subject.level", Operator: policy.OpGTE, Value: "NaN"}, ProblemNone, ReasonNone},
@@ -407,6 +417,159 @@ func TestMatchesEverythingIsIndependentOfState(t *testing.T) {
 		a := analysePolicy(p, fixedNow)
 		if a.State == StateActive || !a.MatchesEverything {
 			t.Fatalf("state %q, matchesEverything %v: the flag describes the shape, not the state", a.State, a.MatchesEverything)
+		}
+	}
+}
+
+// regexCorpus is what every pattern recognised as matching everything is run
+// against: the empty string, values with newlines (the dot does not match
+// one without (?s)), a value that is all non-word characters, invalid UTF-8,
+// and the "<nil>" an unresolved field prints as.
+var regexCorpus = []string{"", "a\nb", "\n", "a", "u1", "line1\nline2", "  ", "!?", "日本語", "\xff\xfe", "<nil>", "the quick brown fox"}
+
+// TestEveryRegexRecognisedAsMatchingEverythingDoes runs Go's regexp, the
+// engine's matcher, over the corpus for every literal in matchEveryRegex and
+// for patterns the structural rule recognises. It also runs patterns the
+// analysis must NOT recognise, and requires each to fail on some value in the
+// corpus, so the corpus can tell the two apart.
+func TestEveryRegexRecognisedAsMatchingEverythingDoes(t *testing.T) {
+	recognised := []string{"", ".*", "a*", "x?", "(?s).*", "(.*)", ".*?", "(a|)", "a*b*", "[0-9]*", "(?i)a*", "x{0}"}
+	for p := range matchEveryRegex {
+		recognised = append(recognised, p)
+	}
+	for _, p := range recognised {
+		if !regexMatchesEverything(p) {
+			t.Errorf("%q is not recognised as matching every string", p)
+		}
+		re := regexp.MustCompile(p)
+		for _, s := range regexCorpus {
+			if !re.MatchString(s) {
+				t.Errorf("%q is recognised as matching every string, but it does not match %q", p, s)
+			}
+		}
+	}
+
+	for _, p := range []string{"^.*$", "^$", `\b`, `\B`, "a", "a+", `\A\z`, "$^", "(?m)^$", "^a*$", `[^\x00-\x{10FFFF}]`, "(^a)?b"} {
+		if regexMatchesEverything(p) {
+			t.Errorf("%q is recognised as matching every string", p)
+		}
+		re := regexp.MustCompile(p)
+		failsOne := false
+		for _, s := range regexCorpus {
+			if !re.MatchString(s) {
+				failsOne = true
+			}
+		}
+		if !failsOne {
+			t.Errorf("%q matches every value in the corpus, so this case proves nothing", p)
+		}
+	}
+}
+
+// checkEngine is a real engine over an empty store. requireTenant is on by
+// default, so every call names a tenant.
+func checkEngine(t *testing.T) (*warden.Engine, *memory.Store) {
+	t.Helper()
+	s := memory.New()
+	eng, err := warden.NewEngine(warden.WithStore(s), warden.WithEvaluator(warden.NewConditionEvaluator(func() time.Time { return fixedNow })))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	return eng, s
+}
+
+// TestNotEqualsEmptyOnAFieldCheckRequires covers `neq ""` on the three fields
+// Engine.Check refuses to evaluate when empty. It proves the refusal on Check
+// and on Explain, the two paths that reach policy evaluation, and then that
+// the condition holds on every request Check does evaluate.
+func TestNotEqualsEmptyOnAFieldCheckRequires(t *testing.T) {
+	ctx := context.Background()
+	eng, s := checkEngine(t)
+	tenant := warden.WithCallTenantID("t1")
+	full := func() *warden.CheckRequest {
+		return &warden.CheckRequest{Subject: warden.Subject{Kind: "user", ID: "u1"}, Action: warden.Action{Name: "read"}, Resource: warden.Resource{Type: "document", ID: "d1"}}
+	}
+	if _, err := eng.Check(ctx, full(), tenant, warden.WithCallDryRun()); err != nil {
+		t.Fatalf("Check refused a full request: %v", err)
+	}
+	empty := map[string]func(*warden.CheckRequest){
+		"subject.id":    func(r *warden.CheckRequest) { r.Subject.ID = "" },
+		"action.name":   func(r *warden.CheckRequest) { r.Action.Name = "" },
+		"resource.type": func(r *warden.CheckRequest) { r.Resource.Type = "" },
+	}
+	if len(empty) != len(requiredFields) {
+		t.Fatalf("the test covers %d fields, requiredFields has %d", len(empty), len(requiredFields))
+	}
+	for field, blank := range empty {
+		if _, ok := requiredFields[field]; !ok {
+			t.Fatalf("%s is not in requiredFields", field)
+		}
+		req := full()
+		blank(req)
+		if _, err := eng.Check(ctx, req, tenant, warden.WithCallDryRun()); err == nil {
+			t.Errorf("Check evaluated a request with an empty %s", field)
+		}
+		if _, err := eng.Explain(ctx, req, tenant); err == nil {
+			t.Errorf("Explain evaluated a request with an empty %s", field)
+		}
+	}
+
+	// The requests the classification is held to: every probe request Check
+	// accepts, plus ones with the fields Check does not require left empty.
+	var accepted []*warden.CheckRequest
+	for _, req := range append(requests(),
+		&warden.CheckRequest{Subject: warden.Subject{ID: "u1"}, Action: warden.Action{Name: "read"}, Resource: warden.Resource{Type: "document"}},
+		&warden.CheckRequest{Subject: warden.Subject{Kind: "user", ID: "<nil>"}, Action: warden.Action{Name: "<nil>"}, Resource: warden.Resource{Type: "<nil>", ID: "<nil>"}},
+	) {
+		if _, err := eng.Check(ctx, req, tenant, warden.WithCallDryRun()); err == nil {
+			accepted = append(accepted, req)
+		}
+	}
+	if len(accepted) < 4 {
+		t.Fatalf("only %d requests reach evaluation; the probe needs more", len(accepted))
+	}
+
+	for field := range requiredFields {
+		t.Run(field, func(t *testing.T) {
+			c := policy.Condition{Field: field, Operator: policy.OpNotEquals, Value: ""}
+			if p, r := classifyCondition(c); p != ProblemAlwaysTrue || r != ReasonNone {
+				t.Fatalf("classified (%q, %q), want (%q, %q)", p, r, ProblemAlwaysTrue, ReasonNone)
+			}
+			for i, req := range accepted {
+				if got := probe(t, c, req); got != "true" {
+					t.Errorf("request %d: evaluator says %s, classification says always true", i, got)
+				}
+			}
+
+			// End to end: an allow whose only condition is this one, with no
+			// matchers, is reported as matching everything, and Check grants
+			// every request it evaluates.
+			p := seedPolicyFor(t, s, "t1", "", "nonempty-"+field, func(p *policy.Policy) { p.Conditions = []policy.Condition{c} })
+			defer func() { _ = s.DeletePolicy(ctx, "t1", p.ID) }()
+			if !analysePolicy(p, fixedNow).MatchesEverything {
+				t.Error("not reported as matching everything")
+			}
+			for i, req := range accepted {
+				res, err := eng.Check(ctx, req, tenant, warden.WithCallDryRun())
+				if err != nil || !res.Allowed {
+					t.Errorf("request %d: Check = %+v, %v; want allowed", i, res, err)
+				}
+			}
+		})
+	}
+
+	// The same shape on a field Check does not require, and on the required
+	// fields with values that are not the empty string, still depends on the
+	// check.
+	for _, c := range []policy.Condition{
+		{Field: "subject.kind", Operator: policy.OpNotEquals, Value: ""},
+		{Field: "resource.id", Operator: policy.OpNotEquals, Value: ""},
+		{Field: "subject.id", Operator: policy.OpNotEquals},              // compares against "<nil>"
+		{Field: "action.name", Operator: policy.OpNotEquals, Value: " "}, // a space is not empty
+		{Field: "resource.type", Operator: policy.OpNotEquals, Value: "<nil>"},
+	} {
+		if p, r := classifyCondition(c); p != ProblemNone || r != ReasonNone {
+			t.Errorf("%s neq %#v classified (%q, %q), want it left to the check", c.Field, c.Value, p, r)
 		}
 	}
 }

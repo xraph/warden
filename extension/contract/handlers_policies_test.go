@@ -459,6 +459,40 @@ func TestPoliciesDetailCarriesEveryField(t *testing.T) {
 	}
 }
 
+// TestPoliciesDetailProjectsTheWindowAtFullPrecision checks that a bound
+// stored with fractional seconds comes back exactly as stored, and that
+// sending the projected string back stores the same instant, so a page that
+// echoes what it was given changes nothing.
+func TestPoliciesDetailProjectsTheWindowAtFullPrecision(t *testing.T) {
+	s := memory.New()
+	east := time.FixedZone("plus5", 5*3600)
+	notBefore := time.Date(2026, 10, 7, 10, 0, 0, 123456789, time.UTC)
+	notAfter := time.Date(2099, 7, 1, 10, 0, 0, 500000000, east)
+	seeded := seedPolicy(t, s, "", "fractional", func(p *policy.Policy) {
+		p.NotBefore = &notBefore
+		p.NotAfter = &notAfter
+	})
+	deps := Deps{Engine: engineOver(t, s)}
+	got, err := policiesDetailHandler(deps)(context.Background(), PolicyDetailInput{ID: seeded.ID.String()}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("policies.detail: %v", err)
+	}
+	if got.NotBefore != "2026-10-07T10:00:00.123456789Z" || got.NotAfter != "2099-07-01T05:00:00.5Z" {
+		t.Fatalf("window = %q..%q, want 2026-10-07T10:00:00.123456789Z..2099-07-01T05:00:00.5Z", got.NotBefore, got.NotAfter)
+	}
+
+	_, err = policiesUpdateHandler(deps)(context.Background(), PolicyUpdateInput{
+		ID: seeded.ID.String(), NotBefore: strPtr(got.NotBefore), NotAfter: strPtr(got.NotAfter),
+	}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("policies.update with the projected window: %v", err)
+	}
+	stored := storedPolicy(t, s, seeded.ID.String())
+	if stored.NotBefore == nil || !stored.NotBefore.Equal(notBefore) || stored.NotAfter == nil || !stored.NotAfter.Equal(notAfter) {
+		t.Errorf("the projected window stored back as %v..%v, want %v..%v", stored.NotBefore, stored.NotAfter, notBefore, notAfter)
+	}
+}
+
 func TestPoliciesDetailDecidingConditionIsAbsentUnlessSetAndPresentAtIndexZero(t *testing.T) {
 	s := memory.New()
 	clean := seedPolicy(t, s, "", "clean", func(p *policy.Policy) {
