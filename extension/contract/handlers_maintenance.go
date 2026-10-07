@@ -41,13 +41,13 @@ type CacheInvalidateResult struct {
 // maintenanceRunHandler runs one maintenance pass for the caller's tenant.
 //
 // maintenance.run is tenant-scoped. RunTenantMaintenance purges the resolved
-// tenant's expired assignments and, past the configured retention, that
-// tenant's check log entries, and flushes only that tenant's cached
-// decisions. No other tenant's rows are touched. The engine-wide pass
-// (RunMaintenance) stays with the background loop and direct Go callers; no
-// dashboard intent reaches it. The
-// intent still sits behind its own warden:maintenance:manage permission
-// rather than a role or assignment grant, because it deletes audit log
+// tenant's expired assignments and, when a check log retention is in
+// effect, that tenant's check log entries past it, and flushes only that
+// tenant's cached decisions. No other tenant's rows are touched. The
+// engine-wide pass (RunMaintenance) stays with the background loop and
+// direct Go callers; no dashboard intent reaches it. The intent still sits
+// behind its own warden:maintenance:manage permission rather than a role or
+// assignment grant, because with a retention in effect it deletes audit log
 // entries, and every run is audited with the resulting counts.
 func maintenanceRunHandler(deps Deps) func(context.Context, struct{}, dashcontract.Principal) (MaintenanceResult, error) {
 	return func(ctx context.Context, _ struct{}, p dashcontract.Principal) (MaintenanceResult, error) {

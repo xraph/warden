@@ -17,11 +17,11 @@ type MaintenanceReport struct {
 
 // RunMaintenance purges role assignments that have expired and, when
 // Config.CheckLogRetention > 0, check log entries older than the retention
-// window, in every tenant. When either purge actually removed rows and a Cache is
-// configured, it also does a full Cache.Clear: Cache has no "list every
-// tenant" operation, so a targeted per-tenant invalidation isn't possible
-// here; a maintenance run is infrequent enough that a full flush is cheap
-// relative to serving one stale permission.
+// window, in every tenant. When either purge actually removed rows and a
+// Cache is configured, it also does a full Cache.Clear: Cache has no "list
+// every tenant" operation, so a targeted per-tenant invalidation isn't
+// possible here; a maintenance run is infrequent enough that a full flush
+// is cheap relative to serving one stale permission.
 func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error) {
 	now := e.nowFn()
 	var report MaintenanceReport
