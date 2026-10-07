@@ -200,8 +200,10 @@ All error responses follow this format:
 
 | Status | Meaning |
 |--------|---------|
-| 400 | Bad request (missing fields, invalid ID, a relation tuple its resource type does not declare) |
-| 403 | Forbidden (authorization denied) |
+| 400 | Bad request: a body that does not bind or leaves out a field the request requires, an invalid ID, timestamp or namespace path, a missing tenant, a parent role that does not exist or would make a cycle, a duplicate relation tuple or role assignment, a change to a system role or permission, an invalid policy condition, or a relation tuple its resource type does not declare |
+| 401 | Authentication required |
+| 403 | Forbidden (authorization denied, or an AuthZEN context naming another tenant or namespace) |
 | 404 | Entity not found |
-| 409 | Conflict (a duplicate entity, a policy that changed since it was read, or a role whose member cap the request would exceed or lower below its members) |
-| 503 | Store unavailable |
+| 409 | Conflict (a record or policy that changed since the request read it, or a role whose member cap the request would exceed or lower below its members) |
+| 422 | A well-formed body that fails validation, for example an empty relation field, an unknown policy effect or subject kind, a condition value that is not a list, or an empty or oversized batch |
+| 500 | Anything else, including a store failure and a duplicate role, permission, policy or resource type |

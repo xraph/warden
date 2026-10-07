@@ -5,7 +5,7 @@ description: Check-log retention, the maintenance loop, and erasure requests.
 
 ## check_log_retention and the maintenance loop
 
-`Config.CheckLogRetention` (YAML: `check_log_retention`, default 90 days, `2160h`) controls how long `warden_check_logs` rows live before they're purged. Setting it to `0` disables purging entirely: rows accumulate forever, which is only appropriate if something else outside Warden is responsible for pruning them.
+`Config.CheckLogRetention` (YAML: `check_log_retention`, default 90 days, `2160h`) controls how long `warden_check_logs` rows live before they're purged. On the engine, `0` disables purging entirely: rows accumulate forever, which is only appropriate if something else outside Warden is responsible for pruning them. That holds only for an engine you build yourself with `warden.NewEngine(warden.WithConfig(...))`. The Forge extension treats `0` as unset and replaces it with the programmatic value if there is one, else the 90-day default, so through the extension purging always runs.
 
 `RunMaintenance` does the purging:
 
@@ -19,7 +19,7 @@ Each run:
 2. If `CheckLogRetention > 0`, deletes check-log entries older than `now - CheckLogRetention` (`PurgeCheckLogs`).
 3. If either purge actually removed rows and a cache is configured, clears the whole cache (`Cache.Clear`). There's no per-tenant "list every tenant" cache operation, and a maintenance run is infrequent enough that a full flush is cheap next to serving one stale permission.
 
-`Config.MaintenanceInterval` (YAML: `maintenance_interval`, default 1 hour) controls how often this runs in the background. `Engine.Start` calls `StartMaintenance`, which starts a goroutine ticking on that interval until the engine's `Stop` context is cancelled; setting the interval to `0` disables the loop (you'd then need to call `RunMaintenance` yourself, e.g. from a cron job, to get any purging at all).
+`Config.MaintenanceInterval` (YAML: `maintenance_interval`, default 1 hour) controls how often this runs in the background. `Engine.Start` calls `StartMaintenance`, which starts a goroutine ticking on that interval until the engine's `Stop` context is cancelled. On an engine you build yourself, an interval of `0` disables the loop (you'd then need to call `RunMaintenance` yourself, e.g. from a cron job, to get any purging at all). The Forge extension treats `0` as unset, the same as the retention, and runs the loop every hour unless you set another interval.
 
 Every run above covers every tenant. If you want one tenant only, call `RunTenantMaintenance`:
 
