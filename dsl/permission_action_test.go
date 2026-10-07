@@ -262,3 +262,41 @@ func TestWarnings_ReportAColonAction(t *testing.T) {
 		t.Errorf("resolve reported %v; a ':' action is a warning, not an error", errs)
 	}
 }
+
+// A block that names resource or action with a value that is not a name
+// (action = 123) leaves that field empty rather than taking it from the
+// permission's name, so the parse diagnostic is never the only refusal:
+// Resolve refuses the declaration too, and an apply that runs despite the
+// parse diagnostic (a DeclarativeOnStart load) writes nothing.
+func TestParse_APermissionBlockWithAMalformedFieldTakesNothingFromTheName(t *testing.T) {
+	cases := []struct {
+		name, body       string
+		resource, action string
+	}{
+		{"resource set, action malformed", "resource = \"warden:role\"\n    action = 123", "warden:role", ""},
+		{"action set, resource malformed", "resource = 123\n    action = manage", "", "manage"},
+		{"action malformed alone", "action = 123", "warden:role", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, errs := Parse("test.warden", []byte("warden config 1\npermission \"warden:role:manage\" {\n    "+tc.body+"\n}\n"))
+			if len(errs) == 0 {
+				t.Fatal("parse accepted a malformed field")
+			}
+			p := prog.Permissions[0]
+			if p.Resource != tc.resource || p.Action != tc.action {
+				t.Errorf("resource %q action %q, want %q %q", p.Resource, p.Action, tc.resource, tc.action)
+			}
+			if rerrs := Resolve(prog); len(rerrs) == 0 {
+				t.Error("resolve accepted the declaration")
+			}
+			s := memory.New()
+			if _, err := Apply(context.Background(), engineOverStore(t, s), prog, ApplyOptions{TenantID: "t1"}); err == nil {
+				t.Error("apply of the malformed block succeeded")
+			}
+			if n := permissionCount(t, s); n != 0 {
+				t.Errorf("stored %d permissions, want 0", n)
+			}
+		})
+	}
+}

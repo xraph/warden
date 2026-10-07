@@ -310,7 +310,7 @@ Editor configs can target either form interchangeably.
 The completion handler classifies the cursor position into one of nine contexts and offers suggestions tailored to each:
 
 1. **Top-level keyword** — `resource`, `permission`, `role`, `policy`, `namespace`, `relation`, `import`.
-2. **Role parent slug** — after `role X :`, every role declared in any open document (with absolute paths for cross-namespace refs).
+2. **Role parent slug**: after `role X :`, every role declared in any open document (with absolute paths for roles in other namespaces, which the resolver then refuses as a parent: a parent must be in the role's own namespace).
 3. **Role grants string** — inside `grants = [`, every permission name in the workspace.
 4. **Permission resource ref** — after `permission "x:y" (`, declared resource type names.
 5. **Permission action ref** — after `permission "x:y" (resource :`, the action names that resource declares.

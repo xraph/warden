@@ -167,17 +167,29 @@ func (r *resolver) checkConventions() {
 }
 
 // checkRoleParents resolves each role's Parent field to an actual role and
-// reports an error when the reference cannot be resolved. The local resolution
-// rule is: a bare slug resolves at the current namespace; if not found, walk
+// reports an error when the reference cannot be resolved. The lookup rule
+// is: a bare slug resolves at the current namespace; if not found, walk
 // ancestors. A leading "/" indicates an absolute namespace path
 // (`role X : /eng/admin`).
+//
+// A parent found outside the role's own namespace is refused. The store
+// keeps only the parent's slug, and the engine looks that slug up in the
+// role's own namespace, so such a role would inherit nothing from the
+// parent it names, or from a different role that shares its slug, and a
+// loop the source cannot see could be stored.
 func (r *resolver) checkRoleParents() {
 	for _, role := range r.prog.Roles {
 		if role.Parent == "" {
 			continue
 		}
-		if _, found := r.lookupParent(role); !found {
+		parent, found := r.lookupParent(role)
+		if !found {
 			r.errf(role.Pos, "role %q references unknown parent %q (in namespace %q)", role.Slug, role.Parent, role.NamespacePath)
+			continue
+		}
+		if parent.NamespacePath != role.NamespacePath {
+			r.errf(role.Pos, "role %q names parent %q, which is in namespace %q, not the role's own namespace %q; a role inherits only from a parent in its own namespace, so declare the parent there",
+				role.Slug, role.Parent, parent.NamespacePath, role.NamespacePath)
 		}
 	}
 }
@@ -232,7 +244,9 @@ func (r *resolver) checkCycles() {
 		}
 		state[role] = inStack
 		if role.Parent != "" {
-			if parent, ok := r.lookupParent(role); ok {
+			// A parent in another namespace is refused by
+			// checkRoleParents and is not an edge the engine follows.
+			if parent, ok := r.lookupParent(role); ok && parent.NamespacePath == role.NamespacePath {
 				dfs(parent, append(path, role))
 			}
 		}

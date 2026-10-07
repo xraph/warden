@@ -1,8 +1,12 @@
 package dsl
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/xraph/warden/role"
+	"github.com/xraph/warden/store/memory"
 )
 
 func resolveSrc(t *testing.T, src string) []*Diagnostic {
@@ -79,8 +83,14 @@ role editor : ghost {
 	wantDiagContaining(t, errs, "unknown parent")
 }
 
-func TestResolve_AncestorParentInDifferentNamespace(t *testing.T) {
-	src := `
+// The engine looks a parent up only in the role's own namespace (the store
+// keeps the slug alone), so a parent the source finds in an ancestor or
+// through an absolute path to another namespace is refused.
+func TestResolve_AParentOutsideTheRolesNamespaceIsRefused(t *testing.T) {
+	cases := []struct {
+		name, src, want string
+	}{
+		{"ancestor", `
 warden config 1
 role super-admin {
     name = "Super"
@@ -90,15 +100,8 @@ namespace "engineering" {
         name = "Eng Admin"
     }
 }
-`
-	errs := resolveSrc(t, src)
-	if len(errs) > 0 {
-		t.Fatalf("expected ancestor parent to resolve, got: %v", errs)
-	}
-}
-
-func TestResolve_AbsoluteParentPath(t *testing.T) {
-	src := `
+`, `role "admin" names parent "super-admin", which is in namespace "", not the role's own namespace "engineering"; a role inherits only from a parent in its own namespace, so declare the parent there`},
+		{"absolute path", `
 warden config 1
 namespace "engineering" {
     role admin {
@@ -110,9 +113,69 @@ namespace "billing" {
         name = "Billing Steward"
     }
 }
+`, `role "steward" names parent "/engineering/admin", which is in namespace "engineering", not the role's own namespace "billing"; a role inherits only from a parent in its own namespace, so declare the parent there`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := resolveSrc(t, tc.src)
+			if len(errs) != 1 || !strings.HasSuffix(errs[0].String(), tc.want) {
+				t.Fatalf("errs = %v\nwant one ending %s", errs, tc.want)
+			}
+		})
+	}
+}
+
+// The loop the reviewer found: x names /b/y and y names x. Resolve saw no
+// cycle through the cross-namespace edge, and the store would have held
+// x <-> y as a loop in namespace a. Now the cross-namespace parent is
+// refused and nothing is written.
+func TestApply_ACrossNamespaceParentCannotStoreALoop(t *testing.T) {
+	src := `
+warden config 1
+namespace "a" {
+    role x : /b/y { name = "X" }
+    role y : x { name = "Y" }
+}
+namespace "b" {
+    role y { name = "Other Y" }
+}
 `
-	errs := resolveSrc(t, src)
-	if len(errs) > 0 {
+	prog, perrs := Parse("test.warden", []byte(src))
+	if len(perrs) > 0 {
+		t.Fatalf("parse: %v", perrs)
+	}
+	errs := Resolve(prog)
+	if len(errs) != 1 || !strings.Contains(errs[0].String(), `role "x" names parent "/b/y", which is in namespace "b"`) {
+		t.Fatalf("errs = %v", errs)
+	}
+	s := memory.New()
+	if _, err := Apply(context.Background(), engineOverStore(t, s), prog, ApplyOptions{TenantID: "t1"}); err == nil {
+		t.Fatal("apply succeeded")
+	}
+	roles, err := s.ListRoles(context.Background(), &role.ListFilter{TenantID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roles) != 0 {
+		t.Errorf("stored %d roles, want 0", len(roles))
+	}
+}
+
+// An absolute path into the role's own namespace names the same role a
+// bare slug would, so it is accepted.
+func TestResolve_AnAbsoluteParentInTheRolesOwnNamespaceResolves(t *testing.T) {
+	src := `
+warden config 1
+namespace "engineering" {
+    role admin {
+        name = "Eng Admin"
+    }
+    role lead : /engineering/admin {
+        name = "Lead"
+    }
+}
+`
+	if errs := resolveSrc(t, src); len(errs) > 0 {
 		t.Fatalf("expected absolute path to resolve, got: %v", errs)
 	}
 }
@@ -188,7 +251,7 @@ permission "warden:role:read" {
     action = read
 }
 permission "warden:*" {
-    resource = warden
+    resource = "warden"
     action = "*"
 }
 resource "role" {

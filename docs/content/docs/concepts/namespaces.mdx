@@ -80,7 +80,7 @@ The runtime semantics, per entity kind:
 | **Policies** at namespace `N` | Apply to checks in `N` and **all descendants**. Sub-namespace policies stack on top of ancestor policies in the merge. |
 | **Relation tuples** | **Located** at a namespace; do **not** cascade. A tuple `document:d1 viewer = user:alice` at `engineering` is invisible from `billing` — even though both are in the same tenant. This keeps tuple namespaces partition-clean. |
 
-> **Sibling isolation.** A role declared in `billing` is invisible from `engineering`. The walk only goes *up*, never sideways. Cross-namespace references must use the absolute path (`/billing/...`) explicitly — see [Cross-namespace references](#cross-namespace-references) below.
+> **Sibling isolation.** A role declared in `billing` is invisible from `engineering`. The walk only goes *up*, never sideways. A role's parent is different again: it has to sit in the role's own namespace, with no walk at all. See [Role parents](#role-parents) below.
 
 ## Setting the Namespace at Check Time
 
@@ -173,17 +173,21 @@ namespace "engineering" {
   }
 
   namespace "platform" {
-    role platform-admin : eng-viewer {   // bare slug → walks ancestors
+    role platform-viewer {
+      name = "Platform Viewer"
+    }
+
+    role platform-admin : platform-viewer {   // parent in the same namespace
       name = "Platform Admin"
     }
 
-    role sre : /engineering/platform/platform-admin {   // absolute reference
+    role sre : /engineering/platform/platform-admin {   // absolute path, same namespace
       name = "SRE"
     }
   }
 
   namespace "frontend" {
-    role frontend-developer : eng-viewer {   // resolves to /engineering/eng-viewer
+    role frontend-developer {   // no parent: eng-viewer is in another namespace
       name = "Frontend Developer"
     }
   }
@@ -201,28 +205,30 @@ The DSL parser flattens these into absolute paths during AST construction — ev
 </Tab>
 </Tabs>
 
-## Cross-Namespace References
+## Role Parents
 
-Bare slugs (`role X : viewer`) resolve in the role's own namespace, then walk ancestors. To reach **across** the tree — say a role in `engineering/platform` should inherit from a role in `billing` — use an absolute path with a leading `/`:
+A role's parent has to be declared in the role's own namespace. The store keeps only the parent's slug, and the engine looks that slug up in the role's namespace when it collects inherited grants, so a parent anywhere else would give the role nothing, or the grants of an unrelated role that happens to share the slug.
+
+`warden apply` and the dashboard's schema apply refuse a parent outside the role's namespace with a diagnostic, and write nothing:
 
 ```warden
 namespace "engineering" {
   namespace "platform" {
-    role billing-platform-admin : /billing/billing-admin {
+    role billing-platform-admin : /billing/billing-admin {   // refused: billing is another namespace
       name = "Platform admin with billing oversight"
     }
   }
 }
 ```
 
-The leading `/` flips the resolver into absolute mode: it goes straight to `billing/billing-admin` instead of walking the role's own ancestors. This is the only escape hatch — sibling lookups always require it.
+The same goes for a bare slug that the resolver only finds in an ancestor namespace. An absolute path into the role's own namespace (`role sre : /engineering/platform/platform-admin` inside `engineering/platform`) is accepted and means the same as the bare slug. If you want a role in `engineering/platform` to carry billing grants, grant those permissions to it directly, or assign the subject the billing role as well.
 
 ## Resolution Rules at a Glance
 
 | Reference | Resolution |
 |---|---|
-| `role X : viewer` (bare) | Try `viewer` at this role's namespace, then each ancestor up to root. |
-| `role X : /eng/admin` (absolute) | Look exactly at `eng/admin`, no walk. |
+| `role X : viewer` (bare) | `viewer` must be declared in this role's namespace. One found only in an ancestor is refused. |
+| `role X : /eng/admin` (absolute) | Accepted only when `eng` is this role's own namespace. |
 | Permission name in `grants = ["doc:read"]` | Try at this role's namespace, then ancestors. |
 | Permission shorthand `permission "x:y" (document : read)` | `document` is resolved at the permission's namespace, then ancestors. |
 | Resource type referenced in a permission expression | Same — namespace-of-the-permission, then ancestors. |

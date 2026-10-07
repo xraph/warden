@@ -86,14 +86,14 @@ role editor : admin  { name = "Editor" }
 role viewer : editor { name = "Viewer" }
 ```
 
-The `:` syntax declares the parent slug. Cross-namespace inheritance uses an absolute path (`role x : /other-ns/admin`).
+The `:` syntax declares the parent slug. The parent has to be declared in the role's own namespace. A role stores only its parent's slug, and the engine looks that slug up in the role's namespace, so there's no inheritance across namespaces. `warden apply` refuses a parent it finds in an ancestor namespace or through an absolute path to another namespace (`role x : /other-ns/admin`), and writes nothing. An absolute path into the role's own namespace is fine.
 
 </Tab>
 </Tabs>
 
 When checking permissions, Warden walks up the role hierarchy to collect all inherited permissions.
 
-A parent can't make a role its own ancestor. The REST API and the dashboard refuse a parent that is the role itself or one of its descendants, or one that doesn't exist in the role's namespace, and `warden apply` refuses source with a parent cycle or an unknown parent. A store call checks none of this.
+A parent can't make a role its own ancestor. The REST API and the dashboard refuse a parent that is the role itself or one of its descendants, or one that doesn't exist in the role's namespace, and `warden apply` refuses source with a parent cycle, an unknown parent or a parent outside the role's namespace. A store call checks none of this. Two `PUT`s that land at the same moment (one setting `a`'s parent to `b`, the other `b`'s to `a`) can each pass the check and store a two-role loop. The engine stops at a role it has already visited, so a check still finishes. Clear one of the two parents to break the loop.
 
 ## Permissions
 

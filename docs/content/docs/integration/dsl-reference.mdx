@@ -208,7 +208,7 @@ permission "doc:write" (document : edit)
 
 The shorthand form binds the catalog entry to the `read` (or `edit`) permission expression declared in the `resource document { ... }` block.
 
-Names follow the format `<resource>:<action>`. Resources are snake_case identifiers; actions can include `*` for glob matching at check time.
+Names follow the format `<resource>:<action>`. A resource can be any name that isn't empty: a bare identifier such as `document`, or a quoted string, which is how you write one holding a `:` (`"warden:role"`). Actions can include `*` for glob matching at check time.
 
 **Name alone**: `permission "warden:role:read"` with no body takes the resource from before the last `:` and the action from after it, here `warden:role` and `read`. A block that sets only one of the two takes the other from the name: `permission "warden:role:read" { resource = "warden:role" }` has the action `read`, and `{ action = read }` has the resource `warden:role`. When the name doesn't start with the resource, or end with the action, the block is a diagnostic: set both.
 
@@ -252,21 +252,22 @@ role admin : editor {
 
 ### Inheritance
 
-`role editor : viewer` makes `editor` a child of `viewer`. The slug after the colon resolves first in the local namespace, then walks up ancestors. To reach across the namespace tree explicitly, use a leading `/`:
+`role editor : viewer` makes `editor` a child of `viewer`. The parent has to be declared in the same namespace as the role. A role stores only its parent's slug, and the engine looks that slug up in the role's own namespace at check time, so a parent anywhere else would give the role nothing. The resolver refuses one with a diagnostic, whether it finds the parent in an ancestor namespace or through an absolute path to another namespace, and an apply writes nothing. An absolute path into the role's own namespace is accepted and means the same as the bare slug:
 
 ```warden
 namespace "engineering" {
-  role platform-admin : eng-viewer {           // local — eng-viewer in same ns
+  role eng-viewer {
   }
 
-  namespace "platform" {
-    role sre : /engineering/platform-admin {   // absolute path
-    }
+  role platform-admin : eng-viewer {             // eng-viewer in the same namespace
+  }
+
+  role lead : /engineering/platform-admin {      // absolute path, same namespace
   }
 }
 ```
 
-The resolver detects cycles in the parent graph and reports them as diagnostics. Inherited permissions cascade at evaluation time — see [authorization models](/docs/concepts/authorization-models).
+The resolver detects cycles in the parent graph and reports them as diagnostics. Inherited permissions cascade at evaluation time, see [authorization models](/docs/concepts/authorization-models).
 
 ### Slug rules
 
@@ -421,7 +422,7 @@ namespace "engineering" {
   }
 
   namespace "platform" {
-    role platform-admin : eng-viewer {        // inherits from eng-viewer at /engineering
+    role platform-admin {                     // a parent must be in this namespace
       name    = "Platform Admin"
       grants += ["infra:*"]
     }
@@ -433,7 +434,7 @@ namespace "engineering" {
   }
 
   namespace "frontend" {
-    role frontend-developer : eng-viewer {    // resolves to /engineering/eng-viewer
+    role frontend-developer {
       grants += ["ui:*"]
     }
   }
@@ -457,7 +458,7 @@ namespace "billing" {
 
 - **Segment**: matches `^[a-z][a-z0-9-]{0,62}$`.
 - **Path separator**: `/`. Storage canonicalizes paths without leading or trailing slashes (root is `""`).
-- **Leading `/`**: only valid in role-parent references — marks an absolute path from the tenant root. `role X : /eng/admin` jumps across the namespace tree.
+- **Leading `/`**: only valid in role-parent references, where it marks an absolute path from the tenant root. `role X : /eng/admin` is accepted only for a role declared in `eng`, since a parent must be in the role's own namespace.
 - **Reserved segments**: `system`, `admin`, `_root` are reserved.
 
 ### Resolution rules
@@ -465,14 +466,14 @@ namespace "billing" {
 | Lookup | Behavior |
 |---|---|
 | Role at namespace `N` (assignment) | Visible from `N` and all descendants. |
-| Role parent (bare slug) | Resolves at the role's own namespace, then walks ancestors. |
-| Role parent (absolute `/.../...`) | Resolves at the named namespace, no walk. |
+| Role parent (bare slug) | Must be declared in the role's own namespace. One the resolver finds only in an ancestor is a diagnostic. |
+| Role parent (absolute `/.../...`) | Accepted only when the path names the role's own namespace. |
 | Permission referenced from a role's `grants` | Resolves at the role's namespace, then at the root. Nothing in between: use a qualified grant `{ namespace = "...", name = "..." }` for any other namespace. |
 | Resource type referenced from a permission shorthand | Resolves at the permission's namespace, then walks ancestors. |
 | Policy at namespace `N` | Applies to checks in `N` and all descendants. |
 | Relation tuples | Located at a namespace; do **not** cascade. |
 
-Sibling references must use absolute paths — a role declared in `billing` cannot be referenced as a bare slug from `engineering`.
+A role declared in `billing` cannot be named as a bare slug from `engineering`, and it cannot be a parent there by absolute path either.
 
 ## Imports
 

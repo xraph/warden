@@ -431,7 +431,12 @@ func (p *parser) parsePermission() *PermissionDecl {
 		}
 	case LBRACE:
 		p.advance()
+		// set*: the block gave the field a value. bad*: the block named the
+		// field with a value that is not one. A bad field stays empty and is
+		// never taken from the name, so Resolve refuses the declaration and
+		// an apply that runs despite the parse diagnostic writes nothing.
 		setResource, setAction := false, false
+		badResource, badAction := false, false
 		for p.cur.Kind != RBRACE && p.cur.Kind != EOF {
 			switch p.cur.Kind {
 			case RESOURCE:
@@ -444,6 +449,7 @@ func (p *parser) parsePermission() *PermissionDecl {
 					setResource = true
 				} else {
 					p.errf(p.cur.Pos, "expected resource identifier")
+					badResource = true
 				}
 			case IDENT:
 				key := p.cur.Value
@@ -459,6 +465,7 @@ func (p *parser) parsePermission() *PermissionDecl {
 						setAction = true
 					default:
 						p.errf(p.cur.Pos, "expected action identifier")
+						badAction = true
 					}
 					p.advance()
 				default:
@@ -489,7 +496,17 @@ func (p *parser) parsePermission() *PermissionDecl {
 			}
 		}
 		p.expect(RBRACE)
-		p.fillFromName(d, pos, setResource, setAction)
+		switch {
+		case badResource || badAction:
+			if badResource {
+				d.Resource = ""
+			}
+			if badAction {
+				d.Action = ""
+			}
+		default:
+			p.fillFromName(d, pos, setResource, setAction)
+		}
 	default:
 		// No body: the name, split above, gives resource and action.
 	}
