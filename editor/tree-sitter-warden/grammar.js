@@ -64,8 +64,8 @@ module.exports = grammar({
       $.description_assign,
     ),
 
-    // A relation may allow no subject type: `relation x:` with nothing after
-    // the colon.
+    // A relation may list no subject types: `relation x:` with nothing after
+    // the colon. An empty list puts no limit on the subject type.
     relation_def: $ => seq(
       'relation',
       field('name', $._name),

@@ -12,6 +12,8 @@ A relation tuple represents a relationship between a subject and an object. It i
 Every config example on this page comes in two flavours: **Go** (programmatic — call the store directly) and **DSL** (declarative — `.warden` source applied via [`warden apply`](/docs/integration/dsl-tooling#cli) or [`dsl.ApplyFS`](/docs/integration/dsl-tooling#programmatic-apply)). They produce identical tuples in the relations table.
 
 > **What goes in source vs runtime?** Schema declarations (resource types, relation definitions) are config — keep them in `.warden`. Individual relation *tuples* (`document:welcome owner = user:alice`) usually accumulate at runtime as users share documents, join teams, etc. — those are written via the store API. The `relation` declaration in `.warden` is for fixtures and bootstrap state, not high-volume tuple writes.
+>
+> A store write skips the check the dashboard, the REST API and `warden apply` make before writing a tuple: that the resource type governing its object type declares the relation and allows the subject. To refuse the same tuples from Go, call `resourcetype.CheckTupleDeclared(ctx, eng.Store(), tuple)` before `CreateRelation` and stop on its error.
 
 ### Tuple Fields
 

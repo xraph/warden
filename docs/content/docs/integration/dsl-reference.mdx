@@ -389,7 +389,7 @@ Form: `relation OBJ_TYPE:OBJ_ID RELATION = SUBJ_TYPE:SUBJ_ID[#SUBJ_RELATION]`.
 
 The optional `#SUBJ_RELATION` suffix creates a [subject set](#subject-sets) — "every member of `group:eng` is a viewer of `document:welcome`".
 
-For runtime relation writes (the typical path), use the engine's `CreateRelation` API or a tuple-write plugin — `relation` declarations are appropriate for fixtures and bootstrap state, not for tracking high-volume tuples.
+For runtime relation writes (the typical path), use the store's `CreateRelation` (`eng.Store().CreateRelation`) or a tuple-write plugin. `relation` declarations are appropriate for fixtures and bootstrap state, not for tracking high-volume tuples. A store write skips the declaration check an apply makes (see [What changed](#what-changed)); call `resourcetype.CheckTupleDeclared` first to refuse the same tuples.
 
 ## Namespaces
 

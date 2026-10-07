@@ -155,6 +155,8 @@ POST /v1/relations
 }
 ```
 
+REST writes every tuple at the tenant root: the request has no namespace field. When a resource type named after `object_type` is declared at the tenant root, the tuple must name a relation it declares and a subject that relation allows (`user` for `user:...`, `group#member` for a subject set; a relation that lists no subject types allows any). Otherwise the response is 400 with a message naming the tuple, the resource type and what it allows, and nothing is written. An object type with no resource type at the tenant root is not checked. Add `"subject_relation": "member"` to write a subject set such as `group:eng#member`.
+
 ## Policies
 
 | Method | Path | Operation |
@@ -198,7 +200,7 @@ All error responses follow this format:
 
 | Status | Meaning |
 |--------|---------|
-| 400 | Bad request (missing fields, invalid ID) |
+| 400 | Bad request (missing fields, invalid ID, a relation tuple its resource type does not declare) |
 | 403 | Forbidden (authorization denied) |
 | 404 | Entity not found |
 | 409 | Conflict (a duplicate entity, a policy that changed since it was read, or a role whose member cap the request would exceed or lower below its members) |
