@@ -182,6 +182,11 @@ func TestApply_TupleCheckFollowsTheNamespaceChain(t *testing.T) {
 			"",
 		},
 		{
+			"a relation that lists no subject types takes any subject",
+			"warden config 1\nresource memo {\n    relation watcher:\n}\nrelation memo:m1 watcher = user:alice\nrelation memo:m1 watcher = group:eng#member\n",
+			"",
+		},
+		{
 			"undeclared relation is refused",
 			"warden config 1\n" + docSchema + "\nrelation document:d1 editor = user:alice\n",
 			`tuple document:d1#editor@user:alice in the tenant root is refused: resource type "document" in the tenant root declares no relation "editor" (its relations are "owner", "viewer")`,

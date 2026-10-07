@@ -57,7 +57,9 @@ func TestSubjectAllowedFollowsTheDSL(t *testing.T) {
 		{"any entry of several", []string{"user", "group#member"}, "group", "member", true},
 		{"quoted user:* is a literal type, not a wildcard", []string{"user:*"}, "user", "", false},
 		{"quoted user:* admits its literal type", []string{"user:*"}, "user:*", "", true},
-		{"empty list admits nothing", nil, "user", "", false},
+		{"empty list admits a bare type", nil, "user", "", true},
+		{"empty list admits another bare type", []string{}, "group", "", true},
+		{"empty list admits a subject set", nil, "group", "member", true},
 		{"no case folding", []string{"User"}, "user", "", false},
 	}
 	for _, c := range cases {
@@ -162,15 +164,32 @@ func TestCheckTupleDeclaredNearestWins(t *testing.T) {
 }
 
 func TestCheckTupleDeclaredEmptyDeclarations(t *testing.T) {
+	// A relation that lists no subject types takes any subject, but it must
+	// still be declared; a listed relation still restricts.
 	ctx := context.Background()
 	s := &fakeTypes{}
-	s.put("t1", &ResourceType{Name: "document", Relations: []RelationDef{{Name: "on call"}}})
+	s.put("t1", &ResourceType{Name: "document", Relations: []RelationDef{
+		{Name: "on call"},
+		{Name: "owner", AllowedSubjects: []string{"user"}},
+	}})
 	s.put("t1", &ResourceType{Name: "bare"})
 
-	err := CheckTupleDeclared(ctx, s, tuple("", "on call", "user", ""))
-	want := `tuple document:d1#on call@user:x in the tenant root is refused: relation "on call" of resource type "document" in the tenant root allows no subject type, so it cannot hold "user"`
+	for _, subj := range []struct{ typ, rel string }{{"user", ""}, {"group", ""}, {"group", "member"}} {
+		if err := CheckTupleDeclared(ctx, s, tuple("", "on call", subj.typ, subj.rel)); err != nil {
+			t.Errorf("empty list refused %s#%s: %v", subj.typ, subj.rel, err)
+		}
+	}
+
+	err := CheckTupleDeclared(ctx, s, tuple("", "owner", "group", "member"))
+	want := `tuple document:d1#owner@group:x#member in the tenant root is refused: relation "owner" of resource type "document" in the tenant root allows subjects "user", not "group#member"`
 	if err == nil || err.Error() != want {
-		t.Errorf("got %v\nwant %s", err, want)
+		t.Errorf("listed relation: got %v\nwant %s", err, want)
+	}
+
+	err = CheckTupleDeclared(ctx, s, tuple("", "editor", "user", ""))
+	want = `tuple document:d1#editor@user:x in the tenant root is refused: resource type "document" in the tenant root declares no relation "editor" (its relations are "on call", "owner")`
+	if err == nil || err.Error() != want {
+		t.Errorf("undeclared relation: got %v\nwant %s", err, want)
 	}
 
 	bare := &relation.Tuple{TenantID: "t1", ObjectType: "bare", ObjectID: "b", Relation: "r", SubjectType: "user", SubjectID: "x"}

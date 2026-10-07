@@ -346,8 +346,9 @@ func (p *parser) parseRelationDef() *RelationDef {
 		p.errf(p.cur.Pos, "expected `:` after relation name")
 		return nil
 	}
-	// A relation may allow no subject type at all (`relation x:` with
-	// nothing after the colon); the store can hold one.
+	// A relation may list no subject types (`relation x:` with nothing
+	// after the colon); the store can hold one. An empty list puts no limit
+	// on the subject type: the relation accepts a tuple with any subject.
 	if p.cur.Kind != IDENT && p.cur.Kind != STRING {
 		return def
 	}

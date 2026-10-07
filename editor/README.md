@@ -95,7 +95,7 @@ tenant "0f3a-9c"
 
 resource "role" {
     relation "name": user | "user:*"
-    relation "on call":            // a relation that allows no subject type
+    relation "on call":            // lists no subject type, so it takes any subject
 }
 
 permission "warden:role:read" {

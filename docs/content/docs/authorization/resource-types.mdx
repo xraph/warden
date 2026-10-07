@@ -81,7 +81,7 @@ The expression algebra (`or`, `and`, `not`, `->`) is the same as the Go form —
 | Field | Type | Description |
 |-------|------|-------------|
 | `Name` | `string` | Relation name (e.g., "viewer") |
-| `AllowedSubjects` | `[]string` | Allowed subject types — bare types (`user`) or subject sets (`group#member`) |
+| `AllowedSubjects` | `[]string` | Allowed subject types: bare types (`user`) or subject sets (`group#member`). An empty list puts no limit on the subject type. |
 
 ## PermissionDef
 

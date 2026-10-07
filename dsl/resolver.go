@@ -265,7 +265,7 @@ func (r *resolver) checkExpressions() {
 			// The target type for traversal is the FIRST allowed subject's type.
 			// Multiple subjects are valid for direct grants but traversal needs
 			// a single concrete type; we conservatively use the first. A
-			// relation that allows no subject type is still declared, so a
+			// relation that lists no subject type is still declared, so a
 			// bare reference to it resolves; it has no target to traverse.
 			targets[rel.Name] = ""
 			if len(rel.AllowedSubjects) > 0 {

@@ -70,14 +70,18 @@ func SubjectSpec(subjectType, subjectRelation string) string {
 }
 
 // SubjectAllowed reports whether a subject is one allowed entries admit.
-// An entry is either a bare type ("user"), which admits a subject of that
-// type with no subject relation, or a subject set ("group#member"), which
-// admits that type with that subject relation only. So "group" does not
-// admit group:eng#member, and "group#member" does not admit group:eng. The
-// DSL has no wildcard: a quoted name such as "user:*" is a literal type
-// name and matches only a subject of that literal type. An empty list
-// admits nothing.
+// An empty list puts no limit on the subject type: it admits every subject,
+// with or without a subject relation. Otherwise an entry is either a bare
+// type ("user"), which admits a subject of that type with no subject
+// relation, or a subject set ("group#member"), which admits that type with
+// that subject relation only. So "group" does not admit group:eng#member,
+// and "group#member" does not admit group:eng. The DSL has no wildcard: a
+// quoted name such as "user:*" is a literal type name and matches only a
+// subject of that literal type.
 func SubjectAllowed(allowed []string, subjectType, subjectRelation string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
 	spec := SubjectSpec(subjectType, subjectRelation)
 	for _, a := range allowed {
 		if a == spec {
@@ -100,7 +104,8 @@ type UndeclaredTupleError struct {
 	// subject.
 	RelationDeclared bool
 	// Declared lists the resource type's relations when RelationDeclared
-	// is false, and the relation's allowed subjects when it is true.
+	// is false, and the relation's allowed subjects (never empty, since an
+	// empty list allows any subject) when it is true.
 	Declared []string
 }
 
@@ -118,9 +123,6 @@ func (e *UndeclaredTupleError) Error() string {
 		return head + fmt.Sprintf("%s declares no relation %q (its relations are %s)", rt, t.Relation, quotedList(e.Declared))
 	}
 	spec := SubjectSpec(t.SubjectType, t.SubjectRelation)
-	if len(e.Declared) == 0 {
-		return head + fmt.Sprintf("relation %q of %s allows no subject type, so it cannot hold %q", t.Relation, rt, spec)
-	}
 	return head + fmt.Sprintf("relation %q of %s allows subjects %s, not %q", t.Relation, rt, quotedList(e.Declared), spec)
 }
 
@@ -153,7 +155,8 @@ func quotedList(in []string) string {
 // finds for t.ObjectType from t.NamespacePath. When there is none, the
 // object type is undeclared and the tuple is not checked. When there is
 // one, it must declare t.Relation, and that relation's allowed subjects
-// must admit the tuple's subject (SubjectAllowed). A refusal is an
+// must admit the tuple's subject (SubjectAllowed). A relation that lists no
+// subject types admits any subject; it must still be declared. A refusal is an
 // *UndeclaredTupleError.
 //
 // It checks a write. Tuples already stored are not read, and the evaluator
