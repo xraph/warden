@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"reflect"
 	"sync"
@@ -164,5 +165,49 @@ func TestRelations_RESTDeleteOfNothingAuditsNothing(t *testing.T) {
 	deleteRESTTuple(t, h, "")
 	if got := probe.deleted(); len(got) != 0 {
 		t.Errorf("relation.deleted events = %+v, want none (nothing was removed)", got)
+	}
+}
+
+func TestRelations_RESTDeleteWhoseReadFailedAuditsTheWholeKey(t *testing.T) {
+	// With no tuple to name, the one event names what the delete covered:
+	// the namespace, and every subject relation, since the key leaves it
+	// out.
+	s := memory.New()
+	probe := &relationAuditProbe{}
+	eng, err := warden.NewEngine(
+		warden.WithStore(missedReadStore{Store: s, readErr: errors.New("read failed")}),
+		warden.WithPlugin(probe),
+	)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	router := forge.NewRouter()
+	a := New(eng, router, WithAuthorizer(allowAllAuthorizer))
+	if err := a.RegisterRoutes(router); err != nil {
+		t.Fatalf("register routes: %v", err)
+	}
+	seedRESTTuple(t, s, testTenant, "eng", "member")
+
+	deleteRESTTuple(t, router.Handler(), "eng")
+
+	got := probe.deleted()
+	want := "namespace eng: document:doc1#viewer@group:eng (any subject relation)"
+	if len(got) != 1 || got[0].EntityID != want || got[0].TenantID != testTenant {
+		t.Fatalf("relation.deleted events = %+v, want one with EntityID %q", got, want)
+	}
+	if got[0].Entity != nil || got[0].Before != nil {
+		t.Errorf("entity %#v, before %#v; want both nil (the read named no tuple)", got[0].Entity, got[0].Before)
+	}
+	if rows, _ := s.ListRelations(context.Background(), &relation.ListFilter{TenantID: testTenant}); len(rows) != 0 {
+		t.Errorf("rows left = %+v, want the tuple deleted", rows)
+	}
+}
+
+func TestRelations_RESTDeleteKeyNamesTheTenantRoot(t *testing.T) {
+	got := relationDeleteKey(&DeleteRelationRequest{
+		ObjectType: "document", ObjectID: "doc1", Relation: "viewer", SubjectType: "user", SubjectID: "bob",
+	})
+	if want := "tenant root: document:doc1#viewer@user:bob (any subject relation)"; got != want {
+		t.Errorf("key = %q, want %q", got, want)
 	}
 }

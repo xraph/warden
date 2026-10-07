@@ -106,7 +106,12 @@ type RelationWritten interface {
 	OnRelationWritten(ctx context.Context, t *relation.Tuple) error
 }
 
-// RelationDeleted is called after a relation tuple is deleted.
+// RelationDeleted is called after a relation tuple is deleted, once per
+// tuple, with that tuple's ID (never the zero ID). A REST delete by key
+// whose read of the matching tuples named none (it failed, or found
+// nothing) fires no RelationDeleted; it clears the engine's cache for its
+// tenant itself, and when the read failed its one audit event names the
+// key instead of a tuple.
 type RelationDeleted interface {
 	OnRelationDeleted(ctx context.Context, relID id.RelationID) error
 }

@@ -165,18 +165,32 @@ func TestRelations_RESTDeleteFiresTheTypedHookOncePerRemovedTuple(t *testing.T) 
 	}
 }
 
-func TestRelations_RESTDeleteThatFoundNothingStillClearsTheCache(t *testing.T) {
+func TestRelations_RESTDeleteThatFoundNothingClearsOnlyThisTenant(t *testing.T) {
 	// The read and the delete are two calls. When the read finds nothing,
 	// the delete may still remove a tuple written in between, and
 	// DeleteRelationTuple does not say how many rows it removed. So the
-	// handler fires the hook once with the zero ID: a spurious cache clear
-	// is safe, a missed one leaves a stale allow.
-	h, _, _, _, probe := newCachedRelationAPI(t)
+	// handler clears the caller's tenant's cached decisions itself, and
+	// leaves every other tenant's alone: it fires no typed hook (whose
+	// invalidator clears the whole cache) with a made up ID.
+	h, _, _, c, probe := newCachedRelationAPI(t)
+	ctx := context.Background()
+	req := &warden.CheckRequest{
+		Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "bob"},
+		Action:   warden.Action{Name: "read"},
+		Resource: warden.Resource{Type: "document", ID: "doc1"},
+	}
+	c.Set(ctx, testTenant, "", req, &warden.CheckResult{Allowed: true})
+	c.Set(ctx, "t2", "", req, &warden.CheckResult{Allowed: true})
 
 	deleteRESTTuple(t, h, "")
 
-	got := probe.got()
-	if len(got) != 1 || !got[0].IsNil() {
-		t.Errorf("OnRelationDeleted got %v, want exactly one zero ID", got)
+	if got := probe.got(); len(got) != 0 {
+		t.Errorf("OnRelationDeleted got %v, want no call (the read named no tuple)", got)
+	}
+	if _, ok := c.Get(ctx, testTenant, "", req); ok {
+		t.Error("the caller's tenant kept its cached decision")
+	}
+	if _, ok := c.Get(ctx, "t2", "", req); !ok {
+		t.Error("another tenant's cached decision was cleared")
 	}
 }
