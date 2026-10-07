@@ -165,7 +165,10 @@ type Shutdown interface {
 // Actor is warden.Actor, passed as `any` to avoid an import cycle (plugin
 // cannot import the root warden package); it carries Kind, ID and Via.
 // Entity is the entity after the change, or nil on delete. Before is the
-// entity before an update, nil otherwise.
+// entity as it stood before an update or a delete (role, policy,
+// permission, assignment, resource type and relation deletes all set it).
+// It is nil on a create, and on an update or delete whose read of the old
+// entity failed.
 type Event struct {
 	Actor     any
 	RequestID string

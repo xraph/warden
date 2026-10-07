@@ -118,21 +118,46 @@ func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*st
 	}
 
 	_, tenantID := scopeFromForgeContext(ctx)
+	// Read the matching tuples first so each one is audited by its own ID,
+	// the same shape the dashboard's relations.delete uses. The filter is
+	// the delete's key exactly. That key leaves out subject_relation, so one
+	// delete can remove several tuples (group:eng and group:eng#member).
+	//
+	// The read and the delete are two calls, not one transaction: a tuple
+	// with this key written between them is removed without an event of its
+	// own. As with the role and policy deletes, a failed read does not stop
+	// the delete; the audit then falls back to one event naming the key.
+	ns := req.NamespacePath
+	matched, listErr := a.eng.Store().ListRelations(ctx.Context(), &relation.ListFilter{
+		TenantID:      tenantID,
+		NamespacePath: &ns,
+		ObjectType:    req.ObjectType,
+		ObjectID:      req.ObjectID,
+		Relation:      req.Relation,
+		SubjectType:   req.SubjectType,
+		SubjectID:     req.SubjectID,
+	})
+
 	if err := a.eng.Store().DeleteRelationTuple(ctx.Context(), tenantID, req.NamespacePath, req.ObjectType, req.ObjectID, req.Relation, req.SubjectType, req.SubjectID); err != nil {
 		return nil, mapError(err)
 	}
 
 	if a.eng.Plugins() != nil {
 		actor, _ := warden.ActorFromContext(ctx.Context())
-		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
-			Actor: actor, At: time.Now(), Action: "relation.deleted",
-			TenantID: tenantID,
-			EntityID: req.ObjectType + ":" + req.ObjectID + "#" + req.Relation + "@" + req.SubjectType + ":" + req.SubjectID,
-			Entity: map[string]string{
-				"object_type": req.ObjectType, "object_id": req.ObjectID, "relation": req.Relation,
-				"subject_type": req.SubjectType, "subject_id": req.SubjectID,
-			},
-		})
+		now := time.Now()
+		if listErr != nil {
+			a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+				Actor: actor, At: now, Action: "relation.deleted",
+				TenantID: tenantID,
+				EntityID: req.ObjectType + ":" + req.ObjectID + "#" + req.Relation + "@" + req.SubjectType + ":" + req.SubjectID,
+			})
+		}
+		for _, t := range matched {
+			a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+				Actor: actor, At: now, Action: "relation.deleted",
+				TenantID: tenantID, EntityID: t.ID.String(), Before: t,
+			})
+		}
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)
