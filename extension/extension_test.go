@@ -132,3 +132,152 @@ func TestRegister_NegativeDurationsLoadFromYAML(t *testing.T) {
 		t.Fatalf("engine got retention %v and interval %v, want -1h and -30m", got.CheckLogRetention, got.MaintenanceInterval)
 	}
 }
+
+// yamlApp builds a forge.App whose only config file is a config.yaml in a
+// temp dir holding body.
+func yamlApp(t *testing.T, name, body string) forge.App {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return forge.New(
+		forge.WithAppName(name),
+		forge.WithConfigSearchPaths(dir),
+		forge.WithEnableAppScopedConfig(false),
+	)
+}
+
+// TestRegister_YAMLSectionKeepsCodeSetValuesItLeavesOut: a YAML section
+// that names none of these keys must not reset what code set to the
+// defaults. A key it leaves out keeps the code-set value.
+func TestRegister_YAMLSectionKeepsCodeSetValuesItLeavesOut(t *testing.T) {
+	requireTenant := false
+	app := yamlApp(t, "yaml-keeps-code", "extensions:\n  warden:\n    disable_routes: true\n")
+	ext := New(
+		WithStore(memory.New()),
+		WithConfig(Config{
+			CheckLogRetention:   -time.Hour,
+			MaintenanceInterval: -time.Minute,
+			MaxGraphDepth:       3,
+			RequireTenant:       &requireTenant,
+		}),
+	)
+	if err := ext.Register(app); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got := ext.Engine().Config()
+	if got.CheckLogRetention != -time.Hour || got.MaintenanceInterval != -time.Minute || got.MaxGraphDepth != 3 {
+		t.Fatalf("engine got retention %v, interval %v, depth %d; want -1h, -1m and 3 from code",
+			got.CheckLogRetention, got.MaintenanceInterval, got.MaxGraphDepth)
+	}
+	if got.RequireTenant == nil || *got.RequireTenant {
+		t.Errorf("RequireTenant = %v, want the code-set false", got.RequireTenant)
+	}
+	// Fields neither side set still get the defaults.
+	d := DefaultConfig()
+	if got.CacheMaxSize != d.CacheMaxSize || got.MaxBatchChecks != d.MaxBatchChecks {
+		t.Errorf("cache max size %d, batch %d; want defaults %d and %d",
+			got.CacheMaxSize, got.MaxBatchChecks, d.CacheMaxSize, d.MaxBatchChecks)
+	}
+	if ext.config.Auth != DefaultAuthConfig() {
+		t.Errorf("Auth = %+v, want the defaults", ext.config.Auth)
+	}
+}
+
+// TestRegister_YAMLValueOverridesCode: a key the YAML section sets wins.
+// Binding writes a *bool through its pointer, so the caller's own bool
+// must not change.
+func TestRegister_YAMLValueOverridesCode(t *testing.T) {
+	requireTenant := false
+	app := yamlApp(t, "yaml-overrides-code", "extensions:\n  warden:\n    disable_routes: true\n"+
+		"    max_graph_depth: 5\n    check_log_retention: 2h\n    maintenance_interval: 10m\n    require_tenant: true\n")
+	ext := New(
+		WithStore(memory.New()),
+		WithConfig(Config{
+			CheckLogRetention:   -time.Hour,
+			MaintenanceInterval: -time.Minute,
+			MaxGraphDepth:       3,
+			RequireTenant:       &requireTenant,
+		}),
+	)
+	if err := ext.Register(app); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got := ext.Engine().Config()
+	if got.CheckLogRetention != 2*time.Hour || got.MaintenanceInterval != 10*time.Minute || got.MaxGraphDepth != 5 {
+		t.Fatalf("engine got retention %v, interval %v, depth %d; want 2h, 10m and 5 from YAML",
+			got.CheckLogRetention, got.MaintenanceInterval, got.MaxGraphDepth)
+	}
+	if got.RequireTenant == nil || !*got.RequireTenant {
+		t.Errorf("RequireTenant = %v, want YAML's true", got.RequireTenant)
+	}
+	if requireTenant {
+		t.Error("binding YAML changed the caller's own RequireTenant bool")
+	}
+}
+
+// TestRegister_ExplicitYAMLZeroIsUnset: an explicit 0 in YAML counts as
+// unset, so the code-set value fills it, else the default.
+func TestRegister_ExplicitYAMLZeroIsUnset(t *testing.T) {
+	body := "extensions:\n  warden:\n    disable_routes: true\n    max_graph_depth: 0\n" +
+		"    check_log_retention: 0\n    maintenance_interval: 0\n"
+
+	ext := New(
+		WithStore(memory.New()),
+		WithConfig(Config{CheckLogRetention: -time.Hour, MaxGraphDepth: 3}),
+	)
+	if err := ext.Register(yamlApp(t, "yaml-zero-code", body)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got := ext.Engine().Config()
+	d := DefaultConfig()
+	if got.CheckLogRetention != -time.Hour || got.MaxGraphDepth != 3 {
+		t.Errorf("retention %v, depth %d; want the code-set -1h and 3", got.CheckLogRetention, got.MaxGraphDepth)
+	}
+	if got.MaintenanceInterval != d.MaintenanceInterval {
+		t.Errorf("interval %v, want the default %v (code set none)", got.MaintenanceInterval, d.MaintenanceInterval)
+	}
+
+	plain := New(WithStore(memory.New()))
+	if err := plain.Register(yamlApp(t, "yaml-zero-plain", body)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got = plain.Engine().Config()
+	if got.CheckLogRetention != d.CheckLogRetention || got.MaintenanceInterval != d.MaintenanceInterval ||
+		got.MaxGraphDepth != d.MaxGraphDepth {
+		t.Errorf("retention %v, interval %v, depth %d; want the defaults",
+			got.CheckLogRetention, got.MaintenanceInterval, got.MaxGraphDepth)
+	}
+}
+
+// TestRegister_NoYAMLSectionUsesCodeThenDefaults: with no warden section
+// at all, the code-set values and the defaults apply as before.
+func TestRegister_NoYAMLSectionUsesCodeThenDefaults(t *testing.T) {
+	app := yamlApp(t, "yaml-other-section", "other:\n  key: value\n")
+	ext := New(
+		WithStore(memory.New()),
+		WithConfig(Config{CheckLogRetention: -time.Hour, MaxGraphDepth: 3}),
+		WithDisableRoutes(),
+	)
+	if err := ext.Register(app); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got := ext.Engine().Config()
+	d := DefaultConfig()
+	if got.CheckLogRetention != -time.Hour || got.MaxGraphDepth != 3 || got.MaintenanceInterval != d.MaintenanceInterval {
+		t.Fatalf("retention %v, depth %d, interval %v; want -1h, 3 and the default %v",
+			got.CheckLogRetention, got.MaxGraphDepth, got.MaintenanceInterval, d.MaintenanceInterval)
+	}
+
+	plain := New(WithStore(memory.New()), WithDisableRoutes())
+	if err := plain.Register(newTestApp("no-config-defaults")); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got = plain.Engine().Config()
+	if got.CheckLogRetention != d.CheckLogRetention || got.MaxGraphDepth != d.MaxGraphDepth ||
+		got.MaintenanceInterval != d.MaintenanceInterval {
+		t.Fatalf("no config: retention %v, depth %d, interval %v; want the defaults",
+			got.CheckLogRetention, got.MaxGraphDepth, got.MaintenanceInterval)
+	}
+}

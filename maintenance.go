@@ -16,12 +16,13 @@ type MaintenanceReport struct {
 }
 
 // RunMaintenance purges role assignments that have expired and, when
-// Config.CheckLogRetention > 0 (0 or negative is off), check log entries older than the retention
-// window, in every tenant. When either purge actually removed rows and a
-// Cache is configured, it also does a full Cache.Clear: Cache has no "list
-// every tenant" operation, so a targeted per-tenant invalidation isn't
-// possible here; a maintenance run is infrequent enough that a full flush
-// is cheap relative to serving one stale permission.
+// Config.CheckLogRetention > 0 (0 or negative is off), check log entries
+// older than the retention window, in every tenant. When either purge
+// actually removed rows and a Cache is configured, it also does a full
+// Cache.Clear: Cache has no "list every tenant" operation, so a targeted
+// per-tenant invalidation isn't possible here; a maintenance run is
+// infrequent enough that a full flush is cheap relative to serving one
+// stale permission.
 func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error) {
 	now := e.nowFn()
 	var report MaintenanceReport
@@ -57,10 +58,11 @@ func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error) 
 
 // RunTenantMaintenance is RunMaintenance for one tenant. It purges that
 // tenant's role assignments that have expired and, when
-// Config.CheckLogRetention > 0 (0 or negative is off), that tenant's check log entries older than
-// the retention window. No other tenant's rows are touched. When either
-// purge removed rows and a Cache is configured, it invalidates that
-// tenant's cached decisions (Cache.InvalidateTenant), not the whole cache.
+// Config.CheckLogRetention > 0 (0 or negative is off), that tenant's check
+// log entries older than the retention window. No other tenant's rows are
+// touched. When either purge removed rows and a Cache is configured, it
+// invalidates that tenant's cached decisions (Cache.InvalidateTenant), not
+// the whole cache.
 //
 // An empty tenantID returns ErrTenantRequired before anything is deleted:
 // the stores read an empty tenant filter as every tenant, so empty is never

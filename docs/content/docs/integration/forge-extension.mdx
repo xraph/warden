@@ -222,7 +222,10 @@ All defaults below come from `extension.DefaultConfig()`, which itself mirrors `
 
 ### Merge behaviour
 
-File-based configuration is merged with programmatic options. Programmatic boolean flags (`DisableRoutes`, `DisableMigrate`) always win when set to `true`. For value fields, YAML takes precedence, then programmatic values fill any gap, then defaults fill what's left.
+File-based configuration is merged with programmatic options. A key the YAML section sets wins over the value you set in code. A key it leaves out keeps your code-set value, and anything neither sets gets the default, so `WithConfig(Config{CheckLogRetention: -time.Hour})` still switches purging off when the YAML section holds only `disable_routes: true`. Two rules sit on top of that:
+
+- `DisableRoutes`, `DisableMigrate` and `EvaluateAllModels` set to `true` in code always win, even over a YAML `false`.
+- For `base_path`, `grove_database`, `auth` and the numeric and duration knobs, an explicit `0` or empty value in YAML (for `auth`, one that leaves all three fields `false`) counts as unset: your code-set value fills it if there is one, else the default.
 
 ## REST API Endpoints
 

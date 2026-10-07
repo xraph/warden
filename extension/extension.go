@@ -323,8 +323,10 @@ func (e *Extension) RegisterRoutes(router forge.Router) error {
 func (e *Extension) loadConfiguration() error {
 	programmaticConfig := e.config
 
-	// Try loading from config file.
-	fileConfig, configLoaded, bindErr := e.tryLoadFromConfigFile()
+	// Try loading from config file. The YAML is bound over the code-set
+	// config (defaults filling its gaps), so a key the YAML section leaves
+	// out keeps the value set in code rather than falling back to a default.
+	fileConfig, configLoaded, bindErr := e.tryLoadFromConfigFile(e.mergeWithDefaults(programmaticConfig))
 
 	if bindErr != nil && programmaticConfig.RequireConfig {
 		return fmt.Errorf("warden: bind configuration: %w", bindErr)
@@ -362,21 +364,23 @@ func (e *Extension) loadConfiguration() error {
 	return nil
 }
 
-// tryLoadFromConfigFile attempts to load config from YAML files. cfg is
-// pre-populated with DefaultConfig() before binding, so mapstructure only
-// overwrites keys actually present in the source document. A YAML
-// section that mentions disable_routes but not auth still keeps
+// tryLoadFromConfigFile attempts to load config from YAML files. Each bind
+// starts from a copy of base (the code-set config with defaults filling
+// its gaps), and the binder only overwrites keys actually present in the
+// source document. So a key the YAML section sets wins, and a key it
+// leaves out keeps the code-set value, or the default when code set none.
+// A YAML section that mentions disable_routes but not auth still keeps
 // auth.require_identity=true, rather than zeroing it because the key
 // wasn't spelled out. The third return value is the bind error, if any;
 // the caller decides whether that's fatal (RequireConfig) or a
 // fall-through to defaults.
-func (e *Extension) tryLoadFromConfigFile() (Config, bool, error) {
+func (e *Extension) tryLoadFromConfigFile(base Config) (Config, bool, error) {
 	cm := e.App().Config()
 	var lastErr error
 
 	// Try "extensions.warden" first (namespaced pattern).
 	if cm.IsSet("extensions.warden") {
-		cfg := DefaultConfig()
+		cfg := base.clone()
 		err := cm.Bind("extensions.warden", &cfg)
 		if err == nil {
 			e.Logger().Debug("warden: loaded config from file",
@@ -392,7 +396,7 @@ func (e *Extension) tryLoadFromConfigFile() (Config, bool, error) {
 
 	// Try legacy "warden" key.
 	if cm.IsSet("warden") {
-		cfg := DefaultConfig()
+		cfg := base.clone()
 		err := cm.Bind("warden", &cfg)
 		if err == nil {
 			e.Logger().Debug("warden: loaded config from file",
@@ -441,9 +445,10 @@ func (e *Extension) mergeWithDefaults(cfg Config) Config {
 	}
 	// Auth is only defaulted wholesale when it was never touched at all
 	// (the pure-programmatic path with no WithConfig/YAML section for
-	// it): tryLoadFromConfigFile already pre-populates defaults before
-	// binding, so a YAML-sourced Config here reflects the operator's
-	// actual intent field-by-field and must not be clobbered.
+	// it): tryLoadFromConfigFile binds over a base that already has Auth
+	// filled (the code-set Auth, else the defaults), so a YAML-sourced
+	// Config here reflects the operator's actual intent field-by-field
+	// and must not be clobbered.
 	if cfg.Auth == (AuthConfig{}) {
 		cfg.Auth = defaults.Auth
 	}
@@ -451,7 +456,11 @@ func (e *Extension) mergeWithDefaults(cfg Config) Config {
 }
 
 // mergeConfigurations merges YAML config with programmatic options.
-// Programmatic bool flags override when true; YAML takes precedence for value fields.
+// yamlConfig was bound over the code-set config, so a key the YAML left
+// out already holds the code-set value. What is left here: programmatic
+// DisableRoutes, DisableMigrate and EvaluateAllModels win when true, and
+// an explicit YAML 0 or empty value for the fields below counts as unset,
+// so the code-set value fills it, else mergeWithDefaults' default.
 func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) Config {
 	// Programmatic bool flags override when true.
 	if programmaticConfig.DisableRoutes {

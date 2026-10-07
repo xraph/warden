@@ -150,8 +150,9 @@ func (e *Engine) Health(ctx context.Context) error {
 
 // Start performs startup initialization: logs a summary of the engine's
 // check-log/cache/maintenance configuration and, when
-// Config.MaintenanceInterval > 0 (0 or negative is off), starts the background maintenance loop
-// (RunMaintenance on that interval) that Stop later cancels.
+// Config.MaintenanceInterval > 0 (0 or negative is off), starts the
+// background maintenance loop (RunMaintenance on that interval) that Stop
+// later cancels.
 func (e *Engine) Start(_ context.Context) error {
 	e.logger.Info("warden: engine starting",
 		log.Bool("check_log_enabled", e.config.checkLogEnabled()),

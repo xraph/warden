@@ -42,6 +42,8 @@ func DefaultAuthConfig() AuthConfig {
 // Config holds the Warden extension configuration.
 // Fields can be set programmatically via Option functions or loaded from
 // YAML configuration files (under "extensions.warden" or "warden" keys).
+// A key the YAML section sets wins over the code-set value; a key it
+// leaves out keeps the code-set value, else the default.
 type Config struct {
 	// DisableRoutes prevents HTTP route registration.
 	DisableRoutes bool `json:"disable_routes" mapstructure:"disable_routes" yaml:"disable_routes"`
@@ -175,6 +177,23 @@ type DashboardConfig struct {
 	// none, so guessing would serve one operator every tenant's data, and
 	// on a check could return an allow the real tenant would have denied.
 	TenantID string `json:"tenant_id" mapstructure:"tenant_id" yaml:"tenant_id"`
+}
+
+// clone returns a copy of c that shares no memory a config binder could
+// write through. The binder sets a *bool by writing to the existing
+// pointee, so binding YAML over a shallow copy would change the caller's
+// own bool.
+func (c Config) clone() Config {
+	if c.RequireTenant != nil {
+		v := *c.RequireTenant
+		c.RequireTenant = &v
+	}
+	if c.EnableCheckLog != nil {
+		v := *c.EnableCheckLog
+		c.EnableCheckLog = &v
+	}
+	c.DeclarativePaths = append([]string(nil), c.DeclarativePaths...)
+	return c
 }
 
 // DefaultConfig returns a Config with sensible defaults.

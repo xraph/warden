@@ -40,7 +40,7 @@ type ConfigDetail struct {
 	// negative number. CheckLogRetentionHours and MaintenanceIntervalMin
 	// stay for clients older than the seconds fields. They are rounded down
 	// and also 0 when off, so there a retention under an hour reads 0, the
-	// same as no retention at all.
+	// same as off.
 	CheckLogRetentionSeconds   int64 `json:"checkLogRetentionSeconds"`
 	MaintenanceIntervalSeconds int64 `json:"maintenanceIntervalSeconds"`
 	CheckLogRetentionHours     int64 `json:"checkLogRetentionHours"`
