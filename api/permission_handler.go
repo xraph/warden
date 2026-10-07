@@ -137,7 +137,14 @@ func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*str
 	}
 
 	_, tenantID := scopeFromForgeContext(ctx)
-	before, getErr := a.eng.Store().GetPermission(ctx.Context(), tenantID, permID)
+	// Read first so the system guard has something to check.
+	before, err := a.eng.Store().GetPermission(ctx.Context(), tenantID, permID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := permission.CheckWritable(before); err != nil {
+		return nil, mapError(err)
+	}
 
 	if err := a.eng.Store().DeletePermission(ctx.Context(), tenantID, permID); err != nil {
 		return nil, mapError(err)
@@ -146,14 +153,10 @@ func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*str
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitPermissionDeleted(ctx.Context(), permID)
 		actor, _ := warden.ActorFromContext(ctx.Context())
-		ev := plugin.Event{
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
 			Actor: actor, At: time.Now(), Action: "permission.deleted",
-			TenantID: tenantID, EntityID: permID.String(),
-		}
-		if getErr == nil {
-			ev.Before = before
-		}
-		a.eng.Plugins().EmitAudit(ctx.Context(), ev)
+			TenantID: tenantID, EntityID: permID.String(), Before: before,
+		})
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)

@@ -35,7 +35,7 @@ type CreateRoleRequest struct {
 	Slug          string         `json:"slug" description:"URL-safe slug, unique per (tenant, namespace)"`
 	NamespacePath string         `json:"namespace_path,omitempty" description:"Namespace path (e.g. \"engineering/platform\"); empty = tenant root"`
 	Description   string         `json:"description,omitempty" description:"Human-readable description"`
-	ParentSlug    string         `json:"parent_slug,omitempty" description:"Parent role slug for inheritance (must exist in same tenant + namespace, or in an ancestor namespace)"`
+	ParentSlug    string         `json:"parent_slug,omitempty" description:"Parent role slug for inheritance (must name a role in the same tenant and namespace, and not this role)"`
 	MaxMembers    int            `json:"max_members,omitempty" description:"Maximum members (0 = unlimited)"`
 	IsDefault     bool           `json:"is_default,omitempty" description:"Default role flag"`
 	Metadata      map[string]any `json:"metadata,omitempty" description:"Custom metadata"`
@@ -50,7 +50,7 @@ type UpdateRoleRequest struct {
 	RoleID      string         `path:"roleId" description:"Role ID"`
 	Name        string         `json:"name,omitempty" description:"Role name"`
 	Description string         `json:"description,omitempty" description:"Human-readable description"`
-	ParentSlug  *string        `json:"parent_slug,omitempty" description:"Parent role slug; empty string clears, omit to leave unchanged"`
+	ParentSlug  *string        `json:"parent_slug,omitempty" description:"Parent role slug (must name a role in the same namespace that is neither this role nor one of its descendants); empty string clears, omit to leave unchanged"`
 	MaxMembers  *int           `json:"max_members,omitempty" description:"Maximum members"`
 	IsDefault   *bool          `json:"is_default,omitempty" description:"Default role flag"`
 	Metadata    map[string]any `json:"metadata,omitempty" description:"Custom metadata"`

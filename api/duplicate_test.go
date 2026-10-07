@@ -9,7 +9,9 @@ import (
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
+	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/resourcetype"
+	"github.com/xraph/warden/role"
 )
 
 // duplicateCase posts the same create twice and expects the second to be a
@@ -125,9 +127,13 @@ func TestMapError_OtherRefusalsKeepTheirStatus(t *testing.T) {
 		err  error
 		want int
 	}{
-		{"system role", warden.ErrSystemRoleImmutable, http.StatusBadRequest},
-		{"system permission", warden.ErrSystemPermissionImmutable, http.StatusBadRequest},
+		{"system role", warden.ErrSystemRoleImmutable, http.StatusForbidden},
+		{"system role refusal", &role.SystemRoleError{Name: "Admin"}, http.StatusForbidden},
+		{"system permission", warden.ErrSystemPermissionImmutable, http.StatusForbidden},
+		{"system permission refusal", &permission.SystemPermissionError{Name: "sys:read"}, http.StatusForbidden},
 		{"cyclic inheritance", fmt.Errorf("role a: %w", warden.ErrCyclicRoleInheritance), http.StatusBadRequest},
+		{"parent cycle refusal", &role.CycleError{Slug: "a", Parent: "b"}, http.StatusBadRequest},
+		{"missing parent", &role.ParentNotFoundError{Parent: "ghost"}, http.StatusBadRequest},
 		{"members exceeded", warden.ErrMaxMembersExceeded, http.StatusBadRequest},
 		{"invalid condition", fmt.Errorf("%w: unknown operator %q", warden.ErrInvalidCondition, "nope"), http.StatusBadRequest},
 		{"undeclared tuple", &resourcetype.UndeclaredTupleError{}, http.StatusBadRequest},

@@ -1,27 +1,24 @@
 // immutable.go: the system-entity guard.
 //
-// READ THIS BEFORE REMOVING IT AS REDUNDANT. It is not redundant. Warden
-// defines ErrSystemRoleImmutable and ErrSystemPermissionImmutable in
-// errors.go, and a repository-wide grep finds ZERO places that return
-// either one. No store checks IsSystem on update or delete. The HTTP API
-// does not check it. The engine does not check it.
-//
-// So IsSystem is, everywhere below this file, a display flag with no teeth.
-// Without these two functions this dashboard will let an operator rename a
-// system role, change its parent, or delete it, and the store will do it.
+// READ THIS BEFORE REMOVING IT AS REDUNDANT. It is not redundant. No store
+// checks IsSystem on update or delete, and the engine does not check it.
+// The rule lives in role.CheckWritable and permission.CheckWritable, which
+// this file and the REST API (api/role_handler.go, api/permission_handler.go)
+// both call, so the two refuse the same writes in the same words. Without
+// these two functions this dashboard will let an operator rename a system
+// role, change its parent, or delete it, and the store will do it.
 //
 // The guard belongs here rather than in each handler so that the plans
 // after this one cannot add a role or permission write that forgets it.
 //
 // schema.plan and schema.apply write through dsl.Apply, which cannot call
 // these two. They set dsl.ApplyOptions.ProtectSystem instead, which refuses
-// the same writes in the same words, as a diagnostic at the declaration.
+// the same writes with the same sentence, as a diagnostic at the
+// declaration. That sentence names a role by its slug, which is what the
+// source declares, where this guard and REST name it by its name.
 package contract
 
 import (
-	"fmt"
-
-	"github.com/xraph/warden"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/role"
 
@@ -49,36 +46,34 @@ type guardError struct {
 func (e *guardError) Error() string   { return e.wire.Error() }
 func (e *guardError) Unwrap() []error { return []error{e.wire, e.cause} }
 
-// guardSystemRole refuses a write to a system role.
+// guardSystemRole refuses a write to a system role, with
+// role.CheckWritable's refusal.
 //
 // It is a permission fact, not bad input: retyping the request will not
 // make a system role writable, so the wire code is PERMISSION_DENIED rather
 // than BAD_REQUEST.
 func guardSystemRole(r *role.Role) error {
-	if r == nil || !r.IsSystem {
-		return nil
-	}
-	return &guardError{
-		wire: &dashcontract.Error{
-			Code: dashcontract.CodePermissionDenied,
-			Message: fmt.Sprintf("%q is a system role and cannot be changed or deleted",
-				r.Name),
-		},
-		cause: warden.ErrSystemRoleImmutable,
-	}
+	return asGuardError(role.CheckWritable(r))
 }
 
-// guardSystemPermission refuses a write to a system permission.
+// guardSystemPermission refuses a write to a system permission, with
+// permission.CheckWritable's refusal.
 func guardSystemPermission(p *permission.Permission) error {
-	if p == nil || !p.IsSystem {
+	return asGuardError(permission.CheckWritable(p))
+}
+
+// asGuardError gives a shared refusal its PERMISSION_DENIED wire shape and
+// keeps it in the chain, so errors.Is still finds the warden sentinel it
+// wraps. A nil refusal stays nil.
+func asGuardError(refusal error) error {
+	if refusal == nil {
 		return nil
 	}
 	return &guardError{
 		wire: &dashcontract.Error{
-			Code: dashcontract.CodePermissionDenied,
-			Message: fmt.Sprintf("%q is a system permission and cannot be changed or deleted",
-				p.Name),
+			Code:    dashcontract.CodePermissionDenied,
+			Message: refusal.Error(),
 		},
-		cause: warden.ErrSystemPermissionImmutable,
+		cause: refusal,
 	}
 }

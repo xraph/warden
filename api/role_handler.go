@@ -142,14 +142,12 @@ func (a *API) createRole(ctx forge.Context, req *CreateRoleRequest) (*role.Role,
 		UpdatedAt:     now,
 	}
 
-	if req.ParentSlug != "" {
-		// Pre-validate the parent exists for a friendlier error than an FK violation.
-		// Parents must live in the same namespace as the child role.
-		if _, err := a.eng.Store().GetRoleBySlug(ctx.Context(), tenantID, r.NamespacePath, req.ParentSlug); err != nil {
-			return nil, forge.BadRequest(fmt.Sprintf("parent role %q not found in tenant %q ns %q", req.ParentSlug, tenantID, r.NamespacePath))
-		}
-		r.ParentSlug = req.ParentSlug
+	// The parent must exist in the role's own namespace, and cannot be the
+	// role itself: the same check the dashboard runs.
+	if err := role.CheckParent(ctx.Context(), a.eng.Store(), tenantID, r, req.ParentSlug); err != nil {
+		return nil, mapError(err)
 	}
+	r.ParentSlug = req.ParentSlug
 
 	if err := a.eng.Store().CreateRole(ctx.Context(), r); err != nil {
 		return nil, mapError(err)
@@ -194,6 +192,9 @@ func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role,
 	if err != nil {
 		return nil, mapError(err)
 	}
+	if err := role.CheckWritable(before); err != nil {
+		return nil, mapError(err)
+	}
 	r := *before
 
 	if req.Name != "" {
@@ -215,13 +216,12 @@ func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role,
 		r.IsDefault = *req.IsDefault
 	}
 	if req.ParentSlug != nil {
-		newParent := *req.ParentSlug
-		if newParent != "" && newParent != r.ParentSlug {
-			if _, err := a.eng.Store().GetRoleBySlug(ctx.Context(), r.TenantID, r.NamespacePath, newParent); err != nil {
-				return nil, forge.BadRequest(fmt.Sprintf("parent role %q not found in tenant %q ns %q", newParent, r.TenantID, r.NamespacePath))
-			}
+		// A parent that does not exist, or one that is this role or one of
+		// its descendants, is refused: the same check the dashboard runs.
+		if err := role.CheckParent(ctx.Context(), a.eng.Store(), tenantID, &r, *req.ParentSlug); err != nil {
+			return nil, mapError(err)
 		}
-		r.ParentSlug = newParent
+		r.ParentSlug = *req.ParentSlug
 	}
 	if req.Metadata != nil {
 		r.Metadata = req.Metadata
@@ -252,7 +252,14 @@ func (a *API) deleteRole(ctx forge.Context, _ *GetRoleRequest) (*struct{}, error
 	}
 
 	_, tenantID := scopeFromForgeContext(ctx)
-	before, getErr := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
+	// Read first so the system guard has something to check.
+	before, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := role.CheckWritable(before); err != nil {
+		return nil, mapError(err)
+	}
 
 	if err := a.eng.Store().DeleteRole(ctx.Context(), tenantID, roleID); err != nil {
 		return nil, mapError(err)
@@ -261,14 +268,10 @@ func (a *API) deleteRole(ctx forge.Context, _ *GetRoleRequest) (*struct{}, error
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitRoleDeleted(ctx.Context(), roleID)
 		actor, _ := warden.ActorFromContext(ctx.Context())
-		ev := plugin.Event{
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
 			Actor: actor, At: time.Now(), Action: "role.deleted",
-			TenantID: tenantID, EntityID: roleID.String(),
-		}
-		if getErr == nil {
-			ev.Before = before
-		}
-		a.eng.Plugins().EmitAudit(ctx.Context(), ev)
+			TenantID: tenantID, EntityID: roleID.String(), Before: before,
+		})
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)
@@ -312,12 +315,26 @@ func (a *API) resolvePermRef(ctx forge.Context, tenantID, permIDStr, permName, p
 	return permission.Ref{NamespacePath: p.NamespacePath, Name: p.Name}, &pid, nil
 }
 
+// loadWritableRole reads a role and refuses a system role, whose grants
+// cannot change. The dashboard's attach, detach and set-grants commands
+// refuse it the same way.
+func (a *API) loadWritableRole(ctx forge.Context, tenantID string, roleID id.RoleID) error {
+	r, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
+	if err != nil {
+		return mapError(err)
+	}
+	return mapError(role.CheckWritable(r))
+}
+
 func (a *API) attachPermissionToRole(ctx forge.Context, req *AttachPermissionRequest) (*struct{}, error) {
 	roleID, err := id.ParseRoleID(ctx.Param("roleId"))
 	if err != nil {
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 	_, tenantID := scopeFromForgeContext(ctx)
+	if err := a.loadWritableRole(ctx, tenantID, roleID); err != nil {
+		return nil, err
+	}
 
 	ref, legacyID, perr := a.resolvePermRef(ctx, tenantID, req.PermissionID, req.PermissionName, req.PermissionNamespacePath)
 	if perr != nil {
@@ -349,6 +366,9 @@ func (a *API) detachPermissionFromRole(ctx forge.Context, req *DetachPermissionR
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 	_, tenantID := scopeFromForgeContext(ctx)
+	if err := a.loadWritableRole(ctx, tenantID, roleID); err != nil {
+		return nil, err
+	}
 
 	permIDStr := ctx.Param("permissionId")
 	if permIDStr == "" {

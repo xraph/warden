@@ -12,6 +12,7 @@ import (
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/resourcetype"
+	"github.com/xraph/warden/role"
 )
 
 // scopeFromForgeContext extracts appID and tenantID from a forge.Context
@@ -48,10 +49,18 @@ func mapError(err error) error {
 	if errors.Is(err, warden.ErrAlreadyExists) {
 		return forge.NewHTTPError(http.StatusConflict, err.Error())
 	}
+	// A system role or permission cannot be changed by any request, so
+	// this is 403 rather than 400: the caller cannot fix it by changing
+	// what it sent. The dashboard returns PERMISSION_DENIED for the same
+	// refusal, with the same message.
 	if errors.Is(err, warden.ErrSystemRoleImmutable) || errors.Is(err, warden.ErrSystemPermissionImmutable) {
-		return forge.BadRequest(err.Error())
+		return forge.Forbidden(err.Error())
 	}
-	if errors.Is(err, warden.ErrCyclicRoleInheritance) || errors.Is(err, warden.ErrMaxMembersExceeded) {
+	// A parent that would make a role its own ancestor, or one that does
+	// not exist in the role's namespace: the caller can pick another.
+	var missingParent *role.ParentNotFoundError
+	if errors.Is(err, warden.ErrCyclicRoleInheritance) || errors.As(err, &missingParent) ||
+		errors.Is(err, warden.ErrMaxMembersExceeded) {
 		return forge.BadRequest(err.Error())
 	}
 	// A tuple its resource type does not declare: the caller can fix the

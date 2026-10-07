@@ -82,3 +82,15 @@ var ErrPolicyVersionConflict = fmt.Errorf("warden: policy changed since it was r
 // Config.RequireTenant is true; the tenant-scoped maintenance purges return
 // it for an empty tenant rather than treating empty as every tenant.
 var ErrTenantRequired = errors.New("warden: tenant is required")
+
+// ErrSystemRoleImmutable is returned when a write would change or delete a
+// system role.
+var ErrSystemRoleImmutable = errors.New("warden: system role cannot be modified")
+
+// ErrSystemPermissionImmutable is returned when a write would change or
+// delete a system permission.
+var ErrSystemPermissionImmutable = errors.New("warden: system permission cannot be modified")
+
+// ErrCyclicRoleInheritance is returned when a role's parent would make the
+// role its own ancestor.
+var ErrCyclicRoleInheritance = errors.New("warden: cyclic role inheritance detected")

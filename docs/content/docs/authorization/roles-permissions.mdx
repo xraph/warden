@@ -20,7 +20,7 @@ A role is a named collection of permissions that can be assigned to subjects.
 | `Slug` | `string` | URL-safe identifier (unique per tenant) |
 | `Description` | `string` | Human-readable description |
 | `ParentSlug` | `string` | Parent role slug for inheritance — empty means no parent |
-| `IsSystem` | `bool` | System roles cannot be deleted |
+| `IsSystem` | `bool` | System roles cannot be changed or deleted through REST or the dashboard, grants included; they can still be assigned |
 | `IsDefault` | `bool` | Auto-assigned to new subjects |
 | `MaxMembers` | `int` | Most distinct subjects with a live assignment to this role (0 = unlimited) |
 | `Metadata` | `map[string]any` | Custom key-value data |
@@ -93,6 +93,8 @@ The `:` syntax declares the parent slug. Cross-namespace inheritance uses an abs
 
 When checking permissions, Warden walks up the role hierarchy to collect all inherited permissions.
 
+A parent can't make a role its own ancestor. The REST API and the dashboard refuse a parent that is the role itself or one of its descendants, or one that doesn't exist in the role's namespace, and `warden apply` refuses source with a parent cycle or an unknown parent. A store call checks none of this.
+
 ## Permissions
 
 A permission represents a single (resource, action) authorization grant.
@@ -106,7 +108,7 @@ A permission represents a single (resource, action) authorization grant.
 | `Resource` | `string` | Resource type (e.g., "document") |
 | `Action` | `string` | Action verb (e.g., "read", "write") |
 | `Description` | `string` | Human-readable description |
-| `IsSystem` | `bool` | System permissions cannot be deleted |
+| `IsSystem` | `bool` | System permissions cannot be changed or deleted through REST or the dashboard |
 | `Metadata` | `map[string]any` | Custom key-value data |
 
 An action may not contain `:`. The engine checks a grant by joining resource and action with `:`, so `(warden, role:manage)` and `(warden:role, manage)` would be the same permission. The dashboard and the REST API refuse to create a permission whose action has one. `warden apply` refuses to create one or to change a permission's action to one, before it writes anything. A resource may contain `:` (`warden:role`), and `*` is a valid action. `BootstrapAdmin` seeds no action with a `:`.

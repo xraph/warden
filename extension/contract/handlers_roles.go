@@ -8,6 +8,7 @@ package contract
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/xraph/warden"
@@ -390,36 +391,22 @@ func rolesUpdateHandler(deps Deps) func(context.Context, RoleUpdateInput, dashco
 	}
 }
 
-// checkParent refuses a parent that would create a cycle.
-//
-// Walks up from the proposed parent following ParentSlug. If the walk
-// reaches the role being edited, the proposed parent is one of its own
-// descendants and the engine's inheritance resolution would loop. The walk
-// is bounded by the number of roles it has already seen, so a cycle that
-// already exists in the data cannot hang this check either.
+// checkParent refuses a parent that does not exist in the role's namespace
+// or that would create a cycle, with role.CheckParent's refusal as
+// BAD_REQUEST: the operator can fix it by choosing another parent. The REST
+// role handlers call the same check. A store failure is INTERNAL.
 func checkParent(ctx context.Context, s store.Store, tenantID string, r *role.Role, parentSlug string) error {
-	if parentSlug == "" {
+	err := role.CheckParent(ctx, s, tenantID, r, parentSlug)
+	var cycle *role.CycleError
+	var missing *role.ParentNotFoundError
+	switch {
+	case err == nil:
 		return nil
+	case errors.As(err, &cycle), errors.As(err, &missing):
+		return badRequest(err.Error())
+	default:
+		return mapWardenError(err)
 	}
-	if parentSlug == r.Slug {
-		return badRequest("a role cannot be its own parent")
-	}
-	seen := map[string]struct{}{r.Slug: {}}
-	slug := parentSlug
-	for slug != "" {
-		if _, loop := seen[slug]; loop {
-			return badRequest("that parent would create a cycle in role inheritance")
-		}
-		seen[slug] = struct{}{}
-		next, err := s.GetRoleBySlug(ctx, tenantID, r.NamespacePath, slug)
-		if err != nil {
-			// A parent that does not exist in this namespace is bad input,
-			// not a cycle. Report it as such.
-			return badRequest("no role with slug " + slug + " in this namespace")
-		}
-		slug = next.ParentSlug
-	}
-	return nil
 }
 
 // PermissionRef names one permission by its natural key.

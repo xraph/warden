@@ -52,11 +52,16 @@ var (
 	// ErrCheckLogNotFound is returned when a check log entry cannot be found in the tenant.
 	ErrCheckLogNotFound = wardenerr.ErrCheckLogNotFound
 
-	// ErrSystemRoleImmutable is returned when trying to modify a system role.
-	ErrSystemRoleImmutable = errors.New("warden: system role cannot be modified")
+	// ErrSystemRoleImmutable is returned when a write would change or
+	// delete a system role. role.CheckWritable returns an error that wraps
+	// it. Defined in wardenerr so the role package can wrap it.
+	ErrSystemRoleImmutable = wardenerr.ErrSystemRoleImmutable
 
-	// ErrSystemPermissionImmutable is returned when trying to modify a system permission.
-	ErrSystemPermissionImmutable = errors.New("warden: system permission cannot be modified")
+	// ErrSystemPermissionImmutable is returned when a write would change or
+	// delete a system permission. permission.CheckWritable returns an error
+	// that wraps it. Defined in wardenerr so the permission package can wrap
+	// it.
+	ErrSystemPermissionImmutable = wardenerr.ErrSystemPermissionImmutable
 
 	// ErrAlreadyExists is the common base error for entity-uniqueness
 	// violations. Use errors.Is(err, ErrAlreadyExists) to match any of the
@@ -90,8 +95,10 @@ var (
 	// Wraps ErrAlreadyExists.
 	ErrDuplicateRelation = wardenerr.ErrDuplicateRelation
 
-	// ErrCyclicRoleInheritance is returned when role inheritance would create a cycle.
-	ErrCyclicRoleInheritance = errors.New("warden: cyclic role inheritance detected")
+	// ErrCyclicRoleInheritance is returned when a role's parent would make
+	// the role its own ancestor. role.CheckParent returns an error that
+	// wraps it. Defined in wardenerr so the role package can wrap it.
+	ErrCyclicRoleInheritance = wardenerr.ErrCyclicRoleInheritance
 
 	// ErrMaxMembersExceeded is returned when a role's member limit is reached.
 	ErrMaxMembersExceeded = errors.New("warden: role max members exceeded")

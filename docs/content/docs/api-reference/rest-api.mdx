@@ -83,12 +83,15 @@ POST /v1/roles
   "name": "Editor",
   "slug": "editor",
   "description": "Can read and write documents",
-  "parent_id": "wrol_...",
-  "is_system": false,
+  "parent_slug": "viewer",
   "is_default": false,
   "metadata": {"tier": "premium"}
 }
 ```
+
+`parent_slug` must name a role in the same namespace. On create it cannot be the role's own slug, and on update (`PUT`) it cannot be the role or one of its descendants, since that would make the role its own ancestor. Either refusal is 400 and writes nothing. An empty `parent_slug` on update clears the parent.
+
+A system role cannot be changed through REST: `PUT` and `DELETE` on one, and attaching or detaching a permission on one, are 403 with the message `"<name>" is a system role and cannot be changed or deleted`, and nothing is written. Assigning a system role to a subject is still allowed. The dashboard refuses the same writes with the same message.
 
 ## Permissions
 
@@ -110,6 +113,8 @@ POST /v1/permissions
   "description": "Allows reading documents"
 }
 ```
+
+`DELETE` on a system permission is 403 with the message `"<name>" is a system permission and cannot be changed or deleted`, and nothing is deleted.
 
 The action may not contain `:`. The engine joins resource and action with `:` when it checks a grant, so `(warden, role:manage)` and `(warden:role, manage)` would be the same permission. A request whose action has one is 400 and writes nothing. The resource may contain `:` (`warden:role`), and `*` is still a valid action. A permission stored with `:` in its action before this rule still reads, checks and deletes.
 
@@ -218,9 +223,9 @@ All error responses follow this format:
 
 | Status | Meaning |
 |--------|---------|
-| 400 | Bad request: a body that does not bind or leaves out a field the request requires, an invalid ID, timestamp or namespace path, a missing tenant, a parent role that does not exist, a permission action that contains `:`, or a relation tuple its resource type does not declare |
+| 400 | Bad request: a body that does not bind or leaves out a field the request requires, an invalid ID, timestamp or namespace path, a missing tenant, a parent role that does not exist or that would make the role its own ancestor, a permission action that contains `:`, or a relation tuple its resource type does not declare |
 | 401 | Authentication required |
-| 403 | Forbidden (authorization denied, or an AuthZEN context naming another tenant or namespace) |
+| 403 | Forbidden (authorization denied, an AuthZEN context naming another tenant or namespace, or a change to a system role or system permission) |
 | 404 | Entity not found |
 | 409 | Conflict (a role, permission, policy, resource type, role assignment or relation tuple that already exists in its scope, including a policy renamed onto a name another policy holds in the same namespace, a record or policy that changed since the request read it, or a role whose member cap the request would exceed or lower below its members) |
 | 422 | A well-formed body that fails validation, for example an empty relation field, an unknown policy effect or subject kind, a policy condition with an unknown operator or field or a value that is not a list, or an empty or oversized batch |
