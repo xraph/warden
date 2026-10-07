@@ -175,7 +175,7 @@ type WriteRelationRequest struct {
 
 // DeleteRelationRequest is the body for deleting a relation tuple.
 type DeleteRelationRequest struct {
-	NamespacePath string `json:"namespace_path,omitempty" description:"Namespace path (defaults to context-derived namespace)"`
+	NamespacePath string `json:"namespace_path,omitempty" description:"Namespace path of the tuple; empty = tenant root"`
 	ObjectType    string `json:"object_type" description:"Object resource type"`
 	ObjectID      string `json:"object_id" description:"Object identifier"`
 	Relation      string `json:"relation" description:"Relation name"`

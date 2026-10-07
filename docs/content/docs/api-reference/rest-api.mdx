@@ -171,7 +171,7 @@ POST /v1/relations/delete
 }
 ```
 
-The delete removes the tuple whose key matches every field: `namespace_path` (left out or empty means the tenant root), the object, the relation, the subject and `subject_relation`. An empty or missing `subject_relation` names the direct tuple. So with `group:eng` and `group:eng#member` both stored, a delete without `subject_relation` removes `group:eng` and leaves `group:eng#member`, and the request above removes `group:eng#member` and leaves `group:eng`. Earlier releases left `subject_relation` out of the delete's key and removed both. The response is 204 whether or not a tuple matched.
+The delete removes the tuple whose key matches every field: `namespace_path` (left out or empty means the tenant root), the object, the relation, the subject and `subject_relation`. An empty or missing `subject_relation` names the direct tuple. So with `group:eng` and `group:eng#member` both stored, a delete without `subject_relation` removes `group:eng` and leaves `group:eng#member`, and the request above removes `group:eng#member` and leaves `group:eng`. Earlier releases left `subject_relation` out of the delete's key, so a delete of `group:eng` could also remove `group:eng#member`. The response is 204 whether or not a tuple matched.
 
 ## Policies
 

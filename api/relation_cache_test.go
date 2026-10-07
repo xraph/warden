@@ -140,6 +140,53 @@ func checkRESTDeleteRevokes(t *testing.T, wrap func(*memory.Store) store.Store) 
 	}
 }
 
+func TestRelations_RESTDeleteOfASubjectSetRevokesACachedAllow(t *testing.T) {
+	// bob reads doc1 only through group:eng#member. Deleting that subject
+	// set over REST must clear bob's cached allow too. Today the typed
+	// hook clears the whole cache and the audit event clears the tenant;
+	// if both were narrowed to the deleted tuple's own subject (group:eng,
+	// not bob), this would fail.
+	h, eng, s, c, _ := newCachedRelationAPI(t)
+	ctx := warden.WithTenant(context.Background(), testApp, testTenant)
+	for _, tp := range []*relation.Tuple{
+		{TenantID: testTenant, ObjectType: "group", ObjectID: "eng", Relation: "member", SubjectType: "user", SubjectID: "bob"},
+		{TenantID: testTenant, ObjectType: "document", ObjectID: "doc1", Relation: "read", SubjectType: "group", SubjectID: "eng", SubjectRelation: "member"},
+	} {
+		if err := s.CreateRelation(ctx, tp); err != nil {
+			t.Fatalf("seed tuple: %v", err)
+		}
+	}
+	req := &warden.CheckRequest{
+		Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "bob"},
+		Action:   warden.Action{Name: "read"},
+		Resource: warden.Resource{Type: "document", ID: "doc1"},
+	}
+
+	res, err := eng.Check(ctx, req)
+	if err != nil || !res.Allowed {
+		t.Fatalf("check before delete: res=%+v err=%v, want allowed through group:eng#member", res, err)
+	}
+	if cached, ok := c.Get(ctx, testTenant, "", req); !ok || !cached.Allowed {
+		t.Fatalf("the allow was not cached (ok=%v, %+v), so this test proves nothing", ok, cached)
+	}
+
+	restDelete(t, h, map[string]any{
+		"object_type": "document", "object_id": "doc1", "relation": "read",
+		"subject_type": "group", "subject_id": "eng", "subject_relation": "member",
+	})
+
+	if _, ok := c.Get(ctx, testTenant, "", req); ok {
+		t.Error("the cached allow survived the REST delete of the subject set")
+	}
+	res, err = eng.Check(ctx, req)
+	if err != nil {
+		t.Fatalf("check after delete: %v", err)
+	}
+	if res.Allowed {
+		t.Error("check after the REST delete of the subject set still allows")
+	}
+}
+
 func TestRelations_RESTDeleteFiresTheTypedHookForTheTupleItRemoves(t *testing.T) {
 	// The key includes subject_relation, so of group:eng and
 	// group:eng#member only the named one goes, and only it gets an

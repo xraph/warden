@@ -243,6 +243,8 @@ tuples, _ := store.ListRelations(ctx, &relation.ListFilter{
 ## Deleting Tuples
 
 ```go
-err := store.DeleteRelationTuple(ctx, "t1",
-    "document", "doc-123", "viewer", "user", "user-42")
+err := store.DeleteRelationTuple(ctx, "t1", "",
+    "document", "doc-123", "viewer", "user", "user-42", "")
 ```
+
+The key is exact: an empty namespace is the tenant root, and an empty subject relation names the direct tuple only, so pass `"member"` as the last argument to delete `group:eng#member`.
