@@ -106,7 +106,7 @@ type RelationCreateInput struct {
 //
 // The store also offers DeleteRelationTuple, which takes the whole natural
 // key. By-id is used here because the list hands the page an id, and an id
-// cannot be half-right the way a seven-part key can.
+// cannot be half-right the way an eight-part key can.
 type RelationDeleteInput struct {
 	ID string `json:"id"`
 }

@@ -1232,17 +1232,20 @@ func (s *Store) DeleteRelation(ctx context.Context, tenantID string, relID id.Re
 	return nil
 }
 
-func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) error {
+func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID, subjectRelation string) error {
+	// The model always writes subject_relation (no omitempty), so an empty
+	// subjectRelation matches the direct tuple only.
 	_, err := s.mdb.NewDelete((*relationModel)(nil)).
 		Many().
 		Filter(bson.M{
-			"tenant_id":      tenantID,
-			"namespace_path": namespacePath,
-			"object_type":    objectType,
-			"object_id":      objectID,
-			"relation":       rel,
-			"subject_type":   subjectType,
-			"subject_id":     subjectID,
+			"tenant_id":        tenantID,
+			"namespace_path":   namespacePath,
+			"object_type":      objectType,
+			"object_id":        objectID,
+			"relation":         rel,
+			"subject_type":     subjectType,
+			"subject_id":       subjectID,
+			"subject_relation": subjectRelation,
 		}).
 		Exec(ctx)
 	if err != nil {

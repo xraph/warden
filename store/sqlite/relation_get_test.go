@@ -37,7 +37,8 @@ func TestSQLite_RelationGetContract(t *testing.T) {
 }
 
 // TestSQLite_RelationDeleteTupleContract proves a delete by composite key
-// removes every tuple the key matches and nothing outside it.
+// removes exactly the tuple it names, subject relation included, and
+// nothing outside it.
 func TestSQLite_RelationDeleteTupleContract(t *testing.T) {
 	contract.RunRelationDeleteTupleContract(t, func(t *testing.T) (store.Store, func()) {
 		dbPath := filepath.Join(t.TempDir(), "warden.db")

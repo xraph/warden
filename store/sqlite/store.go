@@ -1261,7 +1261,9 @@ func (s *Store) DeleteRelation(ctx context.Context, tenantID string, relID id.Re
 	return nil
 }
 
-func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) error {
+func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID, subjectRelation string) error {
+	// subject_relation is NOT NULL DEFAULT '', so an empty subjectRelation
+	// matches the direct tuple only.
 	_, err := s.sdb.NewDelete((*relationModel)(nil)).
 		Where("tenant_id = ?", tenantID).
 		Where("namespace_path = ?", namespacePath).
@@ -1270,6 +1272,7 @@ func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath
 		Where("relation = ?", rel).
 		Where("subject_type = ?", subjectType).
 		Where("subject_id = ?", subjectID).
+		Where("subject_relation = ?", subjectRelation).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete relation tuple: %w", err)

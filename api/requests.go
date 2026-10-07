@@ -181,6 +181,9 @@ type DeleteRelationRequest struct {
 	Relation      string `json:"relation" description:"Relation name"`
 	SubjectType   string `json:"subject_type" description:"Subject resource type"`
 	SubjectID     string `json:"subject_id" description:"Subject identifier"`
+	// SubjectRelation is part of the key: empty names the direct tuple
+	// (group:eng), "member" the subject set (group:eng#member).
+	SubjectRelation string `json:"subject_relation,omitempty" description:"Subject relation; empty names the direct tuple, not every subject relation"`
 }
 
 // ListRelationsRequest holds query parameters.

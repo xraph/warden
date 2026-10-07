@@ -16,7 +16,8 @@ func TestMemory_RelationGetContract(t *testing.T) {
 }
 
 // TestMemory_RelationDeleteTupleContract proves a delete by composite key
-// removes every tuple the key matches and nothing outside it.
+// removes exactly the tuple it names, subject relation included, and
+// nothing outside it.
 func TestMemory_RelationDeleteTupleContract(t *testing.T) {
 	contract.RunRelationDeleteTupleContract(t, func(_ *testing.T) (store.Store, func()) {
 		return New(), func() {}

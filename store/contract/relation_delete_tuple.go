@@ -1,11 +1,12 @@
-// relation_delete_tuple.go: a delete by composite key removes every tuple
-// the key matches, and nothing else.
+// relation_delete_tuple.go: a delete by composite key removes exactly the
+// tuple the key names, and nothing else.
 //
 // The key is tenant, namespace, object type and ID, relation, subject type
-// and ID. It leaves out subject_relation, so group:eng and group:eng#member
-// on the same object are both matched. The REST delete reads the matches
-// first and audits each one, so a store that removed only one of them would
-// leave the audit trail naming a deletion that never happened.
+// and ID, and subject relation. An empty subject relation names the direct
+// tuple, so group:eng and group:eng#member on the same object are two keys:
+// deleting one leaves the other. The REST delete reads the match first and
+// audits it, so a store that also removed the other tuple would remove a
+// grant the audit trail never names.
 package contract
 
 import (
@@ -19,8 +20,9 @@ import (
 
 // RunRelationDeleteTupleContract seeds two tuples that differ only in
 // subject_relation, plus the same key in another namespace and another
-// tenant, deletes by the key, and proves both matches are gone while the
-// other two survive.
+// tenant. It deletes by the key with an empty subject relation and proves
+// only the direct tuple is gone, then with "member" and proves only the
+// subject set is gone. The other namespace and tenant survive both.
 func RunRelationDeleteTupleContract(t *testing.T, mk MakeStore) {
 	s, cleanup := mk(t)
 	defer cleanup()
@@ -40,18 +42,41 @@ func RunRelationDeleteTupleContract(t *testing.T, mk MakeStore) {
 	otherNS := mkTuple("deltup-t1", "", "")
 	otherTenant := mkTuple("deltup-t2", "eng", "")
 
-	if err := s.DeleteRelationTuple(ctx, "deltup-t1", "eng", "document", "doc1", "viewer", "group", "eng"); err != nil {
-		t.Fatalf("DeleteRelationTuple: %v", err)
-	}
-
-	for name, tp := range map[string]*relation.Tuple{"group:eng": plain, "group:eng#member": member} {
+	gone := func(name string, tp *relation.Tuple) {
+		t.Helper()
 		if _, err := s.GetRelation(ctx, tp.TenantID, tp.ID); !errors.Is(err, wardenerr.ErrRelationNotFound) {
 			t.Errorf("%s survived a delete by its key: err=%v", name, err)
 		}
 	}
-	for name, tp := range map[string]*relation.Tuple{"other namespace": otherNS, "other tenant": otherTenant} {
+	kept := func(name string, tp *relation.Tuple) {
+		t.Helper()
 		if _, err := s.GetRelation(ctx, tp.TenantID, tp.ID); err != nil {
-			t.Errorf("the %s tuple was removed: %v", name, err)
+			t.Errorf("%s was removed: %v", name, err)
 		}
 	}
+
+	if err := s.DeleteRelationTuple(ctx, "deltup-t1", "eng", "document", "doc1", "viewer", "group", "eng", ""); err != nil {
+		t.Fatalf("DeleteRelationTuple(group:eng): %v", err)
+	}
+	gone("group:eng", plain)
+	kept("group:eng#member, by a delete of group:eng,", member)
+	kept("the other namespace's tuple", otherNS)
+	kept("the other tenant's tuple", otherTenant)
+
+	if err := s.DeleteRelationTuple(ctx, "deltup-t1", "eng", "document", "doc1", "viewer", "group", "eng", "member"); err != nil {
+		t.Fatalf("DeleteRelationTuple(group:eng#member): %v", err)
+	}
+	gone("group:eng#member", member)
+	kept("the other namespace's tuple", otherNS)
+	kept("the other tenant's tuple", otherTenant)
+
+	// The reverse order: a delete of the subject set leaves the direct
+	// tuple.
+	plain = mkTuple("deltup-t1", "eng", "")
+	member = mkTuple("deltup-t1", "eng", "member")
+	if err := s.DeleteRelationTuple(ctx, "deltup-t1", "eng", "document", "doc1", "viewer", "group", "eng", "member"); err != nil {
+		t.Fatalf("DeleteRelationTuple(group:eng#member): %v", err)
+	}
+	gone("group:eng#member", member)
+	kept("group:eng, by a delete of group:eng#member,", plain)
 }

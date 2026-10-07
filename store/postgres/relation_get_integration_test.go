@@ -18,7 +18,8 @@ func TestPostgres_RelationGetContract(t *testing.T) {
 }
 
 // TestPostgres_RelationDeleteTupleContract proves a delete by composite key
-// removes every tuple the key matches and nothing outside it.
+// removes exactly the tuple it names, subject relation included, and
+// nothing outside it.
 func TestPostgres_RelationDeleteTupleContract(t *testing.T) {
 	contract.RunRelationDeleteTupleContract(t, func(t *testing.T) (store.Store, func()) {
 		return setupPostgres(t)

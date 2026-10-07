@@ -140,28 +140,31 @@ func checkRESTDeleteRevokes(t *testing.T, wrap func(*memory.Store) store.Store) 
 	}
 }
 
-func TestRelations_RESTDeleteFiresTheTypedHookOncePerRemovedTuple(t *testing.T) {
-	// The key leaves out subject_relation, so group:eng and group:eng#member
-	// both go, and each gets its own OnRelationDeleted with its own ID.
-	h, _, s, _, probe := newCachedRelationAPI(t)
-	plain := seedRESTTuple(t, s, testTenant, "", "")
-	member := seedRESTTuple(t, s, testTenant, "", "member")
+func TestRelations_RESTDeleteFiresTheTypedHookForTheTupleItRemoves(t *testing.T) {
+	// The key includes subject_relation, so of group:eng and
+	// group:eng#member only the named one goes, and only it gets an
+	// OnRelationDeleted.
+	for _, tc := range []struct {
+		name, subjectRelation string
+	}{
+		{"direct tuple", ""},
+		{"subject set", "member"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, s, _, probe := newCachedRelationAPI(t)
+			plain := seedRESTTuple(t, s, testTenant, "", "")
+			member := seedRESTTuple(t, s, testTenant, "", "member")
+			removed := plain
+			if tc.subjectRelation != "" {
+				removed = member
+			}
 
-	deleteRESTTuple(t, h, "")
+			deleteRESTTuple(t, h, "", tc.subjectRelation)
 
-	got := probe.got()
-	if len(got) != 2 {
-		t.Fatalf("OnRelationDeleted fired %d times with %v, want 2", len(got), got)
-	}
-	want := map[string]bool{plain.ID.String(): true, member.ID.String(): true}
-	for _, rid := range got {
-		if !want[rid.String()] {
-			t.Errorf("OnRelationDeleted got %q, want one of the removed tuples", rid)
-		}
-		delete(want, rid.String())
-	}
-	if len(want) != 0 {
-		t.Errorf("no OnRelationDeleted for %v", want)
+			if got := probe.got(); len(got) != 1 || got[0] != removed.ID {
+				t.Errorf("OnRelationDeleted got %v, want only %s", got, removed.ID)
+			}
+		})
 	}
 }
 
@@ -182,7 +185,7 @@ func TestRelations_RESTDeleteThatFoundNothingClearsOnlyThisTenant(t *testing.T) 
 	c.Set(ctx, testTenant, "", req, &warden.CheckResult{Allowed: true})
 	c.Set(ctx, "t2", "", req, &warden.CheckResult{Allowed: true})
 
-	deleteRESTTuple(t, h, "")
+	deleteRESTTuple(t, h, "", "")
 
 	if got := probe.got(); len(got) != 0 {
 		t.Errorf("OnRelationDeleted got %v, want no call (the read named no tuple)", got)

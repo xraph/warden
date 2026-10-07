@@ -20,8 +20,12 @@ type Store interface {
 	// ErrRelationNotFound when the tuple is not in the tenant.
 	DeleteRelation(ctx context.Context, tenantID string, relID id.RelationID) error
 
-	// DeleteRelationTuple removes a specific relation tuple by its composite key.
-	DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, relation, subjectType, subjectID string) error
+	// DeleteRelationTuple removes the relation tuple with exactly this
+	// composite key, subject relation included: an empty subjectRelation
+	// names the direct tuple (group:eng) and leaves the subject set
+	// (group:eng#member), and "member" names the subject set and leaves the
+	// direct tuple. Deleting a key that matches nothing is not an error.
+	DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, relation, subjectType, subjectID, subjectRelation string) error
 
 	// ListRelations returns relation tuples matching the filter.
 	ListRelations(ctx context.Context, filter *ListFilter) ([]*Tuple, error)

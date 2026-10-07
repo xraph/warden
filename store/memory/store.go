@@ -865,13 +865,14 @@ func (s *Store) DeleteRelation(_ context.Context, tenantID string, relID id.Rela
 	return nil
 }
 
-func (s *Store) DeleteRelationTuple(_ context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) error {
+func (s *Store) DeleteRelationTuple(_ context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID, subjectRelation string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// The key leaves out SubjectRelation, so group:eng and group:eng#member
-	// both match. Remove every match, as the sql and mongo stores do.
+	// The key includes SubjectRelation exactly, so an empty one removes
+	// group:eng and leaves group:eng#member. Remove every match, as the sql
+	// and mongo stores do.
 	for k, t := range s.relations {
-		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel && t.SubjectType == subjectType && t.SubjectID == subjectID {
+		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel && t.SubjectType == subjectType && t.SubjectID == subjectID && t.SubjectRelation == subjectRelation {
 			delete(s.relations, k)
 		}
 	}

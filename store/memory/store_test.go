@@ -257,7 +257,7 @@ func TestRelationCRUD(t *testing.T) {
 	}
 
 	// DeleteRelationTuple
-	_ = s.DeleteRelationTuple(ctx, "t1", "", "document", "doc1", "viewer", "user", "u1")
+	_ = s.DeleteRelationTuple(ctx, "t1", "", "document", "doc1", "viewer", "user", "u1", "")
 	ok, _ = s.CheckDirectRelation(ctx, "t1", []string{""}, "document", "doc1", "viewer", "user", "u1")
 	if ok {
 		t.Fatal("expected relation deleted")
