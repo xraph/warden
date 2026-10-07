@@ -182,10 +182,10 @@ func TestAssignmentsCreateAcceptsASystemRole(t *testing.T) {
 }
 
 func TestAssignmentsCreateRefusesPastTheMemberCap(t *testing.T) {
-	// Role.MaxMembers is enforced by NOTHING below this layer.
-	// ErrMaxMembersExceeded is handled in api/helpers.go:34 and returned by
-	// zero places, and no store counts members before an insert. So a role
-	// capped at 2 accepts unlimited assignments unless this guard refuses.
+	// No store enforces Role.MaxMembers: none counts members before an
+	// insert, and ErrMaxMembersExceeded is returned by nothing. So a role
+	// capped at 2 accepts unlimited assignments unless this guard (and its
+	// REST twin, both on assignment.CheckMemberCap) refuses.
 	s := memory.New()
 	ctx := context.Background()
 	r := &role.Role{TenantID: "t1", Name: "Small", Slug: "small", MaxMembers: 2}

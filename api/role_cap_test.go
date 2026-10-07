@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/xraph/warden/assignment"
+	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store/memory"
 )
@@ -143,5 +145,81 @@ func TestRoles_UpdateOverFullRoleWithTheCapUnchangedSaves(t *testing.T) {
 	}
 	if after := storedRoleIn(t, s.Store, r); after.Name != "Second" || after.MaxMembers != 1 {
 		t.Errorf("stored name %q cap %d, want Second and 1", after.Name, after.MaxMembers)
+	}
+}
+
+func assignREST(h http.Handler, r *role.Role, body map[string]any) *httptest.ResponseRecorder {
+	b := map[string]any{"role_id": r.ID.String(), "subject_kind": "user"}
+	for k, v := range body {
+		b[k] = v
+	}
+	return do(h, request(http.MethodPost, "/v1/assignments", "alice", testTenant, b))
+}
+
+func liveRowsFor(t *testing.T, s *memory.Store, r *role.Role) int {
+	t.Helper()
+	held, err := s.ListSubjectsForRole(context.Background(), testTenant, r.ID)
+	if err != nil {
+		t.Fatalf("list subjects: %v", err)
+	}
+	return len(held)
+}
+
+func TestAssignments_CreatePastTheMemberCapIs409(t *testing.T) {
+	s := &racingPolicyStore{Store: memory.New()}
+	h := newTestAPIOver(t, s)
+	r := cappedRoleOver(t, s.Store, 2, []string{"a", "b"}, nil)
+
+	rec := assignREST(h, r, map[string]any{"subject_id": "c"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Message string `json:"message"`
+		Error   string `json:"error"`
+	}
+	decodeJSON(t, rec, &body)
+	want := `"Small" is capped at 2 members and already has 2`
+	if body.Message != want && body.Error != want {
+		t.Errorf("body = %s, want the message %q", rec.Body.String(), want)
+	}
+	if n := liveRowsFor(t, s.Store, r); n != 2 {
+		t.Errorf("the refusal wrote an assignment: %d rows, want 2", n)
+	}
+}
+
+func TestAssignments_CreateWithinTheMemberCapSaves(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cap     int
+		live    []string
+		expired []string
+		body    map[string]any
+	}{
+		{"a seat is free", 3, []string{"a", "b"}, nil, map[string]any{"subject_id": "c"}},
+		{"expired assignments hold no seat", 2, []string{"a"}, []string{"old1", "old2"}, map[string]any{"subject_id": "c"}},
+		{"a cap of 0 is unlimited", 0, []string{"a", "b", "c"}, nil, map[string]any{"subject_id": "d"}},
+		{"a member's second binding adds nobody", 2, []string{"a", "b"}, nil,
+			map[string]any{"subject_id": "a", "resource_type": "doc", "resource_id": "1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &racingPolicyStore{Store: memory.New()}
+			h := newTestAPIOver(t, s)
+			r := cappedRoleOver(t, s.Store, tc.cap, tc.live, tc.expired)
+
+			if rec := assignREST(h, r, tc.body); rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestAssignments_CreateForAnUnknownRoleIs404(t *testing.T) {
+	s := &racingPolicyStore{Store: memory.New()}
+	h := newTestAPIOver(t, s)
+	ghost := &role.Role{ID: id.NewRoleID()}
+
+	if rec := assignREST(h, ghost, map[string]any{"subject_id": "a"}); rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
 }

@@ -31,6 +31,10 @@ func mapError(err error) error {
 	if errors.As(err, &capErr) {
 		return forge.NewHTTPError(http.StatusConflict, capErr.Error())
 	}
+	var fullErr *assignment.RoleFullError
+	if errors.As(err, &fullErr) {
+		return forge.NewHTTPError(http.StatusConflict, fullErr.Error())
+	}
 	// A conditional write found the record at another version than the one
 	// the handler read: another write landed in between, and nothing was
 	// written here.

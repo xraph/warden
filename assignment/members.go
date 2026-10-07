@@ -46,6 +46,51 @@ type SubjectsForRoleLister interface {
 	ListSubjectsForRole(ctx context.Context, tenantID string, roleID id.RoleID) ([]*Assignment, error)
 }
 
+// RoleFullError refuses a new member for a role that already holds as many
+// live members as its cap allows. The dashboard contract returns its text
+// as CONFLICT and REST as 409.
+type RoleFullError struct {
+	RoleName string
+	Cap      int
+	Members  int
+}
+
+func (e *RoleFullError) Error() string {
+	return fmt.Sprintf("%q is capped at %d members and already has %d", e.RoleName, e.Cap, e.Members)
+}
+
+// CheckMemberCap refuses giving the subject (subjectKind, subjectID) a role
+// capped at maxMembers when the role already has that many live members
+// (LiveMembers at now). It returns a *RoleFullError for the refusal, or the
+// store's error if the read fails.
+//
+// A cap of 0 or below means unlimited, and then it reads nothing. A subject
+// who already holds the role live adds nobody, so it is never refused: a
+// second binding for a member (another namespace or resource) passes, and a
+// duplicate reaches the store and reports the duplicate.
+//
+// The count read and the caller's insert are NOT atomic. No store offers a
+// conditional insert, so two concurrent creates can both pass and take a
+// role one past its cap. The cap is best effort under concurrency, not a
+// guarantee.
+func CheckMemberCap(ctx context.Context, s SubjectsForRoleLister, tenantID string, roleID id.RoleID, roleName string, maxMembers int, subjectKind, subjectID string, now time.Time) error {
+	if maxMembers <= 0 {
+		return nil
+	}
+	held, err := s.ListSubjectsForRole(ctx, tenantID, roleID)
+	if err != nil {
+		return err
+	}
+	members := LiveMembers(held, now)
+	if _, already := members[Member{Kind: subjectKind, ID: subjectID}]; already {
+		return nil
+	}
+	if len(members) < maxMembers {
+		return nil
+	}
+	return &RoleFullError{RoleName: roleName, Cap: maxMembers, Members: len(members)}
+}
+
 // CapBelowMembersError refuses a member cap lower than the number of live
 // members the role already has. Every write path returns this same text:
 // the dashboard contract as CONFLICT, REST as 409, and a DSL apply as the
@@ -68,11 +113,12 @@ func (e *CapBelowMembersError) Error() string {
 // It reads nothing and refuses nothing unless the cap is being lowered: a
 // cap of 0 or below means unlimited, so clearing it, raising it, keeping it
 // unchanged, or moving between unlimited values always passes. A role can
-// already be over its cap (the REST assignment write does not check it, a
-// cap could be lowered under its members before this check existed, and
-// the dashboard's assignment check is not atomic), and keeping that cap
-// unchanged never blocks an edit to the role's other fields. Moving from
-// unlimited to a positive cap is a lowering and is checked.
+// already be over its cap (BootstrapAdmin assigns without checking it,
+// code that writes through the store directly checks nothing, a role could
+// be filled or its cap lowered before these checks existed, and neither
+// check is atomic), and keeping that cap unchanged never blocks an edit to
+// the role's other fields. Moving from unlimited to a positive cap is a
+// lowering and is checked.
 //
 // The count read and the caller's write are NOT atomic. No store offers a
 // conditional role update tied to the assignment count, so an assignment

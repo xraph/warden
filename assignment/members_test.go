@@ -87,3 +87,50 @@ func TestCheckCapLoweringReturnsTheStoreError(t *testing.T) {
 		t.Errorf("err = %v, want the store error", err)
 	}
 }
+
+func TestCheckMemberCapRefusesOnlyANewSubjectOnAFullRole(t *testing.T) {
+	two := []*Assignment{
+		{SubjectKind: "user", SubjectID: "a"},
+		{SubjectKind: "user", SubjectID: "b"},
+	}
+	for _, tc := range []struct {
+		name        string
+		maxMembers  int
+		subjectID   string
+		wantRead    bool
+		wantRefused bool
+	}{
+		{"uncapped", 0, "c", false, false},
+		{"negative is unlimited too", -1, "c", false, false},
+		{"a seat is free", 3, "c", true, false},
+		{"full", 2, "c", true, true},
+		{"already a member", 2, "a", true, false},
+		{"already over the cap, still a member", 1, "a", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeLister{held: two}
+			err := CheckMemberCap(context.Background(), f, "t1", id.NewRoleID(), "Small", tc.maxMembers, "user", tc.subjectID, time.Now())
+			if (f.reads > 0) != tc.wantRead {
+				t.Errorf("reads = %d, want a read: %v", f.reads, tc.wantRead)
+			}
+			var full *RoleFullError
+			if got := errors.As(err, &full); got != tc.wantRefused {
+				t.Fatalf("err = %v, want refused: %v", err, tc.wantRefused)
+			}
+			if tc.wantRefused {
+				want := `"Small" is capped at 2 members and already has 2`
+				if err.Error() != want {
+					t.Errorf("message = %q, want %q", err.Error(), want)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckMemberCapPassesTheStoreErrorThrough(t *testing.T) {
+	boom := errors.New("boom")
+	err := CheckMemberCap(context.Background(), &fakeLister{err: boom}, "t1", id.NewRoleID(), "Small", 2, "user", "c", time.Now())
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the store error", err)
+	}
+}

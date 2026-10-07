@@ -1,28 +1,29 @@
-// members.go: the member-cap guard.
+// members.go: the member-cap guards.
 //
-// READ THIS BEFORE REMOVING IT AS REDUNDANT. Role.MaxMembers is enforced
-// nowhere below this file. warden defines ErrMaxMembersExceeded, and a
-// repository-wide grep finds it HANDLED once (api/helpers.go maps it to a
-// status) and RETURNED zero times. No store counts a role's members before
-// inserting an assignment.
+// READ THIS BEFORE REMOVING THEM AS REDUNDANT. No store enforces
+// Role.MaxMembers: none counts a role's members before inserting an
+// assignment, and none compares a new cap with the members a role already
+// has. warden defines ErrMaxMembersExceeded, and nothing returns it.
 //
-// So MaxMembers is, everywhere below the contract layer, a number somebody
-// typed into a form. A role capped at five accepts five hundred assignments
-// and nothing complains. This is the same shape as IsSystem before
-// immutable.go, and the same reasoning applies: the contract is the only
-// enforcement point that exists.
+// The cap is enforced above the store, in package assignment, and every
+// warden write path calls it. Assigning a subject goes through
+// assignment.CheckMemberCap here (guardMemberCap) and in the REST
+// assignment create. Lowering a cap goes through
+// assignment.CheckCapLowering here (guardCapLowering), in the REST role
+// update and in a DSL apply. The one deliberate exception is
+// BootstrapAdmin (extension/bootstrap.go), the break-glass path that
+// assigns the bootstrap admin role whatever its cap says, so a capped
+// bootstrap role can end up over its cap. Code that writes through the
+// store directly checks nothing.
 package contract
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store"
-
-	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
 
 // guardMemberCap refuses an assignment that would take a role past its cap.
@@ -54,25 +55,7 @@ import (
 // take a role one past its cap. The cap is best-effort under concurrency,
 // not a guarantee; do not build anything that relies on it being exact.
 func guardMemberCap(ctx context.Context, s store.Store, tenantID string, r *role.Role, subjectKind, subjectID string, now time.Time) error {
-	if r.MaxMembers <= 0 {
-		return nil
-	}
-	held, err := s.ListSubjectsForRole(ctx, tenantID, r.ID)
-	if err != nil {
-		return mapWardenError(err)
-	}
-	members := assignment.LiveMembers(held, now)
-	if _, already := members[assignment.Member{Kind: subjectKind, ID: subjectID}]; already {
-		return nil
-	}
-	if len(members) < r.MaxMembers {
-		return nil
-	}
-	return &dashcontract.Error{
-		Code: dashcontract.CodeConflict,
-		Message: fmt.Sprintf("%q is capped at %d members and already has %d",
-			r.Name, r.MaxMembers, len(members)),
-	}
+	return mapWardenError(assignment.CheckMemberCap(ctx, s, tenantID, r.ID, r.Name, r.MaxMembers, subjectKind, subjectID, now))
 }
 
 // guardCapLowering refuses a role update that lowers the member cap below

@@ -29,6 +29,7 @@ func mapWardenError(err error) error {
 		return nil
 	}
 	var capErr *assignment.CapBelowMembersError
+	var fullErr *assignment.RoleFullError
 	switch {
 	// Its own text, not err.Error(): a DSL apply wraps it as "update role
 	// <slug>: ...", and the page shows the refusal, not the call chain. That
@@ -39,6 +40,10 @@ func mapWardenError(err error) error {
 	// through here: it is a half apply, INTERNAL with the full chain.
 	case errors.As(err, &capErr):
 		return &dashcontract.Error{Code: dashcontract.CodeConflict, Message: capErr.Error()}
+	// A role at its cap refusing a new member: the same text the REST
+	// assignment create returns as 409.
+	case errors.As(err, &fullErr):
+		return &dashcontract.Error{Code: dashcontract.CodeConflict, Message: fullErr.Error()}
 	case errors.Is(err, warden.ErrNotFound):
 		return &dashcontract.Error{Code: dashcontract.CodeNotFound, Message: err.Error()}
 	// Before ErrAlreadyExists: both are CONFLICT, and details.reason is what

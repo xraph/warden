@@ -113,6 +113,21 @@ func (a *API) assignRole(ctx forge.Context, req *AssignRoleRequest) (*assignment
 		ass.ExpiresAt = &t
 	}
 
+	// The member cap, checked the way the dashboard's assignments.create
+	// checks it (assignment.CheckMemberCap): last, after every input check,
+	// so a malformed request against a full role reports what is wrong with
+	// it. A subject who already holds the role live is never refused. The
+	// check and the insert are not atomic, so two concurrent creates can
+	// take a role one past its cap.
+	r, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := assignment.CheckMemberCap(ctx.Context(), a.eng.Store(), tenantID, r.ID, r.Name, r.MaxMembers,
+		req.SubjectKind, req.SubjectID, now); err != nil {
+		return nil, mapError(err)
+	}
+
 	if err := a.eng.Store().CreateAssignment(ctx.Context(), ass); err != nil {
 		return nil, mapError(err)
 	}
