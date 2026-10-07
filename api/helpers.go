@@ -42,10 +42,13 @@ func mapError(err error) error {
 	if errors.Is(err, warden.ErrStaleWrite) {
 		return forge.NewHTTPError(http.StatusConflict, staleWriteMessage(err))
 	}
-	if errors.Is(err, warden.ErrSystemRoleImmutable) || errors.Is(err, warden.ErrSystemPermissionImmutable) {
-		return forge.BadRequest(err.Error())
+	// Every duplicate (role, permission, policy, resource type, assignment,
+	// relation tuple) wraps ErrAlreadyExists and nothing else does. The
+	// message is the store's, which names the entity and its scope.
+	if errors.Is(err, warden.ErrAlreadyExists) {
+		return forge.NewHTTPError(http.StatusConflict, err.Error())
 	}
-	if errors.Is(err, warden.ErrDuplicateAssignment) || errors.Is(err, warden.ErrDuplicateRelation) {
+	if errors.Is(err, warden.ErrSystemRoleImmutable) || errors.Is(err, warden.ErrSystemPermissionImmutable) {
 		return forge.BadRequest(err.Error())
 	}
 	if errors.Is(err, warden.ErrCyclicRoleInheritance) || errors.Is(err, warden.ErrMaxMembersExceeded) {
