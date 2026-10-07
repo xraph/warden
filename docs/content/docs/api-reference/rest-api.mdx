@@ -201,5 +201,5 @@ All error responses follow this format:
 | 400 | Bad request (missing fields, invalid ID) |
 | 403 | Forbidden (authorization denied) |
 | 404 | Entity not found |
-| 409 | Conflict (duplicate entity) |
+| 409 | Conflict (a duplicate entity, a policy that changed since it was read, or a role whose member cap the request would exceed or lower below its members) |
 | 503 | Store unavailable |
