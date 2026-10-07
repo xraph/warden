@@ -225,7 +225,9 @@ All defaults below come from `extension.DefaultConfig()`, which itself mirrors `
 File-based configuration is merged with programmatic options. A key the YAML section sets wins over the value you set in code. A key it leaves out keeps your code-set value, and anything neither sets gets the default, so `WithConfig(Config{CheckLogRetention: -time.Hour})` still switches purging off when the YAML section holds only `disable_routes: true`. Two rules sit on top of that:
 
 - `DisableRoutes`, `DisableMigrate` and `EvaluateAllModels` set to `true` in code always win, even over a YAML `false`.
-- For `base_path`, `grove_database`, `auth` and the numeric and duration knobs, an explicit `0` or empty value in YAML (for `auth`, one that leaves all three fields `false`) counts as unset: your code-set value fills it if there is one, else the default.
+- For `base_path`, `grove_database` and the numeric and duration knobs, an explicit `0` or empty value in YAML counts as unset: your code-set value fills it if there is one, else the default.
+
+`auth` follows the main rule with no exception: each of `require_identity`, `allow_anonymous_checks` and `audit_log` that the YAML sets wins, `false` included, and each it leaves out keeps your code-set value (or the default when code set no `auth`, or one with all three `false`). So `allow_anonymous_checks: false` in YAML switches anonymous checks off even when code turned them on. Setting `require_identity: false` from either side still needs `WithInsecureAllowUnauthenticatedRoutes()` while routes are enabled.
 
 ## REST API Endpoints
 

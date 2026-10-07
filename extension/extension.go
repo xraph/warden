@@ -444,11 +444,11 @@ func (e *Extension) mergeWithDefaults(cfg Config) Config {
 		cfg.MaxBatchChecks = defaults.MaxBatchChecks
 	}
 	// Auth is only defaulted wholesale when it was never touched at all
-	// (the pure-programmatic path with no WithConfig/YAML section for
-	// it): tryLoadFromConfigFile binds over a base that already has Auth
-	// filled (the code-set Auth, else the defaults), so a YAML-sourced
-	// Config here reflects the operator's actual intent field-by-field
-	// and must not be clobbered.
+	// (code set no Auth, or one with every field false, which reads the
+	// same). That fills the base tryLoadFromConfigFile binds over, so a
+	// YAML-sourced Auth starts from the code-set Auth, else the defaults.
+	// mergeConfigurations keeps the YAML-sourced Auth as bound, all false
+	// included, and never lets this line replace it.
 	if cfg.Auth == (AuthConfig{}) {
 		cfg.Auth = defaults.Auth
 	}
@@ -460,7 +460,8 @@ func (e *Extension) mergeWithDefaults(cfg Config) Config {
 // out already holds the code-set value. What is left here: programmatic
 // DisableRoutes, DisableMigrate and EvaluateAllModels win when true, and
 // an explicit YAML 0 or empty value for the fields below counts as unset,
-// so the code-set value fills it, else mergeWithDefaults' default.
+// so the code-set value fills it, else mergeWithDefaults' default. Auth
+// has no such rule: every auth key the YAML sets wins, false included.
 func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) Config {
 	// Programmatic bool flags override when true.
 	if programmaticConfig.DisableRoutes {
@@ -515,12 +516,18 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	if !yamlConfig.EvaluateAllModels && programmaticConfig.EvaluateAllModels {
 		yamlConfig.EvaluateAllModels = true
 	}
-	if yamlConfig.Auth == (AuthConfig{}) && programmaticConfig.Auth != (AuthConfig{}) {
-		yamlConfig.Auth = programmaticConfig.Auth
-	}
 
-	// Fill remaining zeros with defaults.
-	return e.mergeWithDefaults(yamlConfig)
+	// Fill remaining zeros with defaults, except Auth. yamlConfig.Auth was
+	// bound key by key over the code-set Auth (else the defaults), so it
+	// already holds every key the YAML set and the code value for every
+	// key it left out. An all-false Auth here is what the YAML asked for,
+	// and replacing it with the code or default Auth would undo a setting
+	// the YAML made: code AllowAnonymousChecks=true would survive a YAML
+	// allow_anonymous_checks: false.
+	auth := yamlConfig.Auth
+	merged := e.mergeWithDefaults(yamlConfig)
+	merged.Auth = auth
+	return merged
 }
 
 // resolveGroveDB resolves a *grove.DB from the DI container.

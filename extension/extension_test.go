@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -279,5 +280,108 @@ func TestRegister_NoYAMLSectionUsesCodeThenDefaults(t *testing.T) {
 		got.MaintenanceInterval != d.MaintenanceInterval {
 		t.Fatalf("no config: retention %v, depth %d, interval %v; want the defaults",
 			got.CheckLogRetention, got.MaxGraphDepth, got.MaintenanceInterval)
+	}
+}
+
+// authYAMLKeys are the two places the loader reads a warden section from.
+var authYAMLKeys = []struct{ name, prefix string }{
+	{"extensions.warden", "extensions:\n  warden:\n"},
+	{"legacy warden", "warden:\n"},
+}
+
+// registerWithAuthYAML registers an extension whose code sets codeAuth,
+// against a YAML section that disables routes (so a false
+// require_identity needs no insecure opt-in) and adds authYAML, which is
+// indented under the section. It returns the Auth the extension ended up
+// with.
+func registerWithAuthYAML(t *testing.T, prefix string, codeAuth AuthConfig, authYAML string) AuthConfig {
+	t.Helper()
+	body := prefix + "    disable_routes: true\n" + authYAML
+	ext := New(WithStore(memory.New()), WithConfig(Config{Auth: codeAuth}))
+	if err := ext.Register(yamlApp(t, "auth-yaml", body)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	return ext.config.Auth
+}
+
+// TestRegister_YAMLAuthKeyWinsOverCode: every auth key the YAML sets wins
+// over code, false included, and every key it leaves out keeps the code
+// value.
+func TestRegister_YAMLAuthKeyWinsOverCode(t *testing.T) {
+	type field struct {
+		key string
+		get func(AuthConfig) bool
+		set func(*AuthConfig, bool)
+	}
+	fields := []field{
+		{"require_identity", func(a AuthConfig) bool { return a.RequireIdentity }, func(a *AuthConfig, v bool) { a.RequireIdentity = v }},
+		{"allow_anonymous_checks", func(a AuthConfig) bool { return a.AllowAnonymousChecks }, func(a *AuthConfig, v bool) { a.AllowAnonymousChecks = v }},
+		{"audit_log", func(a AuthConfig) bool { return a.AuditLog }, func(a *AuthConfig, v bool) { a.AuditLog = v }},
+	}
+	for _, k := range authYAMLKeys {
+		for _, f := range fields {
+			for _, yamlVal := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%s/yaml_%t", k.name, f.key, yamlVal)
+				t.Run(name, func(t *testing.T) {
+					// Code holds the opposite of the YAML value for this key.
+					// The other two keys are true when the YAML says false
+					// and false when it says true, except that a code Auth
+					// with every field false reads as unset, so the code
+					// side keeps one other key on.
+					code := AuthConfig{RequireIdentity: !yamlVal, AllowAnonymousChecks: !yamlVal, AuditLog: !yamlVal}
+					if yamlVal {
+						code = AuthConfig{}
+						for _, other := range fields {
+							if other.key != f.key {
+								other.set(&code, true)
+								break
+							}
+						}
+					}
+					got := registerWithAuthYAML(t, k.prefix, code,
+						fmt.Sprintf("    auth:\n      %s: %t\n", f.key, yamlVal))
+					if f.get(got) != yamlVal {
+						t.Errorf("%s = %t, want the YAML %t over code %t", f.key, f.get(got), yamlVal, f.get(code))
+					}
+					for _, other := range fields {
+						if other.key != f.key && other.get(got) != other.get(code) {
+							t.Errorf("%s = %t, want the code value %t (YAML left it out)", other.key, other.get(got), other.get(code))
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestRegister_YAMLTurnsAnonymousChecksOffOverCode is the exact fail-open
+// a review found: code turns anonymous checks on, the YAML turns them off,
+// and the result is all three auth fields false. Restoring the code Auth
+// because the result is all false would leave anonymous checks on.
+func TestRegister_YAMLTurnsAnonymousChecksOffOverCode(t *testing.T) {
+	for _, k := range authYAMLKeys {
+		t.Run(k.name, func(t *testing.T) {
+			code := AuthConfig{RequireIdentity: false, AllowAnonymousChecks: true, AuditLog: false}
+			got := registerWithAuthYAML(t, k.prefix, code, "    auth:\n      allow_anonymous_checks: false\n")
+			if got != (AuthConfig{}) {
+				t.Fatalf("Auth = %+v, want every field false (YAML turned anonymous checks off)", got)
+			}
+		})
+	}
+}
+
+// TestRegister_YAMLWithoutAuthKeepsCodeAuth: a section with no auth block
+// keeps the code-set Auth as is.
+func TestRegister_YAMLWithoutAuthKeepsCodeAuth(t *testing.T) {
+	for _, k := range authYAMLKeys {
+		t.Run(k.name, func(t *testing.T) {
+			code := AuthConfig{RequireIdentity: false, AllowAnonymousChecks: true, AuditLog: false}
+			if got := registerWithAuthYAML(t, k.prefix, code, ""); got != code {
+				t.Fatalf("Auth = %+v, want the code Auth %+v", got, code)
+			}
+			if got := registerWithAuthYAML(t, k.prefix, AuthConfig{}, ""); got != DefaultAuthConfig() {
+				t.Fatalf("no code Auth: Auth = %+v, want the defaults", got)
+			}
+		})
 	}
 }
