@@ -22,7 +22,7 @@ A role is a named collection of permissions that can be assigned to subjects.
 | `ParentSlug` | `string` | Parent role slug for inheritance — empty means no parent |
 | `IsSystem` | `bool` | System roles cannot be deleted |
 | `IsDefault` | `bool` | Auto-assigned to new subjects |
-| `MaxMembers` | `int` | Maximum assignments (0 = unlimited) |
+| `MaxMembers` | `int` | Most distinct subjects with a live assignment to this role (0 = unlimited) |
 | `Metadata` | `map[string]any` | Custom key-value data |
 
 ### Create a Role
