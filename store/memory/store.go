@@ -1048,12 +1048,31 @@ func (s *Store) GetPolicyByName(_ context.Context, tenantID, namespacePath, name
 	return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, wardenerr.ErrPolicyNotFound)
 }
 
+// policyNameTakenLocked reports whether another policy in p's tenant and namespace
+// already carries p's name. The caller holds s.mu, so the check and the write
+// that follows it are one step.
+func (s *Store) policyNameTakenLocked(p *policy.Policy) bool {
+	for _, other := range s.policies {
+		if other.ID == p.ID {
+			continue
+		}
+		if other.TenantID == p.TenantID && other.NamespacePath == p.NamespacePath && other.Name == p.Name {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) UpdatePolicy(_ context.Context, p *policy.Policy) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.policies[p.ID.String()]
 	if !ok || existing.TenantID != p.TenantID {
 		return fmt.Errorf("policy %s: %w", p.ID, wardenerr.ErrPolicyNotFound)
+	}
+	if s.policyNameTakenLocked(p) {
+		return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+			p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
 	}
 	updated := copyPolicy(p)
 	updated.TenantID = existing.TenantID
@@ -1077,6 +1096,10 @@ func (s *Store) UpdatePolicyIfVersion(_ context.Context, p *policy.Policy, expec
 	}
 	if existing.Version != expected {
 		return fmt.Errorf("policy %s, expected version %d: %w", p.ID, expected, wardenerr.ErrPolicyVersionConflict)
+	}
+	if s.policyNameTakenLocked(p) {
+		return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+			p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
 	}
 	updated := copyPolicy(p)
 	updated.TenantID = existing.TenantID

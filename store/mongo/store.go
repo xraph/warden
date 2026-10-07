@@ -1505,6 +1505,10 @@ func (s *Store) UpdatePolicy(ctx context.Context, p *policy.Policy) error {
 		SetUpdate(bson.M{"$set": policyUpdateDoc(m)}).
 		Exec(ctx)
 	if err != nil {
+		if mongod.IsDuplicateKeyError(err) {
+			return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+		}
 		return fmt.Errorf("warden: update policy: %w", err)
 	}
 	if res.MatchedCount() == 0 {
@@ -1536,6 +1540,10 @@ func (s *Store) UpdatePolicyIfVersion(ctx context.Context, p *policy.Policy, exp
 		SetUpdate(bson.M{"$set": policyUpdateDoc(m)}).
 		Exec(ctx)
 	if err != nil {
+		if mongod.IsDuplicateKeyError(err) {
+			return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+		}
 		return fmt.Errorf("warden: update policy: %w", err)
 	}
 	if res.MatchedCount() == 0 {

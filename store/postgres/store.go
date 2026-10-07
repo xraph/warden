@@ -1406,6 +1406,10 @@ func (s *Store) UpdatePolicy(ctx context.Context, p *policy.Policy) error {
 		Where("tenant_id = ?", p.TenantID).
 		Exec(ctx)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+		}
 		return fmt.Errorf("warden: update policy: %w", err)
 	}
 	if rowsChanged(res) == 0 {
@@ -1437,6 +1441,10 @@ func (s *Store) UpdatePolicyIfVersion(ctx context.Context, p *policy.Policy, exp
 		Where("version = ?", expected).
 		Exec(ctx)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+		}
 		return fmt.Errorf("warden: update policy: %w", err)
 	}
 	if rowsChanged(res) == 0 {

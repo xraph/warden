@@ -164,3 +164,49 @@ func statusOf(t *testing.T, err error) int {
 	}
 	return he.StatusCode()
 }
+
+// TestPolicies_RenameOntoTakenName409 covers the update path: a rename onto
+// a name another policy holds in the same tenant and namespace is a
+// duplicate, and a policy keeping its own name is not.
+func TestPolicies_RenameOntoTakenName409(t *testing.T) {
+	h := newTestAPI(t)
+	mk := func(name string) string {
+		t.Helper()
+		rec := do(h, request(http.MethodPost, "/v1/policies", "alice", testTenant, map[string]any{
+			"name": name, "effect": "allow", "is_active": true,
+		}))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %q: status = %d; body=%s", name, rec.Code, rec.Body.String())
+		}
+		var p struct {
+			ID string `json:"id"`
+		}
+		decodeJSON(t, rec, &p)
+		return p.ID
+	}
+	mk("alpha")
+	beta := mk("beta")
+
+	rec := do(h, request(http.MethodPut, "/v1/policies/"+beta, "alice", testTenant, map[string]any{"name": "alpha"}))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("rename onto a taken name: status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), warden.ErrDuplicatePolicy.Error()) {
+		t.Errorf("body = %s, want the store's message", rec.Body.String())
+	}
+	get := do(h, request(http.MethodGet, "/v1/policies/"+beta, "alice", testTenant, nil))
+	if !strings.Contains(get.Body.String(), `"name":"beta"`) {
+		t.Errorf("the refused rename wrote something: %s", get.Body.String())
+	}
+
+	own := do(h, request(http.MethodPut, "/v1/policies/"+beta, "alice", testTenant, map[string]any{
+		"name": "beta", "description": "same name",
+	}))
+	if own.Code != http.StatusOK {
+		t.Fatalf("keeping its own name: status = %d, want 200; body=%s", own.Code, own.Body.String())
+	}
+	free := do(h, request(http.MethodPut, "/v1/policies/"+beta, "alice", testTenant, map[string]any{"name": "gamma"}))
+	if free.Code != http.StatusOK {
+		t.Fatalf("rename to a free name: status = %d, want 200; body=%s", free.Code, free.Body.String())
+	}
+}

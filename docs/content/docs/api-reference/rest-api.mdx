@@ -204,6 +204,6 @@ All error responses follow this format:
 | 401 | Authentication required |
 | 403 | Forbidden (authorization denied, or an AuthZEN context naming another tenant or namespace) |
 | 404 | Entity not found |
-| 409 | Conflict (a role, permission, policy, resource type, role assignment or relation tuple that already exists in its scope, a record or policy that changed since the request read it, or a role whose member cap the request would exceed or lower below its members) |
+| 409 | Conflict (a role, permission, policy, resource type, role assignment or relation tuple that already exists in its scope, including a policy renamed onto a name another policy holds in the same namespace, a record or policy that changed since the request read it, or a role whose member cap the request would exceed or lower below its members) |
 | 422 | A well-formed body that fails validation, for example an empty relation field, an unknown policy effect or subject kind, a policy condition with an unknown operator or field or a value that is not a list, or an empty or oversized batch |
 | 500 | Anything else, including a store failure |
