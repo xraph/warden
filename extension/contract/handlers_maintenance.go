@@ -1,9 +1,9 @@
 // handlers_maintenance.go: the two operational commands.
 //
-// These are the only writes warden's config surface has. RunMaintenance
-// purges expired assignments and, when CheckLogRetention is set, check log
-// entries past it. Cache invalidation is the manual version of what a write
-// would do automatically.
+// These are the only writes warden's config surface has. maintenance.run
+// purges the caller's tenant's expired assignments and, when
+// CheckLogRetention is set, that tenant's check log entries past it. Cache
+// invalidation is the manual version of what a write would do automatically.
 package contract
 
 import (
@@ -38,16 +38,17 @@ type CacheInvalidateResult struct {
 	Scope string `json:"scope"` // "tenant" or "subject"
 }
 
-// maintenanceRunHandler runs one maintenance pass.
+// maintenanceRunHandler runs one maintenance pass for the caller's tenant.
 //
-// maintenance.run is engine-wide, not tenant-scoped. RunMaintenance purges
-// expired assignments across every tenant and purges check log entries
-// past the configured retention across every tenant. The caller's tenant
-// decides nothing about what is removed; it only names the scope the
-// authorization decision and the audit event are recorded under. That is
-// why the intent sits behind its own warden:maintenance:manage permission
-// rather than a role or assignment grant, and why every run is audited with
-// the resulting counts.
+// maintenance.run is tenant-scoped. RunTenantMaintenance purges the resolved
+// tenant's expired assignments and, past the configured retention, that
+// tenant's check log entries, and flushes only that tenant's cached
+// decisions. No other tenant's rows are touched. The engine-wide pass
+// (RunMaintenance) stays with the background loop and direct Go callers; no
+// dashboard intent reaches it. The
+// intent still sits behind its own warden:maintenance:manage permission
+// rather than a role or assignment grant, because it deletes audit log
+// entries, and every run is audited with the resulting counts.
 func maintenanceRunHandler(deps Deps) func(context.Context, struct{}, dashcontract.Principal) (MaintenanceResult, error) {
 	return func(ctx context.Context, _ struct{}, p dashcontract.Principal) (MaintenanceResult, error) {
 		if err := requireEngine(deps); err != nil {
@@ -58,7 +59,7 @@ func maintenanceRunHandler(deps Deps) func(context.Context, struct{}, dashcontra
 			return MaintenanceResult{}, err
 		}
 		ctx = withActor(ctx, p)
-		rep, err := deps.Engine.RunMaintenance(ctx)
+		rep, err := deps.Engine.RunTenantMaintenance(ctx, tenantID)
 		if err != nil {
 			return MaintenanceResult{}, mapWardenError(err)
 		}

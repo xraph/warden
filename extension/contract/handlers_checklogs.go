@@ -1,8 +1,8 @@
 // handlers_checklogs.go: the check log list and one check's detail.
 //
-// There is no purge. PurgeCheckLogs takes no tenant id, so a dashboard
-// purge would let one tenant delete every tenant's audit trail. Retention
-// runs through maintenance.run.
+// There is no purge intent here. Retention runs through maintenance.run,
+// which purges only the caller's tenant's entries older than the configured
+// retention window (PurgeCheckLogsForTenant), never an arbitrary range.
 package contract
 
 import (

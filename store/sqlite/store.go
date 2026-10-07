@@ -1151,6 +1151,25 @@ func (s *Store) DeleteExpiredAssignments(ctx context.Context, now time.Time) (in
 	return n, nil
 }
 
+func (s *Store) DeleteExpiredAssignmentsForTenant(ctx context.Context, tenantID string, now time.Time) (int64, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("warden: delete expired assignments for tenant: %w", wardenerr.ErrTenantRequired)
+	}
+	res, err := s.sdb.NewDelete((*assignmentModel)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("expires_at IS NOT NULL").
+		Where("expires_at < ?", sqliteTime(now)).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("warden: delete expired assignments for tenant: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("warden: delete expired assignments for tenant rows: %w", err)
+	}
+	return n, nil
+}
+
 func (s *Store) DeleteAssignmentsBySubject(ctx context.Context, tenantID, subjectKind, subjectID string) error {
 	_, err := s.sdb.NewDelete((*assignmentModel)(nil)).
 		Where("tenant_id = ?", tenantID).
@@ -2008,6 +2027,24 @@ func (s *Store) PurgeCheckLogs(ctx context.Context, before time.Time) (int64, er
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("warden: purge check logs rows: %w", err)
+	}
+	return n, nil
+}
+
+func (s *Store) PurgeCheckLogsForTenant(ctx context.Context, tenantID string, before time.Time) (int64, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("warden: purge check logs for tenant: %w", wardenerr.ErrTenantRequired)
+	}
+	res, err := s.sdb.NewDelete((*checkLogModel)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("created_at < ?", sqliteTime(before)).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("warden: purge check logs for tenant: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("warden: purge check logs for tenant rows: %w", err)
 	}
 	return n, nil
 }

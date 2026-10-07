@@ -103,8 +103,9 @@ var (
 	ErrGraphDepthExceeded = errors.New("warden: relation graph depth exceeded")
 
 	// ErrTenantRequired is returned by Check when the resolved scope has no
-	// tenant ID and Config.RequireTenant is true (the default).
-	ErrTenantRequired = errors.New("warden: tenant is required")
+	// tenant ID and Config.RequireTenant is true (the default), and by
+	// RunTenantMaintenance when it is given no tenant.
+	ErrTenantRequired = wardenerr.ErrTenantRequired
 
 	// ErrGraphBudgetExceeded is returned when a ReBAC graph traversal
 	// exceeds its configured visited-node or fan-out budget.

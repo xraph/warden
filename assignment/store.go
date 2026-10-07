@@ -54,8 +54,16 @@ type Store interface {
 	// A limit of 0 means the backend default of 1000.
 	ListExpiringAssignments(ctx context.Context, tenantID string, before time.Time, limit int) ([]*Assignment, error)
 
-	// DeleteExpiredAssignments removes assignments that have expired before the given time.
+	// DeleteExpiredAssignments removes assignments that have expired before
+	// the given time, in every tenant.
 	DeleteExpiredAssignments(ctx context.Context, now time.Time) (int64, error)
+
+	// DeleteExpiredAssignmentsForTenant removes one tenant's assignments that
+	// have expired before the given time and reports how many rows it
+	// removed. No other tenant's rows are touched. An empty tenantID returns
+	// wardenerr.ErrTenantRequired and deletes nothing; it never means every
+	// tenant.
+	DeleteExpiredAssignmentsForTenant(ctx context.Context, tenantID string, now time.Time) (int64, error)
 
 	// DeleteAssignmentsBySubject removes all assignments for a subject.
 	DeleteAssignmentsBySubject(ctx context.Context, tenantID, subjectKind, subjectID string) error

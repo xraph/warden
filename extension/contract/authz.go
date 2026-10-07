@@ -51,9 +51,9 @@ type intentPolicy struct {
 // kind at once, so they sit behind their own "warden:overview" read rather
 // than borrowing one entity's grant. maintenance.run and
 // maintenance.cacheInvalidate get their own "warden:maintenance" resource
-// because maintenance.run is engine-wide: it purges expired assignments
-// across every tenant, which is not something a role manager should get for
-// free.
+// because maintenance.run deletes the tenant's expired assignments and its
+// check log entries past the retention window, and deleting audit entries
+// is not something a role manager should get for free.
 var intentPolicies = map[string]intentPolicy{
 	"config.detail":         {"read", "warden:config"},
 	"overview.stats":        {"read", "warden:overview"},

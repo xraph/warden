@@ -32,7 +32,8 @@ type Engine struct {
 	checkLogWriter *checkLogWriter
 	maintCancel    context.CancelFunc
 
-	// nowFn is the clock RunMaintenance uses to decide what has expired.
+	// nowFn is the clock RunMaintenance and RunTenantMaintenance use to decide
+	// what has expired.
 	// Unexported so tests in this package can substitute a fixed clock
 	// without expanding the public API.
 	nowFn func() time.Time

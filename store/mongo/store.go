@@ -1125,6 +1125,26 @@ func (s *Store) DeleteExpiredAssignments(ctx context.Context, t time.Time) (int6
 	return res.DeletedCount(), nil
 }
 
+func (s *Store) DeleteExpiredAssignmentsForTenant(ctx context.Context, tenantID string, t time.Time) (int64, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("warden: delete expired assignments for tenant: %w", wardenerr.ErrTenantRequired)
+	}
+	res, err := s.mdb.NewDelete((*assignmentModel)(nil)).
+		Many().
+		Filter(bson.M{
+			"tenant_id": tenantID,
+			"expires_at": bson.M{
+				"$ne": nil,
+				"$lt": t,
+			},
+		}).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("warden: delete expired assignments for tenant: %w", err)
+	}
+	return res.DeletedCount(), nil
+}
+
 func (s *Store) DeleteAssignmentsBySubject(ctx context.Context, tenantID, subjectKind, subjectID string) error {
 	_, err := s.mdb.NewDelete((*assignmentModel)(nil)).
 		Many().
@@ -1914,6 +1934,23 @@ func (s *Store) PurgeCheckLogs(ctx context.Context, before time.Time) (int64, er
 		Exec(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("warden: purge check logs: %w", err)
+	}
+	return res.DeletedCount(), nil
+}
+
+func (s *Store) PurgeCheckLogsForTenant(ctx context.Context, tenantID string, before time.Time) (int64, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("warden: purge check logs for tenant: %w", wardenerr.ErrTenantRequired)
+	}
+	res, err := s.mdb.NewDelete((*checkLogModel)(nil)).
+		Many().
+		Filter(bson.M{
+			"tenant_id":  tenantID,
+			"created_at": bson.M{"$lt": before},
+		}).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("warden: purge check logs for tenant: %w", err)
 	}
 	return res.DeletedCount(), nil
 }

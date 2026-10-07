@@ -21,6 +21,14 @@ Each run:
 
 `Config.MaintenanceInterval` (YAML: `maintenance_interval`, default 1 hour) controls how often this runs in the background. `Engine.Start` calls `StartMaintenance`, which starts a goroutine ticking on that interval until the engine's `Stop` context is cancelled; setting the interval to `0` disables the loop (you'd then need to call `RunMaintenance` yourself, e.g. from a cron job, to get any purging at all).
 
+Every run above covers every tenant. If you want one tenant only, call `RunTenantMaintenance`:
+
+```go
+func (e *Engine) RunTenantMaintenance(ctx context.Context, tenantID string) (MaintenanceReport, error)
+```
+
+It does the same two purges through `DeleteExpiredAssignmentsForTenant` and `PurgeCheckLogsForTenant`, so no other tenant's rows are touched, and when it removed something it flushes that tenant's cached decisions (`Cache.InvalidateTenant`) and leaves the rest of the cache alone. An empty tenant ID returns `ErrTenantRequired` before anything is deleted. The dashboard's `maintenance.run` uses this one, with the caller's tenant.
+
 A run that purges anything increments `warden_assignments_purged_total` and/or `warden_checklogs_purged_total`; see [Monitoring](/docs/operations/monitoring).
 
 ## Per-subject and per-tenant erasure

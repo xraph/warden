@@ -56,6 +56,37 @@ func TestMaintenanceRunPurgesExpiredAssignments(t *testing.T) {
 	}
 }
 
+func TestMaintenanceRunPurgesOnlyTheCallersTenant(t *testing.T) {
+	// maintenance.run is a tenant's command. A run from t1 must leave t2's
+	// expired assignment where it is: t2's operator decides when t2 is
+	// swept, and the background loop sweeps every tenant anyway.
+	s := memory.New()
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour)
+	for _, tenant := range []string{"t1", "t2"} {
+		if err := s.CreateAssignment(ctx, &assignment.Assignment{
+			TenantID: tenant, SubjectKind: "user", SubjectID: "bob", ExpiresAt: &past,
+		}); err != nil {
+			t.Fatalf("create expired assignment in %s: %v", tenant, err)
+		}
+	}
+	eng, err := warden.NewEngine(warden.WithStore(s))
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	got, err := maintenanceRunHandler(Deps{Engine: eng})(ctx, struct{}{}, principalFor("t1"))
+	if err != nil {
+		t.Fatalf("maintenance.run: %v", err)
+	}
+	if got.AssignmentsPurged != 1 {
+		t.Errorf("assignmentsPurged = %d, want 1 (t1's only)", got.AssignmentsPurged)
+	}
+	if n, err := s.CountAssignments(ctx, &assignment.ListFilter{TenantID: "t2"}); err != nil || n != 1 {
+		t.Errorf("t2 has %d assignments after t1's run (err %v), want its 1 untouched", n, err)
+	}
+}
+
 func TestCacheInvalidateWithoutASubjectClearsTheTenant(t *testing.T) {
 	eng := testEngine(t, warden.Config{CacheTTL: time.Minute})
 	h := cacheInvalidateHandler(Deps{Engine: eng})

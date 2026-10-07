@@ -763,6 +763,22 @@ func (s *Store) DeleteExpiredAssignments(_ context.Context, now time.Time) (int6
 	return count, nil
 }
 
+func (s *Store) DeleteExpiredAssignmentsForTenant(_ context.Context, tenantID string, now time.Time) (int64, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("warden: delete expired assignments for tenant: %w", wardenerr.ErrTenantRequired)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int64
+	for k, a := range s.assignments {
+		if a.TenantID == tenantID && a.ExpiresAt != nil && a.ExpiresAt.Before(now) {
+			delete(s.assignments, k)
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (s *Store) DeleteAssignmentsBySubject(_ context.Context, tenantID, subjectKind, subjectID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1375,6 +1391,22 @@ func (s *Store) PurgeCheckLogs(_ context.Context, before time.Time) (int64, erro
 	var count int64
 	for k, e := range s.checkLogs {
 		if e.CreatedAt.Before(before) {
+			delete(s.checkLogs, k)
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *Store) PurgeCheckLogsForTenant(_ context.Context, tenantID string, before time.Time) (int64, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("warden: purge check logs for tenant: %w", wardenerr.ErrTenantRequired)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int64
+	for k, e := range s.checkLogs {
+		if e.TenantID == tenantID && e.CreatedAt.Before(before) {
 			delete(s.checkLogs, k)
 			count++
 		}

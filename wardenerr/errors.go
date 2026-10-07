@@ -76,3 +76,9 @@ var ErrStaleWrite = errors.New("warden: changed since it was read")
 // ErrPolicyVersionConflict is returned by UpdatePolicyIfVersion when the
 // stored policy's version is not the one the caller expected.
 var ErrPolicyVersionConflict = fmt.Errorf("warden: policy changed since it was read: %w", ErrStaleWrite)
+
+// ErrTenantRequired is returned when an operation needs a tenant ID and was
+// given none. Check returns it when the resolved scope has no tenant and
+// Config.RequireTenant is true; the tenant-scoped maintenance purges return
+// it for an empty tenant rather than treating empty as every tenant.
+var ErrTenantRequired = errors.New("warden: tenant is required")

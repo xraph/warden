@@ -22,8 +22,16 @@ type Store interface {
 	// CountCheckLogs returns the number of entries matching the filter.
 	CountCheckLogs(ctx context.Context, filter *QueryFilter) (int64, error)
 
-	// PurgeCheckLogs removes check log entries older than the given time.
+	// PurgeCheckLogs removes check log entries older than the given time, in
+	// every tenant.
 	PurgeCheckLogs(ctx context.Context, before time.Time) (int64, error)
+
+	// PurgeCheckLogsForTenant removes one tenant's check log entries older
+	// than the given time and reports how many rows it removed. No other
+	// tenant's entries are touched. An empty tenantID returns
+	// wardenerr.ErrTenantRequired and deletes nothing; it never means every
+	// tenant.
+	PurgeCheckLogsForTenant(ctx context.Context, tenantID string, before time.Time) (int64, error)
 
 	// DeleteCheckLogsBySubject removes a tenant's check logs for one subject
 	// and reports how many rows it removed. Used to service erasure requests.

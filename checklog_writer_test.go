@@ -42,6 +42,9 @@ func (s *recordingCheckLogStore) CountCheckLogs(context.Context, *checklog.Query
 func (s *recordingCheckLogStore) PurgeCheckLogs(context.Context, time.Time) (int64, error) {
 	return 0, nil
 }
+func (s *recordingCheckLogStore) PurgeCheckLogsForTenant(context.Context, string, time.Time) (int64, error) {
+	return 0, nil
+}
 func (s *recordingCheckLogStore) DeleteCheckLogsBySubject(context.Context, string, string, string) (int64, error) {
 	return 0, nil
 }
