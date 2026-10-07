@@ -43,6 +43,12 @@ func mapError(err error) error {
 	if errors.Is(err, warden.ErrStaleWrite) {
 		return forge.NewHTTPError(http.StatusConflict, staleWriteMessage(err))
 	}
+	// A permission delete while roles still grant it: the refusal names
+	// them. The dashboard returns CONFLICT with the same text.
+	var granted *role.PermissionGrantedError
+	if errors.As(err, &granted) {
+		return forge.NewHTTPError(http.StatusConflict, granted.Error())
+	}
 	// Every duplicate (role, permission, policy, resource type, assignment,
 	// relation tuple) wraps ErrAlreadyExists and nothing else does. The
 	// message is the store's, which names the entity and its scope.
@@ -58,6 +64,9 @@ func mapError(err error) error {
 	}
 	// A parent that would make a role its own ancestor, or one that does
 	// not exist in the role's namespace: the caller can pick another.
+	// Nothing on REST raises ErrMaxMembersExceeded today (a full role is
+	// assignment.RoleFullError, 409 above); the branch stays as a defence
+	// should a store or plugin start returning it.
 	var missingParent *role.ParentNotFoundError
 	if errors.Is(err, warden.ErrCyclicRoleInheritance) || errors.As(err, &missingParent) ||
 		errors.Is(err, warden.ErrMaxMembersExceeded) {
@@ -70,6 +79,9 @@ func mapError(err error) error {
 	if errors.As(err, &undeclared) {
 		return forge.BadRequest(undeclared.Error())
 	}
+	// Nothing on REST raises ErrInvalidCondition today: only the evaluator
+	// returns it, and the evaluator handles it itself (a deny policy still
+	// applies, an allow policy is skipped). The branch stays as a defence.
 	if errors.Is(err, warden.ErrInvalidCondition) {
 		return forge.BadRequest(err.Error())
 	}
@@ -94,7 +106,15 @@ func isNotFound(err error) bool {
 		errors.Is(err, warden.ErrAssignmentNotFound) ||
 		errors.Is(err, warden.ErrPolicyNotFound) ||
 		errors.Is(err, warden.ErrRelationNotFound) ||
-		errors.Is(err, warden.ErrResourceTypeNotFound)
+		errors.Is(err, warden.ErrResourceTypeNotFound) ||
+		isGrantNotHeld(err)
+}
+
+// isGrantNotHeld reports a detach of a grant the role does not hold, which
+// the dashboard answers with NOT_FOUND.
+func isGrantNotHeld(err error) bool {
+	var notHeld *role.GrantNotHeldError
+	return errors.As(err, &notHeld)
 }
 
 func defaultLimit(limit int) int {

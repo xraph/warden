@@ -296,7 +296,10 @@ func (a *API) listRoles(ctx forge.Context, req *ListRolesRequest) (*RoleListResp
 
 // resolvePermRef converts an attach/detach request's mixed-form permission
 // reference into a permission.Ref. PermissionName wins when both are set;
-// PermissionID is resolved via GetPermission for the legacy code path.
+// PermissionID is resolved via GetPermission for the legacy code path, so a
+// missing ID is 404 for both. A name is not read here: the attach checks it
+// exists (permission.LookupRef) and the detach checks the role grants it
+// (role.HeldGrant), as the dashboard does.
 func (a *API) resolvePermRef(ctx forge.Context, tenantID, permIDStr, permName, permNamespace string) (permission.Ref, *id.PermissionID, error) {
 	if permName != "" {
 		return permission.Ref{NamespacePath: permNamespace, Name: permName}, nil, nil
@@ -318,12 +321,15 @@ func (a *API) resolvePermRef(ctx forge.Context, tenantID, permIDStr, permName, p
 // loadWritableRole reads a role and refuses a system role, whose grants
 // cannot change. The dashboard's attach, detach and set-grants commands
 // refuse it the same way.
-func (a *API) loadWritableRole(ctx forge.Context, tenantID string, roleID id.RoleID) error {
+func (a *API) loadWritableRole(ctx forge.Context, tenantID string, roleID id.RoleID) (*role.Role, error) {
 	r, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
 	if err != nil {
-		return mapError(err)
+		return nil, mapError(err)
 	}
-	return mapError(role.CheckWritable(r))
+	if err := role.CheckWritable(r); err != nil {
+		return nil, mapError(err)
+	}
+	return r, nil
 }
 
 func (a *API) attachPermissionToRole(ctx forge.Context, req *AttachPermissionRequest) (*struct{}, error) {
@@ -332,13 +338,20 @@ func (a *API) attachPermissionToRole(ctx forge.Context, req *AttachPermissionReq
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 	_, tenantID := scopeFromForgeContext(ctx)
-	if err := a.loadWritableRole(ctx, tenantID, roleID); err != nil {
+	if _, err := a.loadWritableRole(ctx, tenantID, roleID); err != nil {
 		return nil, err
 	}
 
 	ref, legacyID, perr := a.resolvePermRef(ctx, tenantID, req.PermissionID, req.PermissionName, req.PermissionNamespacePath)
 	if perr != nil {
 		return nil, perr
+	}
+	// A grant of a name that does not exist is 404: the store would record
+	// it, and the role would appear to grant something and grant nothing.
+	if legacyID == nil {
+		if _, err := permission.LookupRef(ctx.Context(), a.eng.Store(), tenantID, ref); err != nil {
+			return nil, mapError(err)
+		}
 	}
 
 	if err := a.eng.Store().AttachPermission(ctx.Context(), tenantID, roleID, ref); err != nil {
@@ -366,7 +379,8 @@ func (a *API) detachPermissionFromRole(ctx forge.Context, req *DetachPermissionR
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 	_, tenantID := scopeFromForgeContext(ctx)
-	if err := a.loadWritableRole(ctx, tenantID, roleID); err != nil {
+	r, err := a.loadWritableRole(ctx, tenantID, roleID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -377,6 +391,11 @@ func (a *API) detachPermissionFromRole(ctx forge.Context, req *DetachPermissionR
 	ref, legacyID, perr := a.resolvePermRef(ctx, tenantID, permIDStr, req.PermissionName, req.PermissionNamespacePath)
 	if perr != nil {
 		return nil, perr
+	}
+	// A grant the role does not hold is 404, as on the dashboard: the
+	// store's detach would remove nothing and report success.
+	if _, err := role.HeldGrant(ctx.Context(), a.eng.Store(), tenantID, r, ref); err != nil {
+		return nil, mapError(err)
 	}
 
 	if err := a.eng.Store().DetachPermission(ctx.Context(), tenantID, roleID, ref); err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/plugin"
+	"github.com/xraph/warden/role"
 )
 
 func (a *API) registerPermissionRoutes(router forge.Router) error {
@@ -143,6 +144,12 @@ func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*str
 		return nil, mapError(err)
 	}
 	if err := permission.CheckWritable(before); err != nil {
+		return nil, mapError(err)
+	}
+	// The store's delete also removes every grant of it, so a permission
+	// a role still grants is refused (409) and the refusal names the
+	// roles, as the dashboard does.
+	if err := role.CheckPermissionUngranted(ctx.Context(), a.eng.Store(), tenantID, before); err != nil {
 		return nil, mapError(err)
 	}
 

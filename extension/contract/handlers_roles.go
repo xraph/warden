@@ -455,11 +455,8 @@ func loadWritableRole(ctx context.Context, deps Deps, tenantID, rawID string) (*
 }
 
 // resolvePermissionRef confirms a named permission exists in this tenant
-// before it is used as a junction key.
-//
-// Without this the store records a grant for a name that is not there. The
-// role then appears to grant something and grants nothing, because the RBAC
-// evaluator resolves grants by joining against the permissions table.
+// before it is used as a junction key, through permission.LookupRef, which
+// the REST attach also calls.
 //
 // It also returns the permission's id, which the typed attach and detach
 // hooks carry.
@@ -467,14 +464,12 @@ func resolvePermissionRef(ctx context.Context, deps Deps, tenantID string, ref P
 	if ref.Name == "" {
 		return permission.Ref{}, id.Nil, badRequest("a permission reference needs a name")
 	}
-	pm, err := deps.Engine.Store().GetPermissionByName(ctx, tenantID, ref.NamespacePath, ref.Name)
+	key := permission.Ref{NamespacePath: ref.NamespacePath, Name: ref.Name}
+	pm, err := permission.LookupRef(ctx, deps.Engine.Store(), tenantID, key)
 	if err != nil {
-		return permission.Ref{}, id.Nil, &dashcontract.Error{
-			Code:    dashcontract.CodeNotFound,
-			Message: "no permission named " + ref.Name + " in that namespace",
-		}
+		return permission.Ref{}, id.Nil, mapWardenError(err)
 	}
-	return permission.Ref{NamespacePath: ref.NamespacePath, Name: ref.Name}, pm.ID, nil
+	return key, pm.ID, nil
 }
 
 // grantEntity is the audit payload for one attach or detach, shaped like the
@@ -549,28 +544,13 @@ func rolesDetachPermissionHandler(deps Deps) func(context.Context, RolePermissio
 		}
 		s := deps.Engine.Store()
 
-		// Confirm the grant is actually there. DetachPermission removes
-		// nothing and returns no error when the (namespace, name) key does
-		// not match, so a detach with the wrong namespace would report
-		// success while the grant survived.
-		grants, err := s.ListRolePermissions(ctx, tenantID, r.ID)
+		// Confirm the grant is actually there (role.HeldGrant says why). The
+		// REST detach runs the same check.
+		ref := permission.Ref{NamespacePath: in.PermissionNamespacePath, Name: in.PermissionName}
+		held, err := role.HeldGrant(ctx, s, tenantID, r, ref)
 		if err != nil {
 			return AckResponse{}, mapWardenError(err)
 		}
-		var held *permission.Permission
-		for _, g := range grants {
-			if g.Name == in.PermissionName && g.NamespacePath == in.PermissionNamespacePath {
-				held = g
-				break
-			}
-		}
-		if held == nil {
-			return AckResponse{}, &dashcontract.Error{
-				Code:    dashcontract.CodeNotFound,
-				Message: r.Name + " does not grant " + in.PermissionName,
-			}
-		}
-		ref := permission.Ref{NamespacePath: in.PermissionNamespacePath, Name: in.PermissionName}
 		ctx = withActor(ctx, p)
 		if err := s.DetachPermission(ctx, tenantID, r.ID, ref); err != nil {
 			return AckResponse{}, mapWardenError(err)

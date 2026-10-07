@@ -14,6 +14,7 @@ import (
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/resourcetype"
+	"github.com/xraph/warden/role"
 
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
@@ -32,6 +33,7 @@ func mapWardenError(err error) error {
 	var capErr *assignment.CapBelowMembersError
 	var fullErr *assignment.RoleFullError
 	var undeclared *resourcetype.UndeclaredTupleError
+	var granted *role.PermissionGrantedError
 	switch {
 	// Its own text, not err.Error(): a DSL apply wraps it as "update role
 	// <slug>: ...", and the page shows the refusal, not the call chain. That
@@ -51,6 +53,10 @@ func mapWardenError(err error) error {
 	// the resource type and what it allows.
 	case errors.As(err, &undeclared):
 		return &dashcontract.Error{Code: dashcontract.CodeBadRequest, Message: undeclared.Error()}
+	// A permission delete while roles still grant it: the refusal names
+	// them, and REST returns the same text as 409.
+	case errors.As(err, &granted):
+		return &dashcontract.Error{Code: dashcontract.CodeConflict, Message: granted.Error()}
 	case errors.Is(err, warden.ErrNotFound):
 		return &dashcontract.Error{Code: dashcontract.CodeNotFound, Message: err.Error()}
 	// Before ErrAlreadyExists: both are CONFLICT, and details.reason is what
@@ -72,6 +78,10 @@ func mapWardenError(err error) error {
 			Code:    dashcontract.CodeBadRequest,
 			Message: "no tenant in scope: select a tenant before reading warden data",
 		}
+	// Nothing raises ErrMaxMembersExceeded today, and only the evaluator
+	// returns ErrInvalidCondition, which it handles itself, so neither
+	// reaches here. Their cases stay as a defence should a store or plugin
+	// start returning them.
 	case errors.Is(err, warden.ErrCyclicRoleInheritance),
 		errors.Is(err, warden.ErrMaxMembersExceeded),
 		errors.Is(err, warden.ErrInvalidCondition):

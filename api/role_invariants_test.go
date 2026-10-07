@@ -285,3 +285,119 @@ func TestRoles_ParentChangesThatMakeNoCycleStillWork(t *testing.T) {
 		t.Fatalf("create with parent: status = %d, want 201; body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// A permission a role still grants cannot be deleted: the store's delete
+// would strip the grant. REST answers 409 with the dashboard's CONFLICT
+// text, naming every role in slug order, and writes nothing.
+func TestPermissions_DeleteOfAGrantedPermissionIs409(t *testing.T) {
+	f := newSystemFixture(t)
+	ctx := context.Background()
+	editor := &role.Role{TenantID: testTenant, Name: "Editor", Slug: "editor"}
+	if err := f.s.CreateRole(ctx, editor); err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	if err := f.s.AttachPermission(ctx, testTenant, editor.ID, permission.Ref{Name: "doc:read"}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	rec := do(f.h, request(http.MethodDelete, "/v1/permissions/"+f.docRead.ID.String(), "alice", testTenant, nil))
+	wantRefusal(t, rec, http.StatusConflict, "doc:read is still granted by admin, editor. Detach it from those roles first.")
+
+	if _, err := f.s.GetPermission(ctx, testTenant, f.docRead.ID); err != nil {
+		t.Fatalf("the refusal deleted the permission: %v", err)
+	}
+	if got := strings.Join(f.grants(t), ","); got != "sys:read,doc:read" && got != "doc:read,sys:read" {
+		t.Errorf("the refusal changed the system role's grants: %s", got)
+	}
+
+	// Once nothing grants it, the delete goes through.
+	if err := f.s.DetachPermission(ctx, testTenant, editor.ID, permission.Ref{Name: "doc:read"}); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if err := f.s.DetachPermission(ctx, testTenant, f.admin.ID, permission.Ref{Name: "doc:read"}); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if rec := do(f.h, request(http.MethodDelete, "/v1/permissions/"+f.docRead.ID.String(), "alice", testTenant, nil)); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete after detach: status = %d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// Attaching a permission that does not exist is 404 with the dashboard's
+// NOT_FOUND text, whether the name is unknown or lives in another
+// namespace, and records no grant.
+func TestRoles_AttachOfAMissingPermissionIs404(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"unknown name", map[string]any{"permission_name": "ghost:read"}, "no permission named ghost:read in that namespace"},
+		{"wrong namespace", map[string]any{"permission_name": "doc:write", "permission_namespace_path": "eng"},
+			"no permission named doc:write in that namespace"},
+		{"unknown id", map[string]any{"permission_id": "perm_01h455vb4pex5vsknk084sn02q"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSystemFixture(t)
+			ctx := context.Background()
+			editor := &role.Role{TenantID: testTenant, Name: "Editor", Slug: "editor"}
+			if err := f.s.CreateRole(ctx, editor); err != nil {
+				t.Fatalf("create role: %v", err)
+			}
+			rec := do(f.h, request(http.MethodPost, "/v1/roles/"+editor.ID.String()+"/permissions", "alice", testTenant, tc.body))
+			if tc.want == "" {
+				if rec.Code != http.StatusNotFound {
+					t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+				}
+			} else {
+				wantRefusal(t, rec, http.StatusNotFound, tc.want)
+			}
+			held, err := f.s.ListRolePermissions(ctx, testTenant, editor.ID)
+			if err != nil {
+				t.Fatalf("list grants: %v", err)
+			}
+			if len(held) != 0 {
+				t.Errorf("the refusal recorded a grant: %v", held)
+			}
+		})
+	}
+}
+
+// Detaching a grant the role does not hold is 404 with the dashboard's
+// NOT_FOUND text, by id or by name, including a name in the wrong
+// namespace, and leaves the grants alone.
+func TestRoles_DetachOfAGrantNotHeldIs404(t *testing.T) {
+	f := newSystemFixture(t)
+	ctx := context.Background()
+	editor := &role.Role{TenantID: testTenant, Name: "Editor", Slug: "editor"}
+	if err := f.s.CreateRole(ctx, editor); err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	if err := f.s.AttachPermission(ctx, testTenant, editor.ID, permission.Ref{Name: "doc:read"}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	base := "/v1/roles/" + editor.ID.String() + "/permissions/"
+	cases := []struct {
+		name string
+		req  *http.Request
+		want string
+	}{
+		{"by id", request(http.MethodDelete, base+f.docWrite.ID.String(), "alice", testTenant, nil),
+			"Editor does not grant doc:write"},
+		{"by name in the wrong namespace", request(http.MethodDelete,
+			base+f.docRead.ID.String()+"?permission_name=doc:read&permission_namespace_path=eng", "alice", testTenant, nil),
+			"Editor does not grant doc:read"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wantRefusal(t, do(f.h, tc.req), http.StatusNotFound, tc.want)
+			held, err := f.s.ListRolePermissions(ctx, testTenant, editor.ID)
+			if err != nil {
+				t.Fatalf("list grants: %v", err)
+			}
+			if len(held) != 1 || held[0].Name != "doc:read" {
+				t.Errorf("the refusal changed the grants: %v", held)
+			}
+		})
+	}
+}

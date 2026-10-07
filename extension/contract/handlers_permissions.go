@@ -10,8 +10,6 @@ package contract
 
 import (
 	"context"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/xraph/warden/id"
@@ -152,67 +150,17 @@ func permissionsDetailHandler(deps Deps) func(context.Context, PermissionDetailI
 	}
 }
 
-// rolesGranting finds every role in the tenant whose grants include pm,
-// sorted by slug (then namespace) so the page and its tests are stable.
-//
-// There is no store method for this direction, so it walks the tenant's
-// roles a page at a time and checks each page's grants. It reads every
-// page and never stops at a limit: permissions.delete refuses when this
-// returns anyone, so a scan that gave up early would let a delete succeed
-// and silently strip the grant from a role nobody warned the operator
-// about. A guard against data loss cannot be bounded by a page size.
+// rolesGranting lists every role in the tenant whose grants include pm,
+// through role.GrantingRoles, which the REST delete's guard also walks.
 func rolesGranting(ctx context.Context, deps Deps, tenantID string, pm *permission.Permission) ([]RoleSummary, error) {
-	s := deps.Engine.Store()
-	out := []RoleSummary{}
-	for offset := 0; ; offset += maxPageLimit {
-		roles, err := s.ListRoles(ctx, &role.ListFilter{
-			TenantID: tenantID,
-			Limit:    maxPageLimit,
-			Offset:   offset,
-		})
-		if err != nil {
-			return nil, mapWardenError(err)
-		}
-		if len(roles) == 0 {
-			break
-		}
-		ids := make([]id.RoleID, 0, len(roles))
-		byID := make(map[id.RoleID]*role.Role, len(roles))
-		for _, r := range roles {
-			ids = append(ids, r.ID)
-			byID[r.ID] = r
-		}
-		grants, err := s.ListRolePermissionsForRoles(ctx, tenantID, ids)
-		if err != nil {
-			return nil, mapWardenError(err)
-		}
-		for rid, held := range grants {
-			for _, g := range held {
-				if g == nil {
-					continue
-				}
-				if g.Name == pm.Name && g.NamespacePath == pm.NamespacePath {
-					if r, ok := byID[rid]; ok {
-						out = append(out, projectRole(r))
-					}
-					break
-				}
-			}
-		}
-		if len(roles) < maxPageLimit {
-			break
-		}
+	holders, err := role.GrantingRoles(ctx, deps.Engine.Store(), tenantID, pm)
+	if err != nil {
+		return nil, mapWardenError(err)
 	}
-	// Ranging over the grants map is unordered, so sort before returning.
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Slug != out[j].Slug {
-			return out[i].Slug < out[j].Slug
-		}
-		if out[i].NamespacePath != out[j].NamespacePath {
-			return out[i].NamespacePath < out[j].NamespacePath
-		}
-		return out[i].ID < out[j].ID
-	})
+	out := make([]RoleSummary, 0, len(holders))
+	for _, r := range holders {
+		out = append(out, projectRole(r))
+	}
 	return out, nil
 }
 
@@ -332,20 +280,9 @@ func permissionsDeleteHandler(deps Deps) func(context.Context, PermissionDeleteI
 		// DeletePermission also removes the junction rows granting it, so
 		// deleting one silently strips it from every role that had it.
 		// Refuse and name the roles, so the operator detaches on purpose.
-		holders, err := rolesGranting(ctx, deps, tenantID, pm)
-		if err != nil {
-			return AckResponse{}, err
-		}
-		if len(holders) > 0 {
-			names := make([]string, 0, len(holders))
-			for _, h := range holders {
-				names = append(names, h.Slug)
-			}
-			return AckResponse{}, &dashcontract.Error{
-				Code: dashcontract.CodeConflict,
-				Message: pm.Name + " is still granted by " + strings.Join(names, ", ") +
-					". Detach it from those roles first.",
-			}
+		// REST DELETE /v1/permissions/:id runs the same check.
+		if err := role.CheckPermissionUngranted(ctx, s, tenantID, pm); err != nil {
+			return AckResponse{}, mapWardenError(err)
 		}
 		ctx = withActor(ctx, p)
 		if err := s.DeletePermission(ctx, tenantID, pid); err != nil {
