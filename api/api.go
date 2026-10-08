@@ -2,6 +2,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -19,9 +20,11 @@ type API struct {
 	allowAnonymousChecks bool
 	skipIdentity         bool
 
-	// handlerMu guards handler, the result of the first Handler call.
-	handlerMu sync.Mutex
-	handler   http.Handler
+	// handlerMu guards handler and handlerErr, the result of the first
+	// Handler call.
+	handlerMu  sync.Mutex
+	handler    http.Handler
+	handlerErr error
 }
 
 // New creates an API from an Engine and a Forge router. The router is
@@ -45,14 +48,20 @@ func New(eng *warden.Engine, router forge.Router, opts ...Option) *API {
 }
 
 // Handler returns the fully assembled http.Handler with all routes, at
-// /v1/... on the router passed to New (a fresh one when that was nil).
+// /v1/... and the AuthZEN /access/v1/... on the router passed to New (a
+// fresh one when that was nil).
 //
 // The routes are registered on the first call only, and every later call
 // returns the same handler, so calling Handler twice never registers the
-// routes twice.
+// routes twice. When that registration fails, Handler panics with the
+// error, and every later call panics with the same error, since the
+// router is left half registered.
 func (a *API) Handler() http.Handler {
 	a.handlerMu.Lock()
 	defer a.handlerMu.Unlock()
+	if a.handlerErr != nil {
+		panic(a.handlerErr.Error())
+	}
 	if a.handler != nil {
 		return a.handler
 	}
@@ -60,7 +69,8 @@ func (a *API) Handler() http.Handler {
 		a.router = forge.NewRouter()
 	}
 	if err := a.RegisterRoutes(a.router); err != nil {
-		panic("warden: register routes: " + err.Error())
+		a.handlerErr = fmt.Errorf("warden: register routes: %w", err)
+		panic(a.handlerErr.Error())
 	}
 	a.handler = a.router.Handler()
 	return a.handler
