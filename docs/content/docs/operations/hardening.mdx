@@ -65,6 +65,8 @@ extensions:
 
 If you later mount the API yourself with `ext.Handler()` or `ext.RegisterRoutes(router)`, `auth.require_identity: false` still needs `WithInsecureAllowUnauthenticatedRoutes()`: without it, `Handler` panics and `RegisterRoutes` returns an error.
 
+`ext.Handler()` gives you a standalone `http.Handler` on a router of its own. It serves the API at `/v1/...` with no base path and never touches your app's router, so put your own prefix in front of it: `http.StripPrefix("/authz", ext.Handler())` serves `/authz/v1/roles`.
+
 ## Lock down declarative apply in production
 
 If you use the `.warden` DSL with `declarative_on_start: true`, also set `declarative_strict: true` in production:

@@ -3,6 +3,7 @@ package api
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/xraph/forge"
 
@@ -17,9 +18,16 @@ type API struct {
 	authorizer           AuthorizerFunc
 	allowAnonymousChecks bool
 	skipIdentity         bool
+
+	// handlerMu guards handler, the result of the first Handler call.
+	handlerMu sync.Mutex
+	handler   http.Handler
 }
 
-// New creates an API from an Engine and a Forge router. Every route is
+// New creates an API from an Engine and a Forge router. The router is
+// only where Handler registers the routes; pass nil to have Handler
+// build a fresh one of its own. RegisterRoutes ignores it and uses the
+// router it is given. Every route is
 // authenticated and authorized by default: an unauthenticated request
 // gets 401, and a caller without the mapped permission gets 403. Pass
 // AllowAnonymousChecks() to open the three check endpoints to callers
@@ -36,15 +44,26 @@ func New(eng *warden.Engine, router forge.Router, opts ...Option) *API {
 	return a
 }
 
-// Handler returns the fully assembled http.Handler with all routes.
+// Handler returns the fully assembled http.Handler with all routes, at
+// /v1/... on the router passed to New (a fresh one when that was nil).
+//
+// The routes are registered on the first call only, and every later call
+// returns the same handler, so calling Handler twice never registers the
+// routes twice.
 func (a *API) Handler() http.Handler {
+	a.handlerMu.Lock()
+	defer a.handlerMu.Unlock()
+	if a.handler != nil {
+		return a.handler
+	}
 	if a.router == nil {
 		a.router = forge.NewRouter()
 	}
 	if err := a.RegisterRoutes(a.router); err != nil {
 		panic("warden: register routes: " + err.Error())
 	}
-	return a.router.Handler()
+	a.handler = a.router.Handler()
+	return a.handler
 }
 
 // RegisterRoutes registers all API routes into the given Forge router.

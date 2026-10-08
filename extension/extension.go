@@ -247,7 +247,9 @@ func (e *Extension) init(fapp forge.App) error {
 		// RegisterRoutes refuse outright.
 		apiOpts = append(apiOpts, api.WithInsecureAllowUnauthenticatedRoutes())
 	}
-	e.apiHandler = api.New(eng, fapp.Router(), apiOpts...)
+	// No router: the app's router is only ever touched by the base-path
+	// mount below. Handler builds a standalone router of its own.
+	e.apiHandler = api.New(eng, nil, apiOpts...)
 
 	// Register HTTP routes unless disabled.
 	if !e.config.DisableRoutes {
@@ -325,8 +327,16 @@ func (e *Extension) Health(ctx context.Context) error {
 	return s.Ping(ctx)
 }
 
-// Handler returns the HTTP handler for all API routes, or a handler that
-// answers 404 before Register.
+// Handler returns a standalone http.Handler serving warden's API and
+// nothing else, or a handler that answers 404 before Register.
+//
+// The API is built on a router of its own, never the app's router, so it
+// adds no routes or middleware to the app and does not clash with the
+// base-path mount Register makes when routes are enabled. Routes sit at
+// /v1/... on that router, with no base path: mount the handler wherever
+// you like, and strip your prefix first (http.StripPrefix("/authz", h)
+// to serve /authz/v1/...). The router is built on the first call, and
+// every later call returns the same handler.
 //
 // It panics when auth.require_identity is false and
 // WithInsecureAllowUnauthenticatedRoutes was not passed, the same refusal
