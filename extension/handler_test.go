@@ -27,6 +27,17 @@ func get(h http.Handler, path string) int {
 	return rec.Code
 }
 
+// post sends an anonymous POST with an empty JSON body and a tenant in
+// scope, and returns the status.
+func post(h http.Handler, path string) int {
+	ctx := warden.WithTenant(context.Background(), "app1", "t1")
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, path, strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code
+}
+
 func ok(ctx forge.Context) error { return ctx.String(http.StatusOK, "ok") }
 
 // routePaths lists the method and path of every route on the router.
@@ -53,6 +64,13 @@ func TestHandler_ServesWardenRoutesAndNothingElse(t *testing.T) {
 	// The route exists and runs warden's identity check.
 	if code := get(h, "/v1/roles"); code != http.StatusUnauthorized {
 		t.Fatalf("GET /v1/roles: status = %d, want 401", code)
+	}
+	// So does the AuthZEN route, under its own /access/v1 prefix.
+	if code := post(h, "/access/v1/evaluation"); code != http.StatusUnauthorized {
+		t.Fatalf("POST /access/v1/evaluation: status = %d, want 401", code)
+	}
+	if code := post(http.StripPrefix("/authz", h), "/authz/access/v1/evaluation"); code != http.StatusUnauthorized {
+		t.Fatalf("POST /authz/access/v1/evaluation through StripPrefix: status = %d, want 401", code)
 	}
 	// The caller picks the prefix, as the doc comment says.
 	if code := get(http.StripPrefix("/authz", h), "/authz/v1/roles"); code != http.StatusUnauthorized {

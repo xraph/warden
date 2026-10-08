@@ -333,9 +333,10 @@ func (e *Extension) Health(ctx context.Context) error {
 // The API is built on a router of its own, never the app's router, so it
 // adds no routes or middleware to the app and does not clash with the
 // base-path mount Register makes when routes are enabled. Routes sit at
-// /v1/... on that router, with no base path: mount the handler wherever
-// you like, and strip your prefix first (http.StripPrefix("/authz", h)
-// to serve /authz/v1/...). The router is built on the first call, and
+// /v1/... and, for AuthZEN, /access/v1/... on that router, with no base
+// path: mount the handler wherever you like, and strip your prefix first
+// (http.StripPrefix("/authz", h) to serve /authz/v1/... and
+// /authz/access/v1/...). The router is built on the first call, and
 // every later call returns the same handler.
 //
 // It panics when auth.require_identity is false and
