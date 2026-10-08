@@ -219,8 +219,9 @@ func topLevelKeywordItems() []completionItem {
 // roleParentItems offers the roles a role declared in namespacePath can
 // name as its parent. The resolver refuses a parent outside the role's
 // own namespace (dsl checkRoleParents), so only roles in that namespace
-// are offered: each by its bare slug and, outside the tenant root, by its
-// absolute path into that namespace as well. The role being declared,
+// are offered: each by its bare slug and by its absolute path into that
+// namespace (`/eng/viewer`, or `/viewer` at the tenant root), both of
+// which the resolver accepts. The role being declared,
 // self, is left out: naming itself is a parent cycle the resolver refuses.
 func roleParentItems(ws *workspaceIndex, namespacePath, self string) []completionItem {
 	roles := ws.roleSlugs()
@@ -233,10 +234,11 @@ func roleParentItems(ws *workspaceIndex, namespacePath, self string) []completio
 		if r.Name != "" {
 			detail = r.Name + " · " + detail
 		}
-		labels := []string{r.Slug}
+		abs := "/" + r.Slug
 		if r.NamespacePath != "" {
-			labels = append(labels, "/"+r.NamespacePath+"/"+r.Slug)
+			abs = "/" + r.NamespacePath + "/" + r.Slug
 		}
+		labels := []string{r.Slug, abs}
 		for _, label := range labels {
 			out = append(out, completionItem{
 				Label:         label,

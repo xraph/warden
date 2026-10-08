@@ -235,7 +235,7 @@ resource document {
 
 // The resolver refuses a role parent outside the role's own namespace,
 // so parent completion offers only roles in that namespace: the bare slug,
-// plus the absolute path into the namespace when it is not the root. The
+// plus the absolute path into the namespace (`/viewer` at the root). The
 // role being declared is never offered as its own parent.
 func TestCompletion_RoleParentOnlyFromOwnNamespace(t *testing.T) {
 	roles := `warden config 1
@@ -282,8 +282,8 @@ namespace ops {
 tenant t1
 
 role admin : `,
-			want:    map[string]string{"viewer": "Root Viewer"},
-			notWant: []string{"admin", "/viewer", "lead", "/eng/viewer", "/eng/lead", "/eng/backend/oncall", "oncall", "/ops/viewer"},
+			want:    map[string]string{"viewer": "Root Viewer", "/viewer": "Root Viewer"},
+			notWant: []string{"admin", "/admin", "lead", "/eng/viewer", "/eng/lead", "/eng/backend/oncall", "oncall", "/ops/viewer"},
 		},
 		{
 			name: "namespace",

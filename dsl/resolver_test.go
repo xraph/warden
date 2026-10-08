@@ -333,3 +333,20 @@ func TestResolve_AcceptsListsForInAndNotIn(t *testing.T) {
 		t.Fatalf("want no diagnostics, got %v\n%s", errs, src)
 	}
 }
+
+// The LSP offers a parent by its absolute path into the role's own
+// namespace, `/viewer` at the root as well as `/eng/viewer`. Both resolve.
+func TestResolve_AbsoluteParentInOwnNamespaceResolves(t *testing.T) {
+	src := `
+warden config 1
+role viewer { name = "Viewer" }
+role admin : /viewer { name = "Admin" }
+namespace "eng" {
+    role viewer { name = "Eng Viewer" }
+    role lead : /eng/viewer { name = "Eng Lead" }
+}
+`
+	if errs := resolveSrc(t, src); len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+}
