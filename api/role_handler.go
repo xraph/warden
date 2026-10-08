@@ -8,13 +8,18 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/warden"
+	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/role"
 )
 
 func (a *API) registerRoleRoutes(router forge.Router) error {
 	g := router.Group("/v1", forge.WithGroupTags("roles"))
+
+	manage := a.authorize("manage", "warden:role")
+	read := a.authorize("read", "warden:role")
 
 	if err := g.POST("/roles", a.createRole,
 		forge.WithSummary("Create role"),
@@ -23,6 +28,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(CreateRoleRequest{}),
 		forge.WithCreatedResponse(&role.Role{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -34,6 +40,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(GetRoleRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Role details", &role.Role{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	); err != nil {
 		return err
 	}
@@ -45,6 +52,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(UpdateRoleRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Updated role", &role.Role{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -56,6 +64,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(GetRoleRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -67,6 +76,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(ListRolesRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Role list", []*role.Role{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	); err != nil {
 		return err
 	}
@@ -78,6 +88,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(AttachPermissionRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -89,6 +100,7 @@ func (a *API) registerRoleRoutes(router forge.Router) error {
 		forge.WithRequestSchema(DetachPermissionRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	)
 }
 
@@ -112,6 +124,7 @@ func (a *API) createRole(ctx forge.Context, req *CreateRoleRequest) (*role.Role,
 
 	now := time.Now()
 	appID, tenantID := scopeFromForgeContext(ctx)
+	actor, _ := warden.ActorFromContext(ctx.Context())
 	r := &role.Role{
 		ID:            id.NewRoleID(),
 		TenantID:      tenantID,
@@ -120,22 +133,21 @@ func (a *API) createRole(ctx forge.Context, req *CreateRoleRequest) (*role.Role,
 		Name:          req.Name,
 		Slug:          req.Slug,
 		Description:   req.Description,
-		IsSystem:      req.IsSystem,
 		IsDefault:     req.IsDefault,
 		MaxMembers:    req.MaxMembers,
 		Metadata:      req.Metadata,
+		CreatedBy:     actor.ID,
+		UpdatedBy:     actor.ID,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
 
-	if req.ParentSlug != "" {
-		// Pre-validate the parent exists for a friendlier error than an FK violation.
-		// Parents must live in the same namespace as the child role.
-		if _, err := a.eng.Store().GetRoleBySlug(ctx.Context(), tenantID, r.NamespacePath, req.ParentSlug); err != nil {
-			return nil, forge.BadRequest(fmt.Sprintf("parent role %q not found in tenant %q ns %q", req.ParentSlug, tenantID, r.NamespacePath))
-		}
-		r.ParentSlug = req.ParentSlug
+	// The parent must exist in the role's own namespace, and cannot be the
+	// role itself: the same check the dashboard runs.
+	if err := role.CheckParent(ctx.Context(), a.eng.Store(), tenantID, r, req.ParentSlug); err != nil {
+		return nil, mapError(err)
 	}
+	r.ParentSlug = req.ParentSlug
 
 	if err := a.eng.Store().CreateRole(ctx.Context(), r); err != nil {
 		return nil, mapError(err)
@@ -143,9 +155,13 @@ func (a *API) createRole(ctx forge.Context, req *CreateRoleRequest) (*role.Role,
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitRoleCreated(ctx.Context(), r)
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: now, Action: "role.created",
+			TenantID: tenantID, EntityID: r.ID.String(), Entity: r,
+		})
 	}
 
-	return r, ctx.JSON(http.StatusCreated, r)
+	return nil, ctx.JSON(http.StatusCreated, r)
 }
 
 func (a *API) getRole(ctx forge.Context, _ *GetRoleRequest) (*role.Role, error) {
@@ -154,12 +170,14 @@ func (a *API) getRole(ctx forge.Context, _ *GetRoleRequest) (*role.Role, error) 
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 
-	r, err := a.eng.Store().GetRole(ctx.Context(), roleID)
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	r, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
 	if err != nil {
 		return nil, mapError(err)
 	}
 
-	return r, ctx.JSON(http.StatusOK, r)
+	return r, nil
 }
 
 func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role, error) {
@@ -168,10 +186,16 @@ func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role,
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 
-	r, err := a.eng.Store().GetRole(ctx.Context(), roleID)
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	before, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
 	if err != nil {
 		return nil, mapError(err)
 	}
+	if err := role.CheckWritable(before); err != nil {
+		return nil, mapError(err)
+	}
+	r := *before
 
 	if req.Name != "" {
 		r.Name = req.Name
@@ -180,34 +204,45 @@ func (a *API) updateRole(ctx forge.Context, req *UpdateRoleRequest) (*role.Role,
 		r.Description = req.Description
 	}
 	if req.MaxMembers != nil {
+		// Lowering the cap below the live member count is refused (409).
+		// The count read and the write below are not atomic; see
+		// assignment.CheckCapLowering.
+		if err := assignment.CheckCapLowering(ctx.Context(), a.eng.Store(), tenantID, before.ID, before.Name, before.MaxMembers, *req.MaxMembers, time.Now()); err != nil {
+			return nil, mapError(err)
+		}
 		r.MaxMembers = *req.MaxMembers
 	}
 	if req.IsDefault != nil {
 		r.IsDefault = *req.IsDefault
 	}
 	if req.ParentSlug != nil {
-		newParent := *req.ParentSlug
-		if newParent != "" && newParent != r.ParentSlug {
-			if _, err := a.eng.Store().GetRoleBySlug(ctx.Context(), r.TenantID, r.NamespacePath, newParent); err != nil {
-				return nil, forge.BadRequest(fmt.Sprintf("parent role %q not found in tenant %q ns %q", newParent, r.TenantID, r.NamespacePath))
-			}
+		// A parent that does not exist, or one that is this role or one of
+		// its descendants, is refused: the same check the dashboard runs.
+		if err := role.CheckParent(ctx.Context(), a.eng.Store(), tenantID, &r, *req.ParentSlug); err != nil {
+			return nil, mapError(err)
 		}
-		r.ParentSlug = newParent
+		r.ParentSlug = *req.ParentSlug
 	}
 	if req.Metadata != nil {
 		r.Metadata = req.Metadata
 	}
+	actor, _ := warden.ActorFromContext(ctx.Context())
+	r.UpdatedBy = actor.ID
 	r.UpdatedAt = time.Now()
 
-	if err := a.eng.Store().UpdateRole(ctx.Context(), r); err != nil {
+	if err := a.eng.Store().UpdateRole(ctx.Context(), &r); err != nil {
 		return nil, mapError(err)
 	}
 
 	if a.eng.Plugins() != nil {
-		a.eng.Plugins().EmitRoleUpdated(ctx.Context(), r)
+		a.eng.Plugins().EmitRoleUpdated(ctx.Context(), &r)
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: r.UpdatedAt, Action: "role.updated",
+			TenantID: tenantID, EntityID: r.ID.String(), Entity: &r, Before: before,
+		})
 	}
 
-	return r, ctx.JSON(http.StatusOK, r)
+	return &r, nil
 }
 
 func (a *API) deleteRole(ctx forge.Context, _ *GetRoleRequest) (*struct{}, error) {
@@ -216,12 +251,27 @@ func (a *API) deleteRole(ctx forge.Context, _ *GetRoleRequest) (*struct{}, error
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 
-	if err := a.eng.Store().DeleteRole(ctx.Context(), roleID); err != nil {
+	_, tenantID := scopeFromForgeContext(ctx)
+	// Read first so the system guard has something to check.
+	before, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := role.CheckWritable(before); err != nil {
+		return nil, mapError(err)
+	}
+
+	if err := a.eng.Store().DeleteRole(ctx.Context(), tenantID, roleID); err != nil {
 		return nil, mapError(err)
 	}
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitRoleDeleted(ctx.Context(), roleID)
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: time.Now(), Action: "role.deleted",
+			TenantID: tenantID, EntityID: roleID.String(), Before: before,
+		})
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)
@@ -246,7 +296,10 @@ func (a *API) listRoles(ctx forge.Context, req *ListRolesRequest) (*RoleListResp
 
 // resolvePermRef converts an attach/detach request's mixed-form permission
 // reference into a permission.Ref. PermissionName wins when both are set;
-// PermissionID is resolved via GetPermission for the legacy code path.
+// PermissionID is resolved via GetPermission for the legacy code path, so a
+// missing ID is 404 for both. A name is not read here: the attach checks it
+// exists (permission.LookupRef) and the detach checks the role grants it
+// (role.HeldGrant), as the dashboard does.
 func (a *API) resolvePermRef(ctx forge.Context, tenantID, permIDStr, permName, permNamespace string) (permission.Ref, *id.PermissionID, error) {
 	if permName != "" {
 		return permission.Ref{NamespacePath: permNamespace, Name: permName}, nil, nil
@@ -258,14 +311,25 @@ func (a *API) resolvePermRef(ctx forge.Context, tenantID, permIDStr, permName, p
 	if err != nil {
 		return permission.Ref{}, nil, forge.BadRequest(fmt.Sprintf("invalid permission ID: %v", err))
 	}
-	p, err := a.eng.Store().GetPermission(ctx.Context(), pid)
+	p, err := a.eng.Store().GetPermission(ctx.Context(), tenantID, pid)
 	if err != nil || p == nil {
 		return permission.Ref{}, nil, forge.NotFound(fmt.Sprintf("permission %q not found", permIDStr))
 	}
-	if p.TenantID != tenantID {
-		return permission.Ref{}, nil, forge.NotFound(fmt.Sprintf("permission %q not found in tenant", permIDStr))
-	}
 	return permission.Ref{NamespacePath: p.NamespacePath, Name: p.Name}, &pid, nil
+}
+
+// loadWritableRole reads a role and refuses a system role, whose grants
+// cannot change. The dashboard's attach, detach and set-grants commands
+// refuse it the same way.
+func (a *API) loadWritableRole(ctx forge.Context, tenantID string, roleID id.RoleID) (*role.Role, error) {
+	r, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := role.CheckWritable(r); err != nil {
+		return nil, mapError(err)
+	}
+	return r, nil
 }
 
 func (a *API) attachPermissionToRole(ctx forge.Context, req *AttachPermissionRequest) (*struct{}, error) {
@@ -274,18 +338,36 @@ func (a *API) attachPermissionToRole(ctx forge.Context, req *AttachPermissionReq
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 	_, tenantID := scopeFromForgeContext(ctx)
+	if _, err := a.loadWritableRole(ctx, tenantID, roleID); err != nil {
+		return nil, err
+	}
 
 	ref, legacyID, perr := a.resolvePermRef(ctx, tenantID, req.PermissionID, req.PermissionName, req.PermissionNamespacePath)
 	if perr != nil {
 		return nil, perr
 	}
+	// A grant of a name that does not exist is 404: the store would record
+	// it, and the role would appear to grant something and grant nothing.
+	if legacyID == nil {
+		if _, err := permission.LookupRef(ctx.Context(), a.eng.Store(), tenantID, ref); err != nil {
+			return nil, mapError(err)
+		}
+	}
 
-	if err := a.eng.Store().AttachPermission(ctx.Context(), roleID, ref); err != nil {
+	if err := a.eng.Store().AttachPermission(ctx.Context(), tenantID, roleID, ref); err != nil {
 		return nil, mapError(err)
 	}
 
-	if a.eng.Plugins() != nil && legacyID != nil {
-		a.eng.Plugins().EmitPermissionAttached(ctx.Context(), roleID, *legacyID)
+	if a.eng.Plugins() != nil {
+		if legacyID != nil {
+			a.eng.Plugins().EmitPermissionAttached(ctx.Context(), roleID, *legacyID)
+		}
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: time.Now(), Action: "permission.attached",
+			TenantID: tenantID, EntityID: roleID.String(),
+			Entity: map[string]string{"role_id": roleID.String(), "permission_namespace_path": ref.NamespacePath, "permission_name": ref.Name},
+		})
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)
@@ -297,6 +379,10 @@ func (a *API) detachPermissionFromRole(ctx forge.Context, req *DetachPermissionR
 		return nil, forge.BadRequest(fmt.Sprintf("invalid role ID: %v", err))
 	}
 	_, tenantID := scopeFromForgeContext(ctx)
+	r, err := a.loadWritableRole(ctx, tenantID, roleID)
+	if err != nil {
+		return nil, err
+	}
 
 	permIDStr := ctx.Param("permissionId")
 	if permIDStr == "" {
@@ -306,13 +392,26 @@ func (a *API) detachPermissionFromRole(ctx forge.Context, req *DetachPermissionR
 	if perr != nil {
 		return nil, perr
 	}
-
-	if err := a.eng.Store().DetachPermission(ctx.Context(), roleID, ref); err != nil {
+	// A grant the role does not hold is 404, as on the dashboard: the
+	// store's detach would remove nothing and report success.
+	if _, err := role.HeldGrant(ctx.Context(), a.eng.Store(), tenantID, r, ref); err != nil {
 		return nil, mapError(err)
 	}
 
-	if a.eng.Plugins() != nil && legacyID != nil {
-		a.eng.Plugins().EmitPermissionDetached(ctx.Context(), roleID, *legacyID)
+	if err := a.eng.Store().DetachPermission(ctx.Context(), tenantID, roleID, ref); err != nil {
+		return nil, mapError(err)
+	}
+
+	if a.eng.Plugins() != nil {
+		if legacyID != nil {
+			a.eng.Plugins().EmitPermissionDetached(ctx.Context(), roleID, *legacyID)
+		}
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: time.Now(), Action: "permission.detached",
+			TenantID: tenantID, EntityID: roleID.String(),
+			Entity: map[string]string{"role_id": roleID.String(), "permission_namespace_path": ref.NamespacePath, "permission_name": ref.Name},
+		})
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)

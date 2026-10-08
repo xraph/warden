@@ -46,10 +46,9 @@ func main() {
 
     // Create role + permission.
     roleID := id.NewRoleID()
-    permID := id.NewPermissionID()
     _ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "tenant-1", Name: "editor", Slug: "editor"})
-    _ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "tenant-1", Name: "doc:read", Resource: "doc", Action: "read"})
-    _ = s.AttachPermission(ctx, roleID, permID)
+    _ = s.CreatePermission(ctx, &permission.Permission{ID: id.NewPermissionID(), TenantID: "tenant-1", Name: "doc:read", Resource: "doc", Action: "read"})
+    _ = s.AttachPermission(ctx, "tenant-1", roleID, permission.Ref{Name: "doc:read"})
 
     // Assign role to user.
     _ = s.CreateAssignment(ctx, &assignment.Assignment{
@@ -183,7 +182,7 @@ _ = s.Migrate(ctx)
 
 ## Plugin System
 
-Warden provides a granular plugin system with **18 lifecycle hooks**. Plugins implement the base `plugin.Plugin` interface (just `Name() string`) and opt in to specific hooks by implementing additional interfaces.
+Warden provides a granular plugin system with **19 lifecycle hooks**. Plugins implement the base `plugin.Plugin` interface (just `Name() string`) and opt in to specific hooks by implementing additional interfaces. Every hook takes a `context.Context` first and returns an `error`; request/result values that would otherwise require importing the root `warden` package (e.g. `*warden.CheckRequest`) are typed `any` to avoid an import cycle.
 
 ```go
 import "github.com/xraph/warden/plugin"
@@ -193,39 +192,43 @@ type AuditPlugin struct{}
 func (p *AuditPlugin) Name() string { return "audit" }
 
 // Opt in to the hooks you care about:
-func (p *AuditPlugin) RoleCreated(ctx context.Context, r *role.Role) error {
+func (p *AuditPlugin) OnRoleCreated(ctx context.Context, r *role.Role) error {
     log.Printf("role created: %s", r.Name)
     return nil
 }
-func (p *AuditPlugin) AfterCheck(ctx context.Context, req, result any) error {
+func (p *AuditPlugin) OnAfterCheck(ctx context.Context, req, result any) error {
     log.Printf("check completed")
     return nil
 }
 ```
 
+The in-tree `plugin/auditlog` package implements `Audit` and logs one structured line per mutation; the Forge extension registers it by default (`auth.audit_log: true`).
+
 ### Available Hooks
 
 | Category | Hook | Trigger |
 | --- | --- | --- |
-| Check | `BeforeCheck(ctx, req)` | Before authorization evaluation |
-| Check | `AfterCheck(ctx, req, result)` | After authorization evaluation |
-| Roles | `RoleCreated(ctx, role)` | Role created |
-| Roles | `RoleUpdated(ctx, role)` | Role modified |
-| Roles | `RoleDeleted(ctx, roleID)` | Role removed |
-| Permissions | `PermissionCreated(ctx, perm)` | Permission created |
-| Permissions | `PermissionDeleted(ctx, permID)` | Permission removed |
-| Permissions | `PermissionAttached(ctx, roleID, permID)` | Permission attached to role |
-| Permissions | `PermissionDetached(ctx, roleID, permID)` | Permission detached from role |
-| Assignments | `RoleAssigned(ctx, assignment)` | Role assigned to subject |
-| Assignments | `RoleUnassigned(ctx, assignment)` | Role unassigned from subject |
-| Relations | `RelationWritten(ctx, tuple)` | Relation tuple created |
-| Relations | `RelationDeleted(ctx, relID)` | Relation tuple removed |
-| Policies | `PolicyCreated(ctx, policy)` | ABAC policy created |
-| Policies | `PolicyUpdated(ctx, policy)` | ABAC policy modified |
-| Policies | `PolicyDeleted(ctx, polID)` | ABAC policy removed |
-| Lifecycle | `Shutdown(ctx)` | Engine shutting down |
+| Check | `OnBeforeCheck(ctx, req any)` | Before authorization evaluation |
+| Check | `OnAfterCheck(ctx, req, result any)` | After authorization evaluation |
+| Roles | `OnRoleCreated(ctx, *role.Role)` | Role created |
+| Roles | `OnRoleUpdated(ctx, *role.Role)` | Role modified |
+| Roles | `OnRoleDeleted(ctx, id.RoleID)` | Role removed |
+| Permissions | `OnPermissionCreated(ctx, *permission.Permission)` | Permission created |
+| Permissions | `OnPermissionDeleted(ctx, id.PermissionID)` | Permission removed |
+| Permissions | `OnPermissionAttached(ctx, id.RoleID, id.PermissionID)` | Permission attached to role |
+| Permissions | `OnPermissionDetached(ctx, id.RoleID, id.PermissionID)` | Permission detached from role |
+| Assignments | `OnRoleAssigned(ctx, *assignment.Assignment)` | Role assigned to subject |
+| Assignments | `OnRoleUnassigned(ctx, *assignment.Assignment)` | Role unassigned from subject |
+| Relations | `OnRelationWritten(ctx, *relation.Tuple)` | Relation tuple created |
+| Relations | `OnRelationDeleted(ctx, id.RelationID)` | Relation tuple removed |
+| Policies | `OnPolicyCreated(ctx, *policy.Policy)` | ABAC policy created |
+| Policies | `OnPolicyUpdated(ctx, *policy.Policy)` | ABAC policy modified |
+| Policies | `OnPolicyDeleted(ctx, id.PolicyID)` | ABAC policy removed |
+| Policies | `OnPolicyObligationFired(ctx, id.PolicyID, obligation string, req, result any)` | Obligation emitted by a matched policy |
+| Audit | `OnAudit(ctx, plugin.Event)` | Any mutation above, once per typed hook plus this one |
+| Lifecycle | `OnShutdown(ctx)` | Engine shutting down |
 
-Hook errors are logged as warnings but never block the caller.
+Hook errors and panics are logged, counted against `warden_hook_errors_total{hook,plugin}`, and never block the caller. See [Plugin System](https://github.com/xraph/warden/blob/main/docs/content/docs/integration/plugin-system.mdx) for the full interface definitions.
 
 ## Caching
 
@@ -273,25 +276,27 @@ router.GET("/documents/:id", handler,
 
 // RequireAny — allows if ANY check passes (OR logic).
 router.POST("/admin/action", handler,
-    forge.WithMiddleware(wardenmw.RequireAny(eng,
-        warden.CheckRequest{Action: warden.Action{Name: "admin"}, Resource: warden.Resource{Type: "system"}},
-        warden.CheckRequest{Action: warden.Action{Name: "write"}, Resource: warden.Resource{Type: "config"}},
-    )),
+    forge.WithMiddleware(wardenmw.RequireAny(eng, []warden.CheckRequest{
+        {Action: warden.Action{Name: "admin"}, Resource: warden.Resource{Type: "system"}},
+        {Action: warden.Action{Name: "write"}, Resource: warden.Resource{Type: "config"}},
+    })),
 )
 
 // RequireAll — allows only if ALL checks pass (AND logic).
 router.DELETE("/documents/:id", handler,
-    forge.WithMiddleware(wardenmw.RequireAll(eng,
-        warden.CheckRequest{Action: warden.Action{Name: "delete"}, Resource: warden.Resource{Type: "document"}},
-        warden.CheckRequest{Action: warden.Action{Name: "admin"}, Resource: warden.Resource{Type: "document"}},
-    )),
+    forge.WithMiddleware(wardenmw.RequireAll(eng, []warden.CheckRequest{
+        {Action: warden.Action{Name: "delete"}, Resource: warden.Resource{Type: "document"}},
+        {Action: warden.Action{Name: "admin"}, Resource: warden.Resource{Type: "document"}},
+    })),
 )
 ```
 
-Subject resolution priority:
+Subject resolution:
 
-1. Authenticated user ID from `forge.UserIDFromContext()`
-2. Falls back to `unknown:anonymous`
+1. `forge.UserIDFromContext()` resolves to `warden.Subject{Kind: warden.SubjectUser, ID: userID}`.
+2. No resolved user ID: `401 Unauthorized`, unless `wardenmw.AllowAnonymous()` was passed, in which case the request runs as the fixed subject `{Kind: warden.SubjectUser, ID: "anonymous"}`.
+
+There's no API-key branch yet: Forge doesn't currently expose one in context, so an API-key-only caller resolves as "no identity" here. See [Middleware](https://github.com/xraph/warden/blob/main/docs/content/docs/integration/middleware.mdx) for `WithContext` and the 401/403/503 response semantics.
 
 ## Configuration
 
@@ -302,9 +307,9 @@ eng, err := warden.NewEngine(
     warden.WithConfig(warden.Config{
         MaxGraphDepth: 10,                    // ReBAC graph traversal depth (default: 10)
         CacheTTL:      5 * time.Minute,       // Check result cache TTL (0 = disabled)
-        EnableRBAC:    ptrBool(true),         // Enable RBAC evaluation (default: true)
-        EnableABAC:    ptrBool(true),         // Enable ABAC evaluation (default: true)
-        EnableReBAC:   ptrBool(true),         // Enable ReBAC evaluation (default: true)
+        // EnableRBAC, EnableABAC, EnableReBAC are *bool; nil (the zero
+        // value) means "default true". Take the address of a local
+        // variable to turn one off: see docs/authorization/check-engine.mdx.
     }),
     warden.WithPlugin(auditPlugin),           // Optional: lifecycle plugins
     warden.WithEvaluator(customEvaluator),    // Optional: custom ABAC evaluator

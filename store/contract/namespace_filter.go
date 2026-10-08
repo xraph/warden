@@ -193,7 +193,7 @@ func runListRelationSubjectsNS(t *testing.T, mk MakeStore) {
 		SubjectType: "user", SubjectID: "dave",
 	})
 
-	tuples, err := s.ListRelationSubjects(ctx, "t1", nsAncestors, "document", "doc1", "read")
+	tuples, err := s.ListRelationSubjects(ctx, "t1", nsAncestors, "document", "doc1", "read", 0)
 	if err != nil {
 		t.Fatalf("ListRelationSubjects: %v", err)
 	}
@@ -231,7 +231,7 @@ func createAssignment(t *testing.T, s store.Store, a *assignment.Assignment) {
 	}
 }
 
-func createPolicy(t *testing.T, s store.Store, tenant, ns, name string) id.PolicyID {
+func createPolicy(t *testing.T, s store.Store, tenant, ns, name string) id.PolicyID { //nolint:unparam // shared seed helper; tenant kept as a parameter so each case reads as "seed for this tenant"
 	t.Helper()
 	p := &policy.Policy{
 		ID: id.NewPolicyID(), TenantID: tenant, NamespacePath: ns,

@@ -1,0 +1,42 @@
+---
+title: Upgrades and migrations
+description: How Warden's schema migrations work and how to roll them out safely.
+---
+
+## How migrations run
+
+Each store backend implements `Migrate(ctx) error` on the composite `store.Store` interface. For Postgres, `store/postgres/migrations.go` registers an ordered list of `migrate.Migration` entries (Grove's migration runner), each with a `Name`, a `Version` (a sortable timestamp string like `20260922000003`), an `Up`, and a `Down`. Grove tracks which versions have already applied in its own `grove_migrations` table (see [Backup and restore](/docs/operations/backup-restore)), so `Migrate` is idempotent: running it again only applies migrations it hasn't recorded yet.
+
+Two places call `Migrate`:
+
+- The Forge extension, at `Start`, unless `disable_migrate: true`.
+- The `warden` CLI, on `apply`, `diff`, and `export`, unless `--skip-migrate` is passed.
+
+## Recent schema changes worth knowing about
+
+If you're upgrading across the migrations added for this hardening pass, three are worth reading before you deploy:
+
+- **`check_logs_v2`** adds `matched_by`, `obligations`, `request_id`, `trace_id`, `cached`, and `error` columns to `warden_check_logs`, plus an index on `(tenant_id, created_at DESC)`. These let an auditor reconstruct a decision from the row alone, with no need to replay the check.
+- **`actor_columns`** adds `created_by`/`updated_by` to `warden_roles`, `warden_permissions`, `warden_policies`, and `warden_resource_types`, and `created_by` to `warden_relations` (relations have no update path, so there's no `updated_by`). Existing rows backfill to an empty string; new mutations populate it from the caller's `warden.Actor`.
+- **`check_logs_indexes`** installs the append-only trigger on `warden_check_logs` (see [Retention](/docs/operations/retention)) and drops a now-redundant index. After this migration, any `UPDATE` against that table fails. Make sure nothing in your own tooling tries to edit a check-log row in place before you roll this out.
+
+Every migration has a `Down`, so each is individually reversible, but treat `Down` as an emergency rollback path, not a routine one: rolling `check_logs_indexes` back, for example, drops the append-only guarantee.
+
+## Rolling out a migration safely
+
+1. **Separate migrate from deploy** in any multi-replica environment. Set `disable_migrate: true` (see [Hardening](/docs/operations/hardening)) and run `warden apply -f <config> --store "$WARDEN_STORE_DSN"` (or your own call to `store.Migrate`) as a single step before the new application version starts serving traffic. This avoids N replicas racing to apply the same migration concurrently.
+2. **Bound the migration's runtime.** `postgres.WithStatementTimeout(d)` caps how long a single statement can hold a connection (it issues `SET statement_timeout` on the pool after construction, or you can set it in the DSN's `options` parameter so it reaches every pooled connection reliably; see the package doc on `store/postgres/store.go`). A migration that would otherwise run long against a large `warden_check_logs` table is worth testing against a production-sized copy first.
+3. **Check `Down` before you need it.** If a migration's `Down` matters to your rollback plan (most schema-additive migrations are safe either way), read it before deploying, not after something goes wrong.
+4. **Watch `warden_store_errors_total{op}`** (see [Monitoring](/docs/operations/monitoring)) during and after the rollout. A spike right after a migration usually means a query the store issues no longer matches the schema it expects, which points at a version skew between the deployed binary and the migrated schema.
+
+## SQLite and MongoDB
+
+SQLite (`store/sqlite`) and MongoDB (`store/mongo`) each implement their own `Migrate`. SQLite is single-writer: a second connection attempting a write while another holds the lock fails immediately unless a `busy_timeout` is configured. Set it in the DSN (`file:warden.db?_pragma=busy_timeout(5000)`). The DSN form reaches every connection Grove's pool ever opens, while the `WithBusyTimeout` store option only reaches whichever connection the call happens to land on.
+
+Don't run SQLite migrations while anything else is using the same database. Some migrations rebuild a table, and that needs foreign keys switched off on the exact connection that drops the old table. Grove's pool gives Warden no way to pin one, so the switch only lands reliably when nothing else is talking to the file. Warden checks for this: it aborts and rolls back if foreign keys are still on inside the migration transaction, or if the assignment or role-permission row counts change across a rebuild. You'll get an error and an untouched database. Stop the application (or run `warden apply` from a single deploy step before it starts), migrate, then start it again.
+
+MongoDB's `Migrate` runs Grove's migration orchestrator, which applies each migration step through a plain executor with no session transaction, on any topology (standalone, replica set, or sharded). Only `AttachPermission` and `SetRolePermissions` use a session transaction, and only when the deployment supports one (see `store/mongo/doc.go`). Operationally, a migration step that fails partway can leave a partially applied migration behind. Take a backup before you migrate a MongoDB store (see [Backup and restore](/docs/operations/backup-restore)) so you can restore if a step fails.
+
+## Application version and schema version
+
+There's no built-in compatibility check between a given Warden library version and a given migrated schema version beyond what `Migrate`'s idempotent apply-in-order gives you. Practically: upgrade the schema (via the separate migrate step above) before or in the same deploy as the application code that expects it, never after. Downgrading the application code while a newer schema is in place is generally safe for additive migrations (new nullable/defaulted columns) but not guaranteed for anything that changes an index a query depends on. Check the specific migration's `Up` before you plan a downgrade.

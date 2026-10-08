@@ -628,5 +628,282 @@ func init() {
 				return mexec.DropCollection(ctx, (*checkLogModel)(nil))
 			},
 		},
+		&migrate.Migration{
+			// namespace_unique widens every entity's uniqueness key to
+			// include namespace_path. Before this migration, "roles"
+			// enforced (tenant_id, slug): the same slug in two different
+			// namespaces of the same tenant collided even though the store
+			// contract (and the postgres/sqlite schemas) treat namespaces
+			// as independent scopes. Same story for permissions, policies
+			// and resource types keyed on (tenant_id, name), and for the
+			// assignment/relation compound keys.
+			Name:    "namespace_unique",
+			Version: "20260922000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				db := mexec.DB().Database()
+
+				roles := db.Collection(colRoles)
+				_ = roles.Indexes().DropOne(ctx, "tenant_id_1_slug_1") //nolint:errcheck // idempotent drop, ok if missing
+				if _, err := roles.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "namespace_path", Value: 1}, {Key: "slug", Value: 1}},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return fmt.Errorf("warden: create roles namespace-unique index: %w", err)
+				}
+
+				for _, coll := range []string{colPermissions, colPolicies, colResourceTypes} {
+					c := db.Collection(coll)
+					_ = c.Indexes().DropOne(ctx, "tenant_id_1_name_1") //nolint:errcheck // idempotent drop, ok if missing
+					if _, err := c.Indexes().CreateOne(ctx, mongo.IndexModel{
+						Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "namespace_path", Value: 1}, {Key: "name", Value: 1}},
+						Options: options.Index().SetUnique(true),
+					}); err != nil {
+						return fmt.Errorf("warden: create %s namespace-unique index: %w", coll, err)
+					}
+				}
+
+				assignments := db.Collection(colAssignments)
+				_ = assignments.Indexes().DropOne(ctx, //nolint:errcheck // idempotent drop, ok if missing
+					"tenant_id_1_role_id_1_subject_kind_1_subject_id_1_resource_type_1_resource_id_1")
+				if _, err := assignments.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "namespace_path", Value: 1},
+						{Key: "role_id", Value: 1},
+						{Key: "subject_kind", Value: 1},
+						{Key: "subject_id", Value: 1},
+						{Key: "resource_type", Value: 1},
+						{Key: "resource_id", Value: 1},
+					},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return fmt.Errorf("warden: create assignments namespace-unique index: %w", err)
+				}
+
+				relations := db.Collection(colRelations)
+				_ = relations.Indexes().DropOne(ctx, //nolint:errcheck // idempotent drop, ok if missing
+					"tenant_id_1_object_type_1_object_id_1_relation_1_subject_type_1_subject_id_1_subject_relation_1")
+				if _, err := relations.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "namespace_path", Value: 1},
+						{Key: "object_type", Value: 1},
+						{Key: "object_id", Value: 1},
+						{Key: "relation", Value: 1},
+						{Key: "subject_type", Value: 1},
+						{Key: "subject_id", Value: 1},
+						{Key: "subject_relation", Value: 1},
+					},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return fmt.Errorf("warden: create relations namespace-unique index: %w", err)
+				}
+
+				return nil
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				db := mexec.DB().Database()
+
+				roles := db.Collection(colRoles)
+				_ = roles.Indexes().DropOne(ctx, "tenant_id_1_namespace_path_1_slug_1") //nolint:errcheck // idempotent drop, ok if missing
+				if _, err := roles.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "slug", Value: 1}},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return err
+				}
+
+				for _, coll := range []string{colPermissions, colPolicies, colResourceTypes} {
+					c := db.Collection(coll)
+					_ = c.Indexes().DropOne(ctx, "tenant_id_1_namespace_path_1_name_1") //nolint:errcheck // idempotent drop, ok if missing
+					if _, err := c.Indexes().CreateOne(ctx, mongo.IndexModel{
+						Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "name", Value: 1}},
+						Options: options.Index().SetUnique(true),
+					}); err != nil {
+						return err
+					}
+				}
+
+				assignments := db.Collection(colAssignments)
+				_ = assignments.Indexes().DropOne(ctx, //nolint:errcheck // idempotent drop, ok if missing
+					"tenant_id_1_namespace_path_1_role_id_1_subject_kind_1_subject_id_1_resource_type_1_resource_id_1")
+				if _, err := assignments.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "role_id", Value: 1},
+						{Key: "subject_kind", Value: 1},
+						{Key: "subject_id", Value: 1},
+						{Key: "resource_type", Value: 1},
+						{Key: "resource_id", Value: 1},
+					},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return err
+				}
+
+				relations := db.Collection(colRelations)
+				_ = relations.Indexes().DropOne(ctx, //nolint:errcheck // idempotent drop, ok if missing
+					"tenant_id_1_namespace_path_1_object_type_1_object_id_1_relation_1_subject_type_1_subject_id_1_subject_relation_1")
+				if _, err := relations.Indexes().CreateOne(ctx, mongo.IndexModel{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "object_type", Value: 1},
+						{Key: "object_id", Value: 1},
+						{Key: "relation", Value: 1},
+						{Key: "subject_type", Value: 1},
+						{Key: "subject_id", Value: 1},
+						{Key: "subject_relation", Value: 1},
+					},
+					Options: options.Index().SetUnique(true),
+				}); err != nil {
+					return err
+				}
+
+				return nil
+			},
+		},
+		&migrate.Migration{
+			// nullable_object_fields widens every collection's $jsonSchema
+			// validator so its object/array-typed (map/slice Go) fields also
+			// accept "null". grove's insert path (structToMapInsert in
+			// grove/drivers/mongodriver/model.go) writes every struct field
+			// into the document regardless of its Go zero value: it does
+			// not honor `omitempty`, so a caller who leaves e.g. Metadata
+			// unset serializes it as BSON null. buildFieldSchema (same
+			// package) only tolerates null for pointer-kind Go fields, so a
+			// nil map/slice field fails "type did not match" against the
+			// strict schema CreateCollection generated.
+			//
+			// store/mongo/models.go normalizes these fields to a non-nil
+			// empty value on every write going forward (nonNilMap /
+			// nonNilSlice), which is the primary fix. This migration is the
+			// compatibility half: it keeps documents already written with
+			// an explicit null (by an older build of this package, or
+			// before collection validation existed at all) valid against
+			// $jsonSchema, and is idempotent (widening an already-widened
+			// bsonType array is a no-op) so it's safe to run against a
+			// fresh or a pre-existing deployment alike.
+			Name:    "nullable_object_fields",
+			Version: "20260922000002",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				for _, w := range nullableObjectFieldWidenings {
+					if err := widenValidatorNullable(ctx, mexec, w.model, w.collection, w.fields...); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				for _, w := range nullableObjectFieldWidenings {
+					if err := restoreStrictValidator(ctx, mexec, w.model, w.collection); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
 	)
+}
+
+// nullableObjectFieldWidenings lists, per collection, the map/slice fields
+// whose generated $jsonSchema bsonType needs "null" added. rolePermissionModel
+// has no such field (its only members are the compound key), so it's absent.
+var nullableObjectFieldWidenings = []struct {
+	model      any
+	collection string
+	fields     []string
+}{
+	{(*roleModel)(nil), colRoles, []string{"metadata"}},
+	{(*permissionModel)(nil), colPermissions, []string{"metadata"}},
+	{(*assignmentModel)(nil), colAssignments, []string{"metadata"}},
+	{(*relationModel)(nil), colRelations, []string{"metadata"}},
+	{(*policyModel)(nil), colPolicies, []string{"metadata", "subjects", "actions", "resources", "conditions", "obligations"}},
+	{(*resourceTypeModel)(nil), colResourceTypes, []string{"metadata", "relations", "permissions"}},
+	{(*checkLogModel)(nil), colCheckLogs, []string{"metadata", "matched_by", "obligations"}},
+}
+
+// widenValidatorNullable patches collection's $jsonSchema validator so each
+// named property additionally accepts "null", on top of whatever
+// buildFieldSchema derived from model.
+func widenValidatorNullable(ctx context.Context, mexec *mongomigrate.Executor, model any, collection string, fields ...string) error {
+	schema, err := mexec.DB().NewCreateCollection(model).BuildSchema()
+	if err != nil {
+		return fmt.Errorf("warden: build schema for %s: %w", collection, err)
+	}
+	widenSchemaFieldsNullable(schema, fields...)
+	return applyValidator(ctx, mexec, collection, schema)
+}
+
+// restoreStrictValidator re-applies the plain generated schema (without the
+// "null" widening) for collection, undoing widenValidatorNullable.
+func restoreStrictValidator(ctx context.Context, mexec *mongomigrate.Executor, model any, collection string) error {
+	schema, err := mexec.DB().NewCreateCollection(model).BuildSchema()
+	if err != nil {
+		return fmt.Errorf("warden: build schema for %s: %w", collection, err)
+	}
+	return applyValidator(ctx, mexec, collection, schema)
+}
+
+// widenSchemaFieldsNullable mutates a $jsonSchema document's properties in
+// place so each named field's bsonType also accepts "null". A field whose
+// bsonType is already an array (e.g. a nullable pointer field) is left
+// untouched if "null" is already present, so this is safe to apply twice.
+func widenSchemaFieldsNullable(schema bson.M, fields ...string) {
+	props, ok := schema["properties"].(bson.M)
+	if !ok {
+		return
+	}
+	for _, name := range fields {
+		fieldSchema, ok := props[name].(bson.M)
+		if !ok {
+			continue
+		}
+		switch base := fieldSchema["bsonType"].(type) {
+		case string:
+			fieldSchema["bsonType"] = bson.A{base, "null"}
+		case bson.A:
+			hasNull := false
+			for _, v := range base {
+				if v == "null" {
+					hasNull = true
+					break
+				}
+			}
+			if !hasNull {
+				fieldSchema["bsonType"] = append(base, "null")
+			}
+		}
+	}
+}
+
+// applyValidator issues collMod to replace collection's $jsonSchema
+// validator with schema, keeping validation strict/error (matching
+// CreateCollection's defaults) rather than loosening enforcement broadly.
+func applyValidator(ctx context.Context, mexec *mongomigrate.Executor, collection string, schema bson.M) error {
+	cmd := bson.D{
+		{Key: "collMod", Value: collection},
+		{Key: "validator", Value: bson.M{"$jsonSchema": schema}},
+		{Key: "validationLevel", Value: "strict"},
+		{Key: "validationAction", Value: "error"},
+	}
+	if err := mexec.DB().Database().RunCommand(ctx, cmd).Err(); err != nil {
+		return fmt.Errorf("warden: apply validator for %s: %w", collection, err)
+	}
+	return nil
 }

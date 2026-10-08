@@ -11,11 +11,21 @@ type Store interface {
 	// CreateRelation persists a new relation tuple.
 	CreateRelation(ctx context.Context, t *Tuple) error
 
-	// DeleteRelation removes a relation tuple by ID.
-	DeleteRelation(ctx context.Context, relID id.RelationID) error
+	// GetRelation returns a relation tuple by ID within a tenant. Returns
+	// ErrRelationNotFound when no tuple has that ID in the tenant, including
+	// when the ID belongs to another tenant.
+	GetRelation(ctx context.Context, tenantID string, relID id.RelationID) (*Tuple, error)
 
-	// DeleteRelationTuple removes a specific relation tuple by its composite key.
-	DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, relation, subjectType, subjectID string) error
+	// DeleteRelation removes a relation tuple by ID within a tenant. Returns
+	// ErrRelationNotFound when the tuple is not in the tenant.
+	DeleteRelation(ctx context.Context, tenantID string, relID id.RelationID) error
+
+	// DeleteRelationTuple removes the relation tuple with exactly this
+	// composite key, subject relation included: an empty subjectRelation
+	// names the direct tuple (group:eng) and leaves the subject set
+	// (group:eng#member), and "member" names the subject set and leaves the
+	// direct tuple. Deleting a key that matches nothing is not an error.
+	DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, relation, subjectType, subjectID, subjectRelation string) error
 
 	// ListRelations returns relation tuples matching the filter.
 	ListRelations(ctx context.Context, filter *ListFilter) ([]*Tuple, error)
@@ -28,11 +38,15 @@ type Store interface {
 	// request namespace and its ancestors (see warden.AncestorNamespaces) to
 	// honor namespace inheritance, or a single-element slice for an exact
 	// lookup. An empty slice matches any namespace.
-	ListRelationSubjects(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, relation string) ([]*Tuple, error)
+	// limit caps the fan-out of a single hop; 0 means the backend default of
+	// 1000.
+	ListRelationSubjects(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, relation string, limit int) ([]*Tuple, error)
 
 	// ListRelationObjects returns tuples where the given subject has the
 	// specified relation in the given namespace.
-	ListRelationObjects(ctx context.Context, tenantID, namespacePath, subjectType, subjectID, relation string) ([]*Tuple, error)
+	// limit caps the number of tuples returned; 0 means the backend default
+	// of 1000.
+	ListRelationObjects(ctx context.Context, tenantID, namespacePath, subjectType, subjectID, relation string, limit int) ([]*Tuple, error)
 
 	// CheckDirectRelation reports whether a direct relation exists between
 	// subject and object in any of the given namespace paths. Pass the request

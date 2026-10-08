@@ -15,16 +15,17 @@ import (
 	"net/http"
 
 	"github.com/xraph/forge"
-	dashboard "github.com/xraph/forge/extensions/dashboard"
-	"github.com/xraph/forge/extensions/dashboard/contributor"
+	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
+	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/api"
-	wardendash "github.com/xraph/warden/dashboard"
 	"github.com/xraph/warden/dsl"
+	wardencontract "github.com/xraph/warden/extension/contract"
 	"github.com/xraph/warden/plugin"
+	"github.com/xraph/warden/plugin/auditlog"
 	"github.com/xraph/warden/store"
 	mongostore "github.com/xraph/warden/store/mongo"
 	pgstore "github.com/xraph/warden/store/postgres"
@@ -40,11 +41,8 @@ const ExtensionDescription = "Composable permissions & authorization engine (RBA
 // ExtensionVersion is the semantic version.
 const ExtensionVersion = "0.1.0"
 
-// Ensure Extension implements forge.Extension and dashboard.DashboardAware at compile time.
-var (
-	_ forge.Extension          = (*Extension)(nil)
-	_ dashboard.DashboardAware = (*Extension)(nil)
-)
+// Ensure Extension implements forge.Extension at compile time.
+var _ forge.Extension = (*Extension)(nil)
 
 // Extension adapts Warden as a Forge extension.
 type Extension struct {
@@ -56,6 +54,13 @@ type Extension struct {
 	wardenOpts []warden.Option
 	plugins    []plugin.Plugin
 	useGrove   bool
+
+	// insecureAllowUnauthenticatedRoutes is set only by
+	// WithInsecureAllowUnauthenticatedRoutes. With auth.require_identity
+	// false, nothing mounts the API without it: Register refuses when routes
+	// are enabled, Handler panics, RegisterRoutes returns an error, and the
+	// API that API() returns still requires an identity.
+	insecureAllowUnauthenticatedRoutes bool
 }
 
 // New creates a Warden Forge extension with the given options.
@@ -72,8 +77,24 @@ func New(opts ...Option) *Extension {
 // Engine returns the underlying Warden engine.
 func (e *Extension) Engine() *warden.Engine { return e.eng }
 
-// API returns the API handler.
+// API returns the API handler, or nil before Register. With
+// auth.require_identity false and no WithInsecureAllowUnauthenticatedRoutes,
+// it still requires an identity on every route, except the three check
+// endpoints when auth.allow_anonymous_checks is on: the insecure opt-in is
+// the only way to get an API that skips the identity check everywhere.
 func (e *Extension) API() *api.API { return e.apiHandler }
+
+// errUnauthenticatedAPI refuses to mount the API with auth.require_identity
+// false unless WithInsecureAllowUnauthenticatedRoutes was passed. It is nil
+// when identity is required or the opt-in is set.
+func (e *Extension) errUnauthenticatedAPI() error {
+	if e.config.Auth.RequireIdentity || e.insecureAllowUnauthenticatedRoutes {
+		return nil
+	}
+	return errors.New("warden: auth.require_identity is false; " +
+		"call extension.WithInsecureAllowUnauthenticatedRoutes() to mount the API without an identity check " +
+		"(without it, any network peer could grant roles or read the audit log)")
+}
 
 // Register implements [forge.Extension]. It loads configuration,
 // initializes the engine, registers it in the DI container, and optionally
@@ -85,6 +106,19 @@ func (e *Extension) Register(fapp forge.App) error {
 
 	if err := e.loadConfiguration(); err != nil {
 		return err
+	}
+
+	if err := e.config.Validate(); err != nil {
+		return fmt.Errorf("warden: %w", err)
+	}
+
+	// With routes disabled nothing is mounted here, so an engine-only
+	// setup needs no opt-in. Handler and RegisterRoutes run the same check
+	// when something mounts the API later.
+	if !e.config.DisableRoutes {
+		if err := e.errUnauthenticatedAPI(); err != nil {
+			return err
+		}
 	}
 
 	if err := e.init(fapp); err != nil {
@@ -126,7 +160,7 @@ func (e *Extension) init(fapp forge.App) error {
 	}
 
 	// Build warden options.
-	opts := make([]warden.Option, 0, len(e.wardenOpts)+len(e.plugins)+2)
+	opts := make([]warden.Option, 0, len(e.wardenOpts)+len(e.plugins)+4)
 
 	// Try to resolve store from DI container, fall back to option-provided store.
 	if s, err := forge.Inject[store.Store](fapp.Container()); err == nil {
@@ -141,11 +175,28 @@ func (e *Extension) init(fapp forge.App) error {
 		opts = append(opts, warden.WithPlugin(x))
 	}
 
-	// Apply max graph depth from config if set.
-	if e.config.MaxGraphDepth > 0 {
-		opts = append(opts, warden.WithConfig(warden.Config{
-			MaxGraphDepth: e.config.MaxGraphDepth,
-		}))
+	// Mirror engine knobs (cache, graph budgets, check-log queue/retention,
+	// maintenance interval, batch limit, tenant/check-log toggles) straight
+	// through: the engine itself auto-builds its memory cache from
+	// CacheTTL/CacheMaxSize, so there is no separate cache-construction
+	// step here.
+	opts = append(opts, warden.WithConfig(e.config.toEngineConfig()))
+
+	// Wire a forge.Metrics-backed warden.Metrics adapter so checks, store
+	// errors, cache invalidations, purge counts and hook errors are all
+	// observable. e.Metrics() never returns nil (BaseExtension falls back
+	// to a no-op collector), so this is unconditional.
+	if fm := e.Metrics(); fm != nil {
+		opts = append(opts, warden.WithMetrics(newForgeMetrics(fm)))
+	}
+
+	// Register the in-tree structured audit-log sink by default (one line
+	// per audit event through the extension logger). Registering it here,
+	// via WithPlugin, also guarantees the engine's plugin registry exists
+	// by the time NewEngine returns, which the invalidator-plugin wiring
+	// below depends on.
+	if e.config.Auth.AuditLog {
+		opts = append(opts, warden.WithPlugin(auditlog.New(e.Logger())))
 	}
 
 	eng, err := warden.NewEngine(opts...)
@@ -158,14 +209,47 @@ func (e *Extension) init(fapp forge.App) error {
 	// are evaluated at Check time. The evaluator is a thin wrapper around
 	// the engine's store; it has no internal state besides a per-instance
 	// AST cache.
+	var ee *dsl.EngineEvaluator
 	if s := eng.Store(); s != nil {
-		eng.SetExpressionEvaluator(dsl.NewEngineEvaluator(s))
+		ee = dsl.NewEngineEvaluator(s)
+		eng.SetExpressionEvaluator(ee)
+	}
+
+	// Register the expression-cache invalidator so an edited or deleted
+	// resource type's compiled permission expressions don't keep
+	// evaluating against a stale AST. This needs a live plugin registry,
+	// which is guaranteed whenever AuditLog is on (the default), a cache
+	// is configured, or any plugin was supplied via WithPlugin; in the
+	// unusual configuration where none of those apply, there is no
+	// registry to attach to and this degrades to a Warn log instead of a
+	// nil-pointer panic.
+	if ee != nil {
+		if reg := eng.Plugins(); reg != nil {
+			reg.Register(dsl.NewInvalidatorPlugin(ee.Evaluator()))
+		} else {
+			e.Logger().Warn("warden: no plugin registry available; expression-cache invalidator not registered " +
+				"(enable auth.audit_log, a cache TTL, or register any plugin to get one)")
+		}
 	}
 
 	e.eng = eng
 
-	// Create API handler.
-	e.apiHandler = api.New(eng, fapp.Router())
+	// Create the API handler with the configured auth posture.
+	apiOpts := make([]api.Option, 0, 2)
+	if e.config.Auth.AllowAnonymousChecks {
+		apiOpts = append(apiOpts, api.AllowAnonymousChecks())
+	}
+	if !e.config.Auth.RequireIdentity && e.insecureAllowUnauthenticatedRoutes {
+		// Only with the opt-in. Without it, routes are disabled (Register
+		// refused otherwise), and the API is built requiring an identity,
+		// so whoever mounts it later, through API() or a router of their
+		// own, cannot get one without the identity check. Handler and
+		// RegisterRoutes refuse outright.
+		apiOpts = append(apiOpts, api.WithInsecureAllowUnauthenticatedRoutes())
+	}
+	// No router: the app's router is only ever touched by the base-path
+	// mount below. Handler builds a standalone router of its own.
+	e.apiHandler = api.New(eng, nil, apiOpts...)
 
 	// Register HTTP routes unless disabled.
 	if !e.config.DisableRoutes {
@@ -243,20 +327,47 @@ func (e *Extension) Health(ctx context.Context) error {
 	return s.Ping(ctx)
 }
 
-// Handler returns the HTTP handler for all API routes.
+// Handler returns a standalone http.Handler serving warden's API and
+// nothing else, or a handler that answers 404 before Register.
+//
+// The API is built on a router of its own, never the app's router, so it
+// adds no routes or middleware to the app and does not clash with the
+// base-path mount Register makes when routes are enabled. Routes sit at
+// /v1/... and, for AuthZEN, /access/v1/... on that router, with no base
+// path: mount the handler wherever you like, and strip your prefix first
+// (http.StripPrefix("/authz", h) to serve /authz/v1/... and
+// /authz/access/v1/...). The router is built on the first call, and
+// every later call returns the same handler.
+//
+// It panics when auth.require_identity is false and
+// WithInsecureAllowUnauthenticatedRoutes was not passed, the same refusal
+// Register returns when routes are enabled: handing out the API would
+// otherwise mount it with no opt-in. It has no error to return, and
+// api.API.Handler panics on a failed registration the same way.
 func (e *Extension) Handler() http.Handler {
 	if e.apiHandler == nil {
 		return http.NotFoundHandler()
 	}
+	if err := e.errUnauthenticatedAPI(); err != nil {
+		panic(err.Error())
+	}
 	return e.apiHandler.Handler()
 }
 
-// RegisterRoutes registers all warden API routes into a Forge router.
+// RegisterRoutes registers all warden API routes into a Forge router. It
+// registers nothing before Register.
+//
+// It returns an error, and registers nothing, when auth.require_identity
+// is false and WithInsecureAllowUnauthenticatedRoutes was not passed: the
+// same refusal Register returns when routes are enabled.
 func (e *Extension) RegisterRoutes(router forge.Router) error {
-	if e.apiHandler != nil {
-		return e.apiHandler.RegisterRoutes(router)
+	if e.apiHandler == nil {
+		return nil
 	}
-	return nil
+	if err := e.errUnauthenticatedAPI(); err != nil {
+		return err
+	}
+	return e.apiHandler.RegisterRoutes(router)
 }
 
 // --- Config Loading (mirrors grove extension pattern) ---
@@ -265,8 +376,14 @@ func (e *Extension) RegisterRoutes(router forge.Router) error {
 func (e *Extension) loadConfiguration() error {
 	programmaticConfig := e.config
 
-	// Try loading from config file.
-	fileConfig, configLoaded := e.tryLoadFromConfigFile()
+	// Try loading from config file. The YAML is bound over the code-set
+	// config (defaults filling its gaps), so a key the YAML section leaves
+	// out keeps the value set in code rather than falling back to a default.
+	fileConfig, configLoaded, bindErr := e.tryLoadFromConfigFile(e.mergeWithDefaults(programmaticConfig))
+
+	if bindErr != nil && programmaticConfig.RequireConfig {
+		return fmt.Errorf("warden: bind configuration: %w", bindErr)
+	}
 
 	if !configLoaded {
 		if programmaticConfig.RequireConfig {
@@ -292,56 +409,112 @@ func (e *Extension) loadConfiguration() error {
 		forge.F("base_path", e.config.BasePath),
 		forge.F("grove_database", e.config.GroveDatabase),
 		forge.F("max_graph_depth", e.config.MaxGraphDepth),
+		forge.F("auth_require_identity", e.config.Auth.RequireIdentity),
+		forge.F("auth_allow_anonymous_checks", e.config.Auth.AllowAnonymousChecks),
+		forge.F("auth_audit_log", e.config.Auth.AuditLog),
 	)
 
 	return nil
 }
 
-// tryLoadFromConfigFile attempts to load config from YAML files.
-func (e *Extension) tryLoadFromConfigFile() (Config, bool) {
+// tryLoadFromConfigFile attempts to load config from YAML files. Each bind
+// starts from a copy of base (the code-set config with defaults filling
+// its gaps), and the binder only overwrites keys actually present in the
+// source document. So a key the YAML section sets wins, and a key it
+// leaves out keeps the code-set value, or the default when code set none.
+// A YAML section that mentions disable_routes but not auth still keeps
+// auth.require_identity=true, rather than zeroing it because the key
+// wasn't spelled out. The third return value is the bind error, if any;
+// the caller decides whether that's fatal (RequireConfig) or a
+// fall-through to defaults.
+func (e *Extension) tryLoadFromConfigFile(base Config) (Config, bool, error) {
 	cm := e.App().Config()
-	var cfg Config
+	var lastErr error
 
 	// Try "extensions.warden" first (namespaced pattern).
 	if cm.IsSet("extensions.warden") {
-		if err := cm.Bind("extensions.warden", &cfg); err == nil {
+		cfg := base.clone()
+		err := cm.Bind("extensions.warden", &cfg)
+		if err == nil {
 			e.Logger().Debug("warden: loaded config from file",
 				forge.F("key", "extensions.warden"),
 			)
-			return cfg, true
+			return cfg, true, nil
 		}
+		lastErr = err
 		e.Logger().Warn("warden: failed to bind extensions.warden config",
-			forge.F("error", "bind failed"),
+			forge.F("error", err.Error()),
 		)
 	}
 
 	// Try legacy "warden" key.
 	if cm.IsSet("warden") {
-		if err := cm.Bind("warden", &cfg); err == nil {
+		cfg := base.clone()
+		err := cm.Bind("warden", &cfg)
+		if err == nil {
 			e.Logger().Debug("warden: loaded config from file",
 				forge.F("key", "warden"),
 			)
-			return cfg, true
+			return cfg, true, nil
 		}
+		lastErr = err
 		e.Logger().Warn("warden: failed to bind warden config",
-			forge.F("error", "bind failed"),
+			forge.F("error", err.Error()),
 		)
 	}
 
-	return Config{}, false
+	return Config{}, false, lastErr
 }
 
-// mergeWithDefaults fills zero-valued fields with defaults.
+// mergeWithDefaults fills zero-valued fields with defaults. Only an exact 0
+// is replaced: a negative CheckLogRetention or MaintenanceInterval is how a
+// caller switches purging or the maintenance loop off, so it passes through
+// to the engine untouched.
 func (e *Extension) mergeWithDefaults(cfg Config) Config {
 	defaults := DefaultConfig()
 	if cfg.MaxGraphDepth == 0 {
 		cfg.MaxGraphDepth = defaults.MaxGraphDepth
 	}
+	if cfg.CacheMaxSize == 0 {
+		cfg.CacheMaxSize = defaults.CacheMaxSize
+	}
+	if cfg.MaxGraphVisited == 0 {
+		cfg.MaxGraphVisited = defaults.MaxGraphVisited
+	}
+	if cfg.MaxGraphFanout == 0 {
+		cfg.MaxGraphFanout = defaults.MaxGraphFanout
+	}
+	if cfg.CheckLogQueueSize == 0 {
+		cfg.CheckLogQueueSize = defaults.CheckLogQueueSize
+	}
+	if cfg.CheckLogRetention == 0 {
+		cfg.CheckLogRetention = defaults.CheckLogRetention
+	}
+	if cfg.MaintenanceInterval == 0 {
+		cfg.MaintenanceInterval = defaults.MaintenanceInterval
+	}
+	if cfg.MaxBatchChecks == 0 {
+		cfg.MaxBatchChecks = defaults.MaxBatchChecks
+	}
+	// Auth is only defaulted wholesale when it was never touched at all
+	// (code set no Auth, or one with every field false, which reads the
+	// same). That fills the base tryLoadFromConfigFile binds over, so a
+	// YAML-sourced Auth starts from the code-set Auth, else the defaults.
+	// mergeConfigurations keeps the YAML-sourced Auth as bound, all false
+	// included, and never lets this line replace it.
+	if cfg.Auth == (AuthConfig{}) {
+		cfg.Auth = defaults.Auth
+	}
 	return cfg
 }
 
 // mergeConfigurations merges YAML config with programmatic options.
-// Programmatic bool flags override when true; YAML takes precedence for value fields.
+// yamlConfig was bound over the code-set config, so a key the YAML left
+// out already holds the code-set value. What is left here: programmatic
+// DisableRoutes, DisableMigrate and EvaluateAllModels win when true, and
+// an explicit YAML 0 or empty value for the fields below counts as unset,
+// so the code-set value fills it, else mergeWithDefaults' default. Auth
+// has no such rule: every auth key the YAML sets wins, false included.
 func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) Config {
 	// Programmatic bool flags override when true.
 	if programmaticConfig.DisableRoutes {
@@ -359,13 +532,55 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 		yamlConfig.GroveDatabase = programmaticConfig.GroveDatabase
 	}
 
-	// Int fields: YAML takes precedence, programmatic fills gaps.
+	// Int/duration fields: YAML takes precedence, programmatic fills gaps.
 	if yamlConfig.MaxGraphDepth == 0 && programmaticConfig.MaxGraphDepth != 0 {
 		yamlConfig.MaxGraphDepth = programmaticConfig.MaxGraphDepth
 	}
+	if yamlConfig.CacheTTL == 0 && programmaticConfig.CacheTTL != 0 {
+		yamlConfig.CacheTTL = programmaticConfig.CacheTTL
+	}
+	if yamlConfig.CacheMaxSize == 0 && programmaticConfig.CacheMaxSize != 0 {
+		yamlConfig.CacheMaxSize = programmaticConfig.CacheMaxSize
+	}
+	if yamlConfig.MaxGraphVisited == 0 && programmaticConfig.MaxGraphVisited != 0 {
+		yamlConfig.MaxGraphVisited = programmaticConfig.MaxGraphVisited
+	}
+	if yamlConfig.MaxGraphFanout == 0 && programmaticConfig.MaxGraphFanout != 0 {
+		yamlConfig.MaxGraphFanout = programmaticConfig.MaxGraphFanout
+	}
+	if yamlConfig.CheckLogQueueSize == 0 && programmaticConfig.CheckLogQueueSize != 0 {
+		yamlConfig.CheckLogQueueSize = programmaticConfig.CheckLogQueueSize
+	}
+	if yamlConfig.CheckLogRetention == 0 && programmaticConfig.CheckLogRetention != 0 {
+		yamlConfig.CheckLogRetention = programmaticConfig.CheckLogRetention
+	}
+	if yamlConfig.MaintenanceInterval == 0 && programmaticConfig.MaintenanceInterval != 0 {
+		yamlConfig.MaintenanceInterval = programmaticConfig.MaintenanceInterval
+	}
+	if yamlConfig.MaxBatchChecks == 0 && programmaticConfig.MaxBatchChecks != 0 {
+		yamlConfig.MaxBatchChecks = programmaticConfig.MaxBatchChecks
+	}
+	if yamlConfig.RequireTenant == nil {
+		yamlConfig.RequireTenant = programmaticConfig.RequireTenant
+	}
+	if yamlConfig.EnableCheckLog == nil {
+		yamlConfig.EnableCheckLog = programmaticConfig.EnableCheckLog
+	}
+	if !yamlConfig.EvaluateAllModels && programmaticConfig.EvaluateAllModels {
+		yamlConfig.EvaluateAllModels = true
+	}
 
-	// Fill remaining zeros with defaults.
-	return e.mergeWithDefaults(yamlConfig)
+	// Fill remaining zeros with defaults, except Auth. yamlConfig.Auth was
+	// bound key by key over the code-set Auth (else the defaults), so it
+	// already holds every key the YAML set and the code value for every
+	// key it left out. An all-false Auth here is what the YAML asked for,
+	// and replacing it with the code or default Auth would undo a setting
+	// the YAML made: code AllowAnonymousChecks=true would survive a YAML
+	// allow_anonymous_checks: false.
+	auth := yamlConfig.Auth
+	merged := e.mergeWithDefaults(yamlConfig)
+	merged.Auth = auth
+	return merged
 }
 
 // resolveGroveDB resolves a *grove.DB from the DI container.
@@ -452,6 +667,10 @@ func mergeDeclProgram(dst, src *dsl.Program) {
 	dst.Roles = append(dst.Roles, src.Roles...)
 	dst.Policies = append(dst.Policies, src.Policies...)
 	dst.Relations = append(dst.Relations, src.Relations...)
+	// Namespaces are already flattened into the lists above. They are kept
+	// because Prune reads them: a `namespace` block, even an empty one,
+	// covers that namespace.
+	dst.Namespaces = append(dst.Namespaces, src.Namespaces...)
 }
 
 func (e *Extension) buildStoreFromGroveDB(db *grove.DB) (store.Store, error) {
@@ -470,13 +689,20 @@ func (e *Extension) buildStoreFromGroveDB(db *grove.DB) (store.Store, error) {
 
 // ─── Dashboard Integration ───────────────────────────────────────────────────
 
-// DashboardContributor implements dashboard.DashboardAware. It returns a
-// LocalContributor that renders warden pages, widgets, and settings in the
-// Forge dashboard using templ + ForgeUI.
-func (e *Extension) DashboardContributor() contributor.LocalContributor {
-	return wardendash.New(
-		wardendash.NewManifest(e.eng, e.plugins),
-		e.eng,
-		e.plugins,
-	)
+// RegisterContractContributor implements the dashboard's contract
+// auto-discovery. It registers the `warden` contributor so the React shell
+// can read warden's intents.
+func (e *Extension) RegisterContractContributor(
+	disp *dispatcher.Dispatcher,
+	reg dashcontract.Registry,
+	wreg dashcontract.WardenRegistry,
+) error {
+	if e.eng == nil {
+		e.Logger().Warn("warden: engine not initialised; skipping contract contributor registration")
+		return nil
+	}
+	if err := wardencontract.Register(disp, reg, wreg, wardencontract.Deps{Engine: e.eng, DefaultTenantID: e.config.Dashboard.TenantID}); err != nil {
+		return fmt.Errorf("warden: register contract contributor: %w", err)
+	}
+	return nil
 }

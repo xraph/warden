@@ -38,7 +38,7 @@
         },
         {
           "name": "meta.scope.warden",
-          "match": "^\\s*(tenant|app)\\s+([a-z][a-z0-9_-]*)",
+          "match": "^\\s*(tenant|app)\\s+((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*))",
           "captures": {
             "1": { "name": "keyword.control.warden" },
             "2": { "name": "entity.name.section.warden" }
@@ -51,6 +51,7 @@
       "patterns": [
         { "include": "#namespace-block" },
         { "include": "#resource-block" },
+        { "include": "#permission-block" },
         { "include": "#permission-decl" },
         { "include": "#role-block" },
         { "include": "#policy-block" },
@@ -73,7 +74,7 @@
     },
 
     "resource-block": {
-      "begin": "\\b(resource)\\s+([a-z][a-z0-9_]*)\\s*\\{",
+      "begin": "\\b(resource)\\s+((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*))\\s*\\{",
       "end": "\\}",
       "beginCaptures": {
         "1": { "name": "keyword.control.warden" },
@@ -89,7 +90,7 @@
     },
 
     "relation-def": {
-      "match": "\\b(relation)\\s+([a-z][a-z0-9_]*)\\s*:\\s*",
+      "match": "\\b(relation)\\s+((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*))\\s*:\\s*",
       "captures": {
         "1": { "name": "keyword.control.warden" },
         "2": { "name": "entity.name.tag.relation.warden" }
@@ -97,11 +98,25 @@
     },
 
     "resource-permission": {
-      "match": "\\b(permission)\\s+([a-z][a-z0-9_]*)\\s*=",
+      "match": "\\b(permission)\\s+((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*))\\s*=",
       "captures": {
         "1": { "name": "keyword.control.warden" },
         "2": { "name": "entity.name.function.permission.warden" }
       }
+    },
+
+    "permission-block": {
+      "begin": "\\b(permission)\\s+(\"(?:[^\"\\\\]|\\\\.)*\")\\s*\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.warden" },
+        "2": { "name": "string.quoted.double.warden" }
+      },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#field-assign" },
+        { "include": "#literals" }
+      ]
     },
 
     "permission-decl": {
@@ -113,7 +128,7 @@
     },
 
     "role-block": {
-      "begin": "\\b(role)\\s+([a-z][a-z0-9-]*)(?:\\s*:\\s*(/?[a-z][a-z0-9/_-]*))?\\s*\\{",
+      "begin": "\\b(role)\\s+((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*))(?:\\s*:\\s*(/[A-Za-z_][A-Za-z0-9/_-]*|(?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*)))?\\s*\\{",
       "end": "\\}",
       "beginCaptures": {
         "1": { "name": "keyword.control.warden" },
@@ -158,7 +173,7 @@
     "condition": {
       "patterns": [
         {
-          "match": "\\b(==|!=|<=|>=|<|>|=~|in|not\\s+in|exists|not\\s+exists|contains|starts_with|ends_with|ip_in_cidr|time_after|time_before)\\b",
+          "match": "(==|!=|<=|>=|<|>|=~|\\bnot\\s+in\\b|\\bin\\b|\\bnot\\s+exists\\b|\\bexists\\b|\\bcontains\\b|\\bstarts_with\\b|\\bends_with\\b|\\bip_in_cidr\\b|\\btime_after\\b|\\btime_before\\b)",
           "name": "keyword.operator.comparison.warden"
         },
         {
@@ -170,7 +185,7 @@
     },
 
     "relation-decl": {
-      "match": "\\b(relation)\\s+([a-z][a-z0-9_]*):([a-zA-Z0-9_-]+)\\s+([a-z][a-z0-9_]*)\\s*=\\s*([a-z][a-z0-9_]*):([a-zA-Z0-9_-]+)(?:#([a-z][a-z0-9_]*))?",
+      "match": "\\b(relation)\\s+((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*)):((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*))\\s+((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*))\\s*=\\s*((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*)):((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*))(?:#((?:\"(?:[^\"\\\\]|\\\\.)*\"|[A-Za-z_][A-Za-z0-9_-]*)))?",
       "captures": {
         "1": { "name": "keyword.control.warden" },
         "2": { "name": "entity.name.type.warden" },
@@ -191,7 +206,7 @@
     },
 
     "field-assign": {
-      "match": "\\b(name|description|priority|active|effect|actions|resources|subjects|grants|is_system|is_default|max_members|metadata)\\s*(\\+?=)",
+      "match": "\\b(name|description|priority|active|effect|actions|resources|subjects|grants|is_system|is_default|max_members|metadata|resource|action|not_before|not_after|obligations)\\s*(\\+?=)",
       "captures": {
         "1": { "name": "variable.other.member.warden" },
         "2": { "name": "keyword.operator.assignment.warden" }
@@ -216,6 +231,24 @@
       "begin": "\\[",
       "end": "\\]",
       "patterns": [
+        { "include": "#comments" },
+        { "include": "#object" },
+        { "include": "#literals" }
+      ]
+    },
+
+    "object": {
+      "comment": "A subject matcher `{ kind = \"user\", id = \"alice\", role = \"admin\" }` or a qualified grant `{ namespace = \"eng\", name = \"deploy:run\" }`. Matched as its own block so its closing brace does not close the enclosing role or policy.",
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "match": "\\b(kind|id|role|namespace|name)\\s*(=)",
+          "captures": {
+            "1": { "name": "variable.other.member.warden" },
+            "2": { "name": "keyword.operator.assignment.warden" }
+          }
+        },
         { "include": "#literals" }
       ]
     },
@@ -231,8 +264,8 @@
           ]
         },
         {
-          "name": "constant.numeric.integer.warden",
-          "match": "\\b\\d+\\b"
+          "name": "constant.numeric.warden",
+          "match": "-?\\b\\d+(?:\\.\\d+)?\\b"
         },
         {
           "name": "constant.language.boolean.warden",

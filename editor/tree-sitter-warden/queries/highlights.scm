@@ -66,15 +66,25 @@
 (resource_permission_decl name: (identifier) @function)
 (relation_def name: (identifier) @property)
 
+; Quoted names (a keyword, a space, a colon, a glob).
+(resource_decl name: (string_literal) @type)
+(role_decl slug: (string_literal) @function)
+(role_decl parent: (string_literal) @function)
+(resource_permission_decl name: (string_literal) @function)
+(relation_def name: (string_literal) @property)
+
 ; Field keys.
 (field_assign key: (identifier) @property)
 (string_list_assign key: (identifier) @property)
+(subject_matcher key: _ @property)
+(qualified_grant key: _ @property)
 
 ; Literals.
 "allow" @constant.builtin
 "deny" @constant.builtin
 (bool_literal) @constant.builtin
 (int_literal) @number
+(float_literal) @number
 (string_literal) @string
 
 ; Comments.

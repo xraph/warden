@@ -217,9 +217,9 @@ go install github.com/xraph/warden/cmd/warden@latest
 ```
 
 ```warden
-# config/main.warden
+// config/main.warden
 warden config 1
-tenant t1                              # optional — omit for single-tenant apps
+tenant t1                              // optional, omit it for single-tenant apps
 
 permission "doc:read" (document : read)
 

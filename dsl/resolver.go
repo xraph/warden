@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/xraph/warden"
+	"github.com/xraph/warden/policy"
 )
 
 // Resolve performs name resolution and type checking against a parsed
@@ -11,13 +12,17 @@ import (
 // diagnostics found; the program may still be applied even with warnings.
 //
 // Checks performed:
-//   - duplicate slugs / names within and across files
+//   - duplicate slugs / names within and across files, and duplicate
+//     relation tuples
 //   - role parent slug resolves to a real role (local or ancestor namespace)
 //   - cycle detection in the role parent graph
 //   - resource-type permission expressions reference declared relations
 //   - traversal expressions hop through declared relation targets
 //   - condition operators are valid
-//   - identifier conventions (slug regex, name regex, namespace path)
+//   - every condition has a shape the store can hold, and one the
+//     evaluator can read (checkConditions, policy.ValidateCondition)
+//   - identifier conventions (see conventions.go: names are whatever the
+//     store and the dashboard accept; namespace paths are validated)
 func Resolve(prog *Program) []*Diagnostic {
 	r := &resolver{
 		prog:        prog,
@@ -31,6 +36,7 @@ func Resolve(prog *Program) []*Diagnostic {
 	r.checkRoleParents()
 	r.checkCycles()
 	r.checkExpressions()
+	r.checkConditions()
 	return r.errs
 }
 
@@ -85,28 +91,59 @@ func (r *resolver) indexAndCheckDuplicates() {
 		}
 		r.rtsByKey[k] = rt
 	}
+	// A tuple is its whole row. The store holds one of each, so a second
+	// line for the same tuple could only be a no-op, and a plan would count
+	// it as a second write the apply never makes.
+	tuples := make(map[string]*RelationDecl, len(r.prog.Relations))
+	for _, rel := range r.prog.Relations {
+		k := strings.Join([]string{rel.NamespacePath, rel.ObjectType, rel.ObjectID, rel.Relation,
+			rel.SubjectType, rel.SubjectID, rel.SubjectRelation}, "\x00")
+		if existing, ok := tuples[k]; ok {
+			r.errf(rel.Pos, "relation %s already declared at %s", relationText(rel), existing.Pos)
+			continue
+		}
+		tuples[k] = rel
+	}
+}
+
+// relationText writes a relation tuple as its source line does, after the
+// `relation` keyword.
+func relationText(rel *RelationDecl) string {
+	subj := formatName(rel.SubjectType) + ":" + formatName(rel.SubjectID)
+	if rel.SubjectRelation != "" {
+		subj += "#" + formatName(rel.SubjectRelation)
+	}
+	return formatName(rel.ObjectType) + ":" + formatName(rel.ObjectID) + " " + formatName(rel.Relation) + " = " + subj
 }
 
 func (r *resolver) checkConventions() {
 	for _, role := range r.prog.Roles {
-		if !slugRegex.MatchString(role.Slug) {
-			r.errf(role.Pos, "role slug %q must match %s", role.Slug, slugRegex.String())
+		if !validSlug(role.Slug) {
+			r.errf(role.Pos, "role slug %q must not be empty", role.Slug)
 		}
 		if err := warden.ValidateNamespacePath(role.NamespacePath, 0); err != nil {
 			r.errf(role.Pos, "%v", err)
 		}
+		for _, g := range role.QualifiedGrants {
+			if g.Name == "" {
+				r.errf(g.Pos, "role %q has a qualified grant with no permission name", role.Slug)
+			}
+			if err := warden.ValidateNamespacePath(g.NamespacePath, 0); err != nil {
+				r.errf(g.Pos, "%v", err)
+			}
+		}
 	}
 	for _, perm := range r.prog.Permissions {
-		if !permNameRegex.MatchString(perm.Name) {
-			r.errf(perm.Pos, "permission name %q must be `<resource>:<action>` matching %s", perm.Name, permNameRegex.String())
+		if !validPermission(perm) {
+			r.errf(perm.Pos, "permission name %q must be `<resource>:<action>`, with a resource and an action that are not empty", perm.Name)
 		}
 		if err := warden.ValidateNamespacePath(perm.NamespacePath, 0); err != nil {
 			r.errf(perm.Pos, "%v", err)
 		}
 	}
 	for _, pol := range r.prog.Policies {
-		if !slugRegex.MatchString(pol.Name) {
-			r.errf(pol.Pos, "policy name %q must match %s", pol.Name, slugRegex.String())
+		if !validPolicyName(pol.Name) {
+			r.errf(pol.Pos, "policy name %q must not be empty", pol.Name)
 		}
 		if pol.Effect == "" {
 			r.errf(pol.Pos, "policy %q is missing `effect`", pol.Name)
@@ -120,24 +157,39 @@ func (r *resolver) checkConventions() {
 		}
 	}
 	for _, rt := range r.prog.ResourceTypes {
-		if !rtNameRegex.MatchString(rt.Name) {
-			r.errf(rt.Pos, "resource type %q must match %s", rt.Name, rtNameRegex.String())
+		if !validResourceTypeName(rt.Name) {
+			r.errf(rt.Pos, "resource type name %q must not be empty", rt.Name)
+		}
+		if err := warden.ValidateNamespacePath(rt.NamespacePath, 0); err != nil {
+			r.errf(rt.Pos, "%v", err)
 		}
 	}
 }
 
 // checkRoleParents resolves each role's Parent field to an actual role and
-// reports an error when the reference cannot be resolved. The local resolution
-// rule is: a bare slug resolves at the current namespace; if not found, walk
+// reports an error when the reference cannot be resolved. The lookup rule
+// is: a bare slug resolves at the current namespace; if not found, walk
 // ancestors. A leading "/" indicates an absolute namespace path
 // (`role X : /eng/admin`).
+//
+// A parent found outside the role's own namespace is refused. The store
+// keeps only the parent's slug, and the engine looks that slug up in the
+// role's own namespace, so such a role would inherit nothing from the
+// parent it names, or from a different role that shares its slug, and a
+// loop the source cannot see could be stored.
 func (r *resolver) checkRoleParents() {
 	for _, role := range r.prog.Roles {
 		if role.Parent == "" {
 			continue
 		}
-		if _, found := r.lookupParent(role); !found {
+		parent, found := r.lookupParent(role)
+		if !found {
 			r.errf(role.Pos, "role %q references unknown parent %q (in namespace %q)", role.Slug, role.Parent, role.NamespacePath)
+			continue
+		}
+		if parent.NamespacePath != role.NamespacePath {
+			r.errf(role.Pos, "role %q names parent %q, which is in namespace %q, not the role's own namespace %q; a role inherits only from a parent in its own namespace, so declare the parent there",
+				role.Slug, role.Parent, parent.NamespacePath, role.NamespacePath)
 		}
 	}
 }
@@ -192,7 +244,9 @@ func (r *resolver) checkCycles() {
 		}
 		state[role] = inStack
 		if role.Parent != "" {
-			if parent, ok := r.lookupParent(role); ok {
+			// A parent in another namespace is refused by
+			// checkRoleParents and is not an edge the engine follows.
+			if parent, ok := r.lookupParent(role); ok && parent.NamespacePath == role.NamespacePath {
 				dfs(parent, append(path, role))
 			}
 		}
@@ -224,7 +278,10 @@ func (r *resolver) checkExpressions() {
 		for _, rel := range rt.Relations {
 			// The target type for traversal is the FIRST allowed subject's type.
 			// Multiple subjects are valid for direct grants but traversal needs
-			// a single concrete type; we conservatively use the first.
+			// a single concrete type; we conservatively use the first. A
+			// relation that lists no subject type is still declared, so a
+			// bare reference to it resolves; it has no target to traverse.
+			targets[rel.Name] = ""
 			if len(rel.AllowedSubjects) > 0 {
 				targets[rel.Name] = rel.AllowedSubjects[0].Type
 			}
@@ -309,6 +366,56 @@ func (r *resolver) findResourceType(name string) *ResourceDecl {
 		}
 	}
 	return nil
+}
+
+// checkConditions refuses every condition shape the store cannot hold.
+//
+// A stored policy keeps its conditions as one flat list of
+// field/operator/value predicates that must all hold (policy.Condition). It
+// has no negation flag and no OR. So the language may group conditions
+// only in ways that flatten to that list without changing their meaning:
+// `all_of` (an AND, at any depth) and an `any_of` with exactly one
+// condition (which is just that condition). Everything else would be
+// stored as something else, so it is a diagnostic at the condition:
+//   - `negate`: stored without it, the condition would mean its opposite;
+//   - `any_of` with two or more conditions: only one would be stored;
+//   - an empty `any_of`: it can never hold, and an empty list always does.
+func (r *resolver) checkConditions() {
+	for _, pol := range r.prog.Policies {
+		for _, c := range pol.Conditions {
+			r.checkCondition(pol, c)
+		}
+	}
+}
+
+func (r *resolver) checkCondition(pol *PolicyDecl, c *Condition) {
+	switch {
+	case c.AnyOf != nil:
+		switch len(c.AnyOf) {
+		case 0:
+			r.errf(c.Pos, "policy %q: an empty any_of can never hold, and a stored policy cannot say that (its conditions are a list that must all hold)", pol.Name)
+		case 1:
+			r.checkCondition(pol, c.AnyOf[0])
+		default:
+			r.errf(c.Pos, "policy %q: any_of with %d conditions cannot be stored: a stored policy's conditions must all hold, and it has no OR. Split it into one policy per alternative", pol.Name, len(c.AnyOf))
+		}
+	case c.AllOf != nil:
+		for _, inner := range c.AllOf {
+			r.checkCondition(pol, inner)
+		}
+	case c.Negate:
+		r.errf(c.Pos, "policy %q: `negate` cannot be stored: a stored condition has no negation, so it would mean the opposite. Use the opposite operator (!=, not in, not exists) instead", pol.Name)
+	default:
+		// Stored as written (the applier copies field, operator and value),
+		// so a condition the evaluator cannot read is refused here, before
+		// it reaches a store: `in "a"` instead of `in ["a"]`, a field outside
+		// subject., resource., context. and action, or a regex, CIDR or time
+		// that does not parse.
+		cond := policy.Condition{Field: c.Field, Operator: policy.Operator(c.Operator), Value: c.Value}
+		if err := policy.ValidateCondition(cond); err != nil {
+			r.errf(c.Pos, "policy %q: %s", pol.Name, strings.TrimPrefix(err.Error(), "policy: "))
+		}
+	}
 }
 
 // sprintf wraps fmt.Sprintf without dragging fmt into hot paths if we ever

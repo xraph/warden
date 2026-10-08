@@ -1,0 +1,48 @@
+---
+title: Backup and restore
+description: What to back up, what order to restore in, and point-in-time recovery notes.
+---
+
+This page covers the Postgres store (`store/postgres`), the backend the migrations in `store/postgres/migrations.go` create. If you run SQLite, back up the database file directly (see [SQLite Store](/docs/stores/sqlite)); if you run MongoDB, use your normal `mongodump`/point-in-time tooling against the collections `store/mongo` writes to.
+
+## What to back up
+
+Eight `warden_*` tables hold every entity Warden manages:
+
+| Table | Holds |
+|---|---|
+| `warden_roles` | Roles, including `parent_id` for inheritance |
+| `warden_permissions` | Permissions (resource + action) |
+| `warden_role_permissions` | Role-to-permission attachments |
+| `warden_assignments` | Role assignments to subjects, including `granted_by` and `expires_at` |
+| `warden_relations` | ReBAC relation tuples |
+| `warden_policies` | ABAC/PBAC policies |
+| `warden_resource_types` | Resource type + permission-expression definitions |
+| `warden_check_logs` | The authorization check audit trail (append-only, see [Retention](/docs/operations/retention)) |
+
+Alongside those, Grove's migration runner keeps its own bookkeeping table, `grove_migrations` (plus a `grove_migration_locks` table used only during a migration run). Back it up too: it's what tells Warden which migrations have already applied, and losing it makes a restore ambiguous about schema state.
+
+A plain `pg_dump` of the database (or schema, if Warden shares a database with other services) captures all of this in one pass and is the simplest correct backup. If you dump table-by-table instead, include every table above plus `grove_migrations`.
+
+## Restore order
+
+`warden_check_logs` has no foreign keys and `warden_roles.parent_id` isn't a database-enforced foreign key (it's a plain `TEXT` column), so the only foreign-key dependencies that matter for restore order are:
+
+1. `warden_roles` and `warden_permissions` first (no dependencies between them).
+2. `warden_role_permissions` next: it has `ON DELETE CASCADE` foreign keys to both `warden_roles(id)` and `warden_permissions(id)`.
+3. `warden_assignments` next: its `role_id` column has an `ON DELETE CASCADE` foreign key to `warden_roles(id)`.
+4. `warden_relations`, `warden_policies`, `warden_resource_types`, `warden_check_logs`: no foreign keys, can restore in any order, any time after step 1.
+5. `grove_migrations` can restore at any point; restore it in the same transaction/snapshot as the rest so the recorded migration state matches the schema you actually restored.
+
+If you use `pg_dump`/`pg_restore` (or Postgres's own logical/physical backup tooling) against the whole database, this ordering is handled for you: the tooling restores in dependency order automatically. The explicit order above matters only if you're restoring tables individually, e.g. from CSV exports or a partial backup.
+
+## Point-in-time recovery
+
+Warden doesn't ship its own PITR tooling: it relies on Postgres's own write-ahead log (WAL) archiving and your infrastructure's snapshot/restore process (or your managed Postgres provider's PITR feature). Two things specific to Warden are worth knowing when you plan a PITR strategy:
+
+- `warden_check_logs` is append-only at the database level (a `BEFORE UPDATE` trigger, `warden_check_logs_no_update`, raises an exception on any update attempt). A PITR restore that lands before a purge or an erasure delete (see [Retention](/docs/operations/retention)) will bring back rows that were deliberately deleted for a subject or tenant erasure request. Treat that as a compliance-relevant side effect of any restore that crosses a retention or erasure event, not just a data-loss recovery.
+- A restore that lands between `disable_migrate: true` deploy steps (see [Hardening](/docs/operations/hardening) and [Upgrades and migrations](/docs/operations/upgrades-and-migrations)) can leave `grove_migrations` recording a different migration state than what your application code expects. After any PITR restore, re-run your normal migrate step (`warden apply -f <config> --store "$WARDEN_STORE_DSN"`, without `--skip-migrate`) before resuming traffic, so the schema and the application version are back in sync. It's a no-op if they already match.
+
+## Test your restores
+
+A backup you haven't restored from is a hypothesis, not a backup. Periodically restore a dump into a scratch database and run a handful of `eng.Check` calls against known role/permission/assignment fixtures to confirm the restored data produces the decisions you expect.

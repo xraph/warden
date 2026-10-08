@@ -19,6 +19,7 @@ func (a *API) registerCheckLogRoutes(router forge.Router) error {
 		forge.WithRequestSchema(ListCheckLogsRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Check log list", []*checklog.Entry{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(a.authorize("read_audit", "warden:check_log")),
 	)
 }
 

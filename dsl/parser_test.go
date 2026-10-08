@@ -1,6 +1,7 @@
 package dsl
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -174,8 +175,8 @@ policy "business-hours" {
     actions = ["read", "write"]
     resources = ["document"]
     when {
-        context.time time_after "09:00:00Z"
-        context.time time_before "17:00:00Z"
+        context.time time_after "2026-06-01T09:00:00Z"
+        context.time time_before "2026-06-01T17:00:00Z"
         subject.attributes.department == "engineering"
     }
 }
@@ -285,5 +286,224 @@ policy "x" { effect = maybe }`},
 				t.Fatalf("expected at least one parse error, got none")
 			}
 		})
+	}
+}
+
+func TestParser_PolicySubjects(t *testing.T) {
+	prog := mustParse(t, `
+warden config 1
+
+policy "p" {
+    effect = allow
+    subjects = [
+        { kind = "user" },
+        { id = "alice" },
+        { role = "admin" },
+        { kind = "user", id = "bob", role = "temp" },
+        { kind = "service" id = "ci" },
+        {},
+    ]
+}
+
+policy "none" {
+    effect = allow
+}
+`)
+	want := []SubjectMatchDecl{
+		{Kind: "user"},
+		{ID: "alice"},
+		{Role: "admin"},
+		{Kind: "user", ID: "bob", Role: "temp"},
+		{Kind: "service", ID: "ci"},
+		{},
+	}
+	got := prog.Policies[0].Subjects
+	if len(got) != len(want) {
+		t.Fatalf("subjects = %d matchers, want %d", len(got), len(want))
+	}
+	for i, m := range got {
+		if m.Kind != want[i].Kind || m.ID != want[i].ID || m.Role != want[i].Role {
+			t.Errorf("matcher %d = %+v, want %+v", i, *m, want[i])
+		}
+		if m.Pos.Line == 0 {
+			t.Errorf("matcher %d has no position", i)
+		}
+	}
+	if prog.Policies[1].Subjects != nil {
+		t.Errorf("a policy without a subjects clause has subjects %v", prog.Policies[1].Subjects)
+	}
+}
+
+func TestParser_SubjectsErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"unknown field", `subjects = [{ name = "x" }]`, `unknown subject matcher field "name"`},
+		{"not a string", `subjects = [{ kind = user }]`, "expected a string after kind ="},
+		{"not a matcher", `subjects = ["user:alice"]`, "expected a subject matcher"},
+		{"a field twice", `subjects = [{ id = "a", id = "b" }]`, `field "id" is given twice`},
+		{"no list", `subjects = { kind = "user" }`, "expected `[` to open the subjects list"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "warden config 1\npolicy \"p\" {\n    effect = allow\n    " + tc.body + "\n}\n"
+			_, errs := Parse("t.warden", []byte(src))
+			found := false
+			for _, e := range errs {
+				if strings.Contains(e.Msg, tc.want) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("want a diagnostic containing %q, got %v", tc.want, errs)
+			}
+		})
+	}
+}
+
+func TestParser_QuotedNames(t *testing.T) {
+	prog := mustParse(t, `
+warden config 1
+tenant "0f3a-tenant"
+app "my app"
+
+resource "role" {
+    relation "name": "user:*" | group#"member of"
+    relation "on call":
+    relation watcher: user
+    permission "manage it" = watcher
+}
+
+permission "warden:role:read" {
+    resource = "warden:role"
+    action = read
+}
+permission "warden:*" ("warden" : "*")
+
+role "Auditor Team" : "Base Role" {
+    name = "Auditors"
+}
+role "Base Role" {
+    name = "Base"
+}
+
+relation "role":"3f2a" "name" = user:"bob@example.com"#"member of"
+`)
+	if prog.Tenant != "0f3a-tenant" || prog.App != "my app" {
+		t.Errorf("header = %q / %q", prog.Tenant, prog.App)
+	}
+	rt := prog.ResourceTypes[0]
+	if rt.Name != "role" || rt.Relations[0].Name != "name" {
+		t.Errorf("resource = %q, first relation %q", rt.Name, rt.Relations[0].Name)
+	}
+	subj := rt.Relations[0].AllowedSubjects
+	if len(subj) != 2 || subj[0].Type != "user:*" || subj[1].Type != "group" || subj[1].Relation != "member of" {
+		t.Errorf("allowed subjects = %+v", subj)
+	}
+	if rt.Relations[1].Name != "on call" || len(rt.Relations[1].AllowedSubjects) != 0 {
+		t.Errorf("a relation with no subject types parsed as %+v", rt.Relations[1])
+	}
+	if rt.Permissions[0].Name != "manage it" {
+		t.Errorf("resource permission name = %q", rt.Permissions[0].Name)
+	}
+	p := prog.Permissions[0]
+	if p.Resource != "warden:role" || p.Action != "read" {
+		t.Errorf("warden:role:read parsed as resource %q action %q", p.Resource, p.Action)
+	}
+	if g := prog.Permissions[1]; g.Resource != "warden" || g.Action != "*" {
+		t.Errorf("warden:* parsed as resource %q action %q", g.Resource, g.Action)
+	}
+	if r := prog.Roles[0]; r.Slug != "Auditor Team" || r.Parent != "Base Role" {
+		t.Errorf("role = %q parent %q", r.Slug, r.Parent)
+	}
+	rel := prog.Relations[0]
+	if rel.ObjectType != "role" || rel.ObjectID != "3f2a" || rel.Relation != "name" ||
+		rel.SubjectType != "user" || rel.SubjectID != "bob@example.com" || rel.SubjectRelation != "member of" {
+		t.Errorf("tuple = %+v", *rel)
+	}
+}
+
+func TestParser_Grants(t *testing.T) {
+	prog := mustParse(t, `
+warden config 1
+role a {
+    grants = ["doc:read", { namespace = "eng", name = "deploy:run" }, { namespace = "", name = "doc:write" }]
+}
+role b {
+    grants = []
+}
+role c {
+    name = "C"
+}
+`)
+	a := prog.Roles[0]
+	if len(a.Grants) != 1 || a.Grants[0] != "doc:read" {
+		t.Errorf("plain grants = %v", a.Grants)
+	}
+	if len(a.QualifiedGrants) != 2 ||
+		a.QualifiedGrants[0].NamespacePath != "eng" || a.QualifiedGrants[0].Name != "deploy:run" ||
+		a.QualifiedGrants[1].NamespacePath != "" || a.QualifiedGrants[1].Name != "doc:write" {
+		t.Errorf("qualified grants = %+v %+v", a.QualifiedGrants[0], a.QualifiedGrants[1])
+	}
+	if !a.GrantsSet || !prog.Roles[1].GrantsSet {
+		t.Error("a grants clause, even an empty one, sets GrantsSet")
+	}
+	if prog.Roles[2].GrantsSet {
+		t.Error("a role without a grants clause has GrantsSet")
+	}
+
+	_, errs := Parse("t.warden", []byte("warden config 1\nrole a {\n    grants = [{ namespace = \"eng\" }]\n}\n"))
+	if len(errs) == 0 || !strings.Contains(errs[0].Msg, "needs a name") {
+		t.Errorf("a qualified grant without a name: %v", errs)
+	}
+}
+
+func TestParser_ConditionValues(t *testing.T) {
+	prog := mustParse(t, `
+warden config 1
+policy "p" {
+    effect = deny
+    when {
+        context.risk > 0.75
+        context.score <= -3
+        context.drift >= -0.5
+        subject.attributes.level in [1, 2]
+        subject.attributes.mixed in ["a", 1, true]
+        context.ip ip_in_cidr ["10.0.0.0/8"]
+        subject.name exists
+        "subject.attributes[\"team name\"]" == "core"
+        resource.owner exists true
+        subject.role not exists
+        resource.description != "x"
+    }
+}
+`)
+	conds := prog.Policies[0].Conditions
+	want := []struct {
+		field, op string
+		value     any
+	}{
+		{"context.risk", "gt", 0.75},
+		{"context.score", "lte", -3},
+		{"context.drift", "gte", -0.5},
+		{"subject.attributes.level", "in", []any{1, 2}},
+		{"subject.attributes.mixed", "in", []any{"a", 1, true}},
+		{"context.ip", "ip_in_cidr", []string{"10.0.0.0/8"}},
+		// No value: the next condition starts on its own line, even though
+		// it starts with a string.
+		{"subject.name", "exists", nil},
+		{`subject.attributes["team name"]`, "eq", "core"},
+		// A value on the operator's own line is read.
+		{"resource.owner", "exists", true},
+		{"subject.role", "not_exists", nil},
+		{"resource.description", "neq", "x"},
+	}
+	if len(conds) != len(want) {
+		t.Fatalf("conditions = %d, want %d", len(conds), len(want))
+	}
+	for i, w := range want {
+		c := conds[i]
+		if c.Field != w.field || c.Operator != w.op || !reflect.DeepEqual(c.Value, w.value) {
+			t.Errorf("condition %d = %q %s %#v, want %q %s %#v", i, c.Field, c.Operator, c.Value, w.field, w.op, w.value)
+		}
 	}
 }

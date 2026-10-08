@@ -2,6 +2,7 @@ package dsl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/xraph/warden/relation"
 	"github.com/xraph/warden/resourcetype"
 	"github.com/xraph/warden/role"
+	wardenstore "github.com/xraph/warden/store"
 )
 
 // Layout controls how `warden export` distributes a tenant's state across
@@ -101,7 +103,11 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		return ns == prefix || strings.HasPrefix(ns, prefix+"/")
 	}
 
-	rts, err := store.ListResourceTypes(ctx, &resourcetype.ListFilter{TenantID: opts.TenantID})
+	rts, err := collectPages(func(limit, offset int) ([]*resourcetype.ResourceType, error) {
+		return store.ListResourceTypes(ctx, &resourcetype.ListFilter{
+			TenantID: opts.TenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list resource types: %w", err)
 	}
@@ -112,7 +118,11 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		prog.ResourceTypes = append(prog.ResourceTypes, resourceTypeToDecl(rt))
 	}
 
-	perms, err := store.ListPermissions(ctx, &permission.ListFilter{TenantID: opts.TenantID})
+	perms, err := collectPages(func(limit, offset int) ([]*permission.Permission, error) {
+		return store.ListPermissions(ctx, &permission.ListFilter{
+			TenantID: opts.TenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list permissions: %w", err)
 	}
@@ -123,7 +133,11 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		prog.Permissions = append(prog.Permissions, permissionToDecl(p))
 	}
 
-	roles, err := store.ListRoles(ctx, &role.ListFilter{TenantID: opts.TenantID})
+	roles, err := collectPages(func(limit, offset int) ([]*role.Role, error) {
+		return store.ListRoles(ctx, &role.ListFilter{
+			TenantID: opts.TenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list roles: %w", err)
 	}
@@ -133,20 +147,42 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		}
 		decl := roleToDecl(r)
 		// Phase A.5: ListRolePermissions returns full Permission records.
-		grantPerms, gpErr := store.ListRolePermissions(ctx, r.ID)
+		grantPerms, gpErr := store.ListRolePermissions(ctx, opts.TenantID, r.ID)
 		if gpErr != nil {
 			return nil, fmt.Errorf("list grants for role %s: %w", r.Slug, gpErr)
 		}
-		grants := make([]string, 0, len(grantPerms))
+		// A role owns its grant set in the export, so `grants = []` is
+		// written even for a role with none, and removing a grant from the
+		// source revokes it.
+		decl.GrantsSet = true
+		decl.Grants = []string{}
 		for _, p := range grantPerms {
-			grants = append(grants, p.Name)
+			plain, err := grantIsPlain(ctx, store, opts.TenantID, r.NamespacePath, p)
+			if err != nil {
+				return nil, fmt.Errorf("resolve grant %s of role %s: %w", p.Name, r.Slug, err)
+			}
+			if plain {
+				decl.Grants = append(decl.Grants, p.Name)
+			} else {
+				decl.QualifiedGrants = append(decl.QualifiedGrants, &GrantRef{NamespacePath: p.NamespacePath, Name: p.Name})
+			}
 		}
-		sort.Strings(grants)
-		decl.Grants = grants
+		sort.Strings(decl.Grants)
+		sort.Slice(decl.QualifiedGrants, func(i, j int) bool {
+			a, b := decl.QualifiedGrants[i], decl.QualifiedGrants[j]
+			if a.NamespacePath != b.NamespacePath {
+				return a.NamespacePath < b.NamespacePath
+			}
+			return a.Name < b.Name
+		})
 		prog.Roles = append(prog.Roles, decl)
 	}
 
-	policies, err := store.ListPolicies(ctx, &policy.ListFilter{TenantID: opts.TenantID})
+	policies, err := collectPages(func(limit, offset int) ([]*policy.Policy, error) {
+		return store.ListPolicies(ctx, &policy.ListFilter{
+			TenantID: opts.TenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list policies: %w", err)
 	}
@@ -157,7 +193,11 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 		prog.Policies = append(prog.Policies, policyToDecl(p))
 	}
 
-	tuples, err := store.ListRelations(ctx, &relation.ListFilter{TenantID: opts.TenantID})
+	tuples, err := collectPages(func(limit, offset int) ([]*relation.Tuple, error) {
+		return store.ListRelations(ctx, &relation.ListFilter{
+			TenantID: opts.TenantID, Limit: limit, Offset: offset,
+		})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list relations: %w", err)
 	}
@@ -169,6 +209,29 @@ func BuildProgram(ctx context.Context, eng *warden.Engine, opts ExportOptions) (
 	}
 
 	return prog, nil
+}
+
+// grantIsPlain reports whether a role in roleNS can name the granted
+// permission by its name alone. The applier resolves a bare grant in the
+// role's namespace first and then at the tenant root (lookupGrant), so a
+// bare name reaches the permission only when it lives in the role's
+// namespace, or at the root with no permission of that name in the role's
+// namespace to shadow it. Any other grant is written qualified.
+func grantIsPlain(ctx context.Context, store wardenstore.Store, tenantID, roleNS string, p *permission.Permission) (bool, error) {
+	if p.NamespacePath == roleNS {
+		return true, nil
+	}
+	if p.NamespacePath != "" {
+		return false, nil
+	}
+	shadow, err := store.GetPermissionByName(ctx, tenantID, roleNS, p.Name)
+	if err != nil {
+		if errors.Is(err, warden.ErrPermissionNotFound) {
+			return true, nil
+		}
+		return false, err
+	}
+	return shadow == nil, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -352,6 +415,9 @@ func policyToDecl(p *policy.Policy) *PolicyDecl {
 		Obligations:   append([]string{}, p.Obligations...),
 		Actions:       append([]string{}, p.Actions...),
 		Resources:     append([]string{}, p.Resources...),
+	}
+	for _, sm := range p.Subjects {
+		d.Subjects = append(d.Subjects, &SubjectMatchDecl{Kind: sm.Kind, ID: sm.ID, Role: sm.Role})
 	}
 	for _, c := range p.Conditions {
 		d.Conditions = append(d.Conditions, &Condition{

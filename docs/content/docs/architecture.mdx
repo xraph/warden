@@ -27,14 +27,14 @@ warden/
 ├── store/              # Composite store interface
 │   ├── memory/         # In-memory store (development/testing)
 │   ├── postgres/       # PostgreSQL store (production)
-│   └── sqlite/         # SQLite store (embedded)
+│   ├── sqlite/         # SQLite store (embedded/edge)
+│   └── mongo/          # MongoDB store (document-oriented)
 ├── plugin/             # Plugin interfaces + registry
+│   └── auditlog/       # In-tree structured-log Audit plugin
 ├── cache/              # LRU cache with TTL
 ├── api/                # REST API handlers (forge.Router)
-├── extension/          # Forge extension entry point
-├── middleware/          # Authorization middleware
-├── audit_hook/         # Chronicle audit plugin
-└── observability/      # Prometheus metrics plugin
+├── extension/          # Forge extension entry point (metrics.go: Metrics adapter)
+└── middleware/         # Authorization middleware
 ```
 
 ## Request Flow
@@ -109,17 +109,16 @@ When `engine.Check()` is called, Warden evaluates authorization in three phases:
 
 ## Configuration
 
+`EnableRBAC`, `EnableABAC` and `EnableReBAC` are `*bool` fields that default to enabled when left `nil`; see [Check Engine](/docs/authorization/check-engine#configuration-options) for how to turn one off.
+
 ```go
 eng, _ := warden.NewEngine(
     warden.WithStore(store),
     warden.WithConfig(warden.Config{
-        EnableRBAC:    true,  // default: true
-        EnableABAC:    true,  // default: true
-        EnableReBAC:   true,  // default: true
-        MaxGraphDepth: 10,    // BFS traversal limit
+        MaxGraphDepth: 10, // BFS traversal limit, default: 10
         CacheTTL:      5 * time.Minute,
     }),
-    warden.WithPlugin(auditPlugin),
-    warden.WithPlugin(metricsPlugin),
+    warden.WithPlugin(auditPlugin),   // e.g. plugin/auditlog
+    warden.WithMetrics(metricsAdapter),
 )
 ```

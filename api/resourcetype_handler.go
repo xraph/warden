@@ -7,12 +7,17 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/resourcetype"
 )
 
 func (a *API) registerResourceTypeRoutes(router forge.Router) error {
 	g := router.Group("/v1", forge.WithGroupTags("resource-types"))
+
+	manage := a.authorize("manage", "warden:resourcetype")
+	read := a.authorize("read", "warden:resourcetype")
 
 	if err := g.POST("/resource-types", a.createResourceType,
 		forge.WithSummary("Create resource type"),
@@ -21,6 +26,7 @@ func (a *API) registerResourceTypeRoutes(router forge.Router) error {
 		forge.WithRequestSchema(CreateResourceTypeRequest{}),
 		forge.WithCreatedResponse(&resourcetype.ResourceType{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -30,6 +36,7 @@ func (a *API) registerResourceTypeRoutes(router forge.Router) error {
 		forge.WithOperationID("getResourceType"),
 		forge.WithResponseSchema(http.StatusOK, "Resource type details", &resourcetype.ResourceType{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	); err != nil {
 		return err
 	}
@@ -39,6 +46,7 @@ func (a *API) registerResourceTypeRoutes(router forge.Router) error {
 		forge.WithOperationID("deleteResourceType"),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -49,6 +57,7 @@ func (a *API) registerResourceTypeRoutes(router forge.Router) error {
 		forge.WithRequestSchema(ListResourceTypesRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Resource type list", []*resourcetype.ResourceType{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	)
 }
 
@@ -64,6 +73,7 @@ func (a *API) createResourceType(ctx forge.Context, req *CreateResourceTypeReque
 	}
 
 	appID, tenantID := scopeFromForgeContext(ctx)
+	actor, _ := warden.ActorFromContext(ctx.Context())
 	now := time.Now()
 	rt := &resourcetype.ResourceType{
 		ID:          id.NewResourceTypeID(),
@@ -72,6 +82,8 @@ func (a *API) createResourceType(ctx forge.Context, req *CreateResourceTypeReque
 		Name:        req.Name,
 		Description: req.Description,
 		Metadata:    req.Metadata,
+		CreatedBy:   actor.ID,
+		UpdatedBy:   actor.ID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -93,7 +105,14 @@ func (a *API) createResourceType(ctx forge.Context, req *CreateResourceTypeReque
 		return nil, mapError(err)
 	}
 
-	return rt, ctx.JSON(http.StatusCreated, rt)
+	if a.eng.Plugins() != nil {
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: now, Action: "resourcetype.created",
+			TenantID: tenantID, EntityID: rt.ID.String(), Entity: rt,
+		})
+	}
+
+	return nil, ctx.JSON(http.StatusCreated, rt)
 }
 
 func (a *API) getResourceType(ctx forge.Context, _ *GetResourceTypeRequest) (*resourcetype.ResourceType, error) {
@@ -102,12 +121,14 @@ func (a *API) getResourceType(ctx forge.Context, _ *GetResourceTypeRequest) (*re
 		return nil, forge.BadRequest(fmt.Sprintf("invalid resource type ID: %v", err))
 	}
 
-	rt, err := a.eng.Store().GetResourceType(ctx.Context(), rtID)
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	rt, err := a.eng.Store().GetResourceType(ctx.Context(), tenantID, rtID)
 	if err != nil {
 		return nil, mapError(err)
 	}
 
-	return rt, ctx.JSON(http.StatusOK, rt)
+	return rt, nil
 }
 
 func (a *API) deleteResourceType(ctx forge.Context, _ *GetResourceTypeRequest) (*struct{}, error) {
@@ -116,8 +137,23 @@ func (a *API) deleteResourceType(ctx forge.Context, _ *GetResourceTypeRequest) (
 		return nil, forge.BadRequest(fmt.Sprintf("invalid resource type ID: %v", err))
 	}
 
-	if err := a.eng.Store().DeleteResourceType(ctx.Context(), rtID); err != nil {
+	_, tenantID := scopeFromForgeContext(ctx)
+	before, getErr := a.eng.Store().GetResourceType(ctx.Context(), tenantID, rtID)
+
+	if err := a.eng.Store().DeleteResourceType(ctx.Context(), tenantID, rtID); err != nil {
 		return nil, mapError(err)
+	}
+
+	if a.eng.Plugins() != nil {
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		ev := plugin.Event{
+			Actor: actor, At: time.Now(), Action: "resourcetype.deleted",
+			TenantID: tenantID, EntityID: rtID.String(),
+		}
+		if getErr == nil {
+			ev.Before = before
+		}
+		a.eng.Plugins().EmitAudit(ctx.Context(), ev)
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)

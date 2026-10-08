@@ -12,12 +12,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: 'Dry run — validate everything but do not publish'
-        required: false
-        type: boolean
-        default: false
-      skip_tests:
-        description: 'Skip tests (use for hotfixes when tests already passed)'
+        description: 'Dry run: validate everything but do not publish'
         required: false
         type: boolean
         default: false
@@ -28,8 +23,7 @@ on:
         default: false
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 defaults:
   run:
@@ -38,21 +32,24 @@ defaults:
 # -------------------------------------------------------------------
 # Job: detect
 # Normalises inputs from both tag-push and workflow_dispatch triggers
-# into a single set of outputs consumed by downstream jobs.
+# into a single set of outputs consumed by downstream jobs. Read-only:
+# the release tag for a manual dispatch is created in release-cli, after
+# the tests have passed.
 # -------------------------------------------------------------------
 jobs:
   detect:
     name: Detect release parameters
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       is_prerelease: ${{ steps.resolve.outputs.is_prerelease }}
       dry_run: ${{ steps.resolve.outputs.dry_run }}
-      skip_tests: ${{ steps.resolve.outputs.skip_tests }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -60,13 +57,11 @@ jobs:
         id: resolve
         run: |
           DRY_RUN="false"
-          SKIP_TESTS="false"
 
           # ---- workflow_dispatch path ----
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
             DRY_RUN="${{ inputs.dry_run }}"
-            SKIP_TESTS="${{ inputs.skip_tests }}"
             IS_PRERELEASE="${{ inputs.prerelease }}"
 
             # Validate semver
@@ -112,7 +107,6 @@ jobs:
             echo "tag=$TAG"
             echo "is_prerelease=$IS_PRERELEASE"
             echo "dry_run=$DRY_RUN"
-            echo "skip_tests=$SKIP_TESTS"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -123,51 +117,36 @@ jobs:
             echo "| Tag | \`$TAG\` |"
             echo "| Pre-release | $IS_PRERELEASE |"
             echo "| Dry run | $DRY_RUN |"
-            echo "| Skip tests | $SKIP_TESTS |"
           } >> "$GITHUB_STEP_SUMMARY"
-
-      # For manual dispatch, create & push the tag if it doesn't exist
-      - name: Create tag (manual dispatch)
-        if: github.event_name == 'workflow_dispatch' && steps.resolve.outputs.dry_run == 'false'
-        run: |
-          TAG="${{ steps.resolve.outputs.tag }}"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists — skipping creation"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag "$TAG"
-            git push origin "$TAG"
-            echo "Created and pushed tag $TAG"
-          fi
 
   # -------------------------------------------------------------------
   # Job: test
   # Runs the full test matrix against the module being released.
-  # Skippable via workflow_dispatch.
+  # No longer skippable: every release build runs the tests.
   # -------------------------------------------------------------------
   test:
     name: Test (${{ matrix.os }})
     needs: detect
-    if: needs.detect.outputs.skip_tests == 'false'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           check-latest: true
 
       - name: Cache Go modules
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
@@ -184,36 +163,75 @@ jobs:
   # -------------------------------------------------------------------
   # Job: release-cli
   # Runs GoReleaser to build CLI archives, generate the changelog,
-  # and create the GitHub Release.
+  # sign and attest artifacts, and create the GitHub Release. Gated on
+  # both a non-dry-run and a green test job. There is no path that
+  # publishes without tests passing.
   # -------------------------------------------------------------------
   release-cli:
     name: Release CLI (GoReleaser)
     needs: [detect, test]
-    if: |
-      always() &&
-      needs.detect.outputs.dry_run == 'false' &&
-      needs.detect.result == 'success' &&
-      (needs.test.result == 'success' || needs.test.result == 'skipped')
+    if: needs.detect.outputs.dry_run == 'false' && needs.test.result == 'success'
     runs-on: ubuntu-latest
+    environment: Production
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
+      # For manual dispatch, create and push the tag here, not in detect. This
+      # job only runs after the tests pass and the run is not a dry run, so a
+      # failing test can never leave a release tag behind, and the detect job
+      # keeps read-only access to the repository.
+      - name: Create tag (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ needs.detect.outputs.tag }}
+        run: |
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping creation"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+            echo "Created and pushed tag $TAG"
+          fi
+
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          check-latest: true
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
           version: '~> v2'
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GORELEASER_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
 
       - name: Notify Go proxy
         run: |
@@ -234,24 +252,27 @@ jobs:
       always() &&
       needs.detect.outputs.dry_run == 'true' &&
       needs.detect.result == 'success' &&
-      (needs.test.result == 'success' || needs.test.result == 'skipped')
+      needs.test.result == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          check-latest: true
 
       - name: Validate module builds
         run: go build ./...
 
       - name: GoReleaser dry run
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
           version: '~> v2'
@@ -277,6 +298,8 @@ jobs:
     needs: [detect, test, release-cli, dry-run]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Generate summary
         run: |
@@ -289,7 +312,7 @@ jobs:
             echo ""
 
             if [ "$DRY" = "true" ]; then
-              echo "> **Dry run** — nothing was published."
+              echo "> **Dry run**: nothing was published."
               echo ""
             fi
 

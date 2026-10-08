@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/policy"
+	"github.com/xraph/warden/relation"
 	"github.com/xraph/warden/resourcetype"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store"
@@ -34,6 +35,7 @@ func RunUniquenessContract(t *testing.T, mk MakeStore) {
 	t.Run("Policy", func(t *testing.T) { runPolicyUniqueness(t, mk) })
 	t.Run("ResourceType", func(t *testing.T) { runResourceTypeUniqueness(t, mk) })
 	t.Run("Assignment", func(t *testing.T) { runAssignmentUniqueness(t, mk) })
+	t.Run("Relation", func(t *testing.T) { runRelationUniqueness(t, mk) })
 }
 
 // ───── Role ─────
@@ -238,9 +240,51 @@ func runAssignmentUniqueness(t *testing.T, mk MakeStore) {
 	})
 }
 
+// ───── Relation ─────
+
+func runRelationUniqueness(t *testing.T, mk MakeStore) {
+	t.Run("DuplicateInSameScope_Rejected", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+
+		mkTuple := func() *relation.Tuple {
+			return &relation.Tuple{
+				ID: id.NewRelationID(), TenantID: "t1", NamespacePath: "eng",
+				ObjectType: "doc", ObjectID: "d1", Relation: "viewer",
+				SubjectType: "user", SubjectID: "alice",
+			}
+		}
+		if err := s.CreateRelation(ctx, mkTuple()); err != nil {
+			t.Fatalf("first create: %v", err)
+		}
+		err := s.CreateRelation(ctx, mkTuple())
+		if !errors.Is(err, warden.ErrDuplicateRelation) {
+			t.Fatalf("expected ErrDuplicateRelation, got %v", err)
+		}
+	})
+
+	t.Run("SameTupleInDifferentNamespace_Allowed", func(t *testing.T) {
+		s, cleanup := mk(t)
+		defer cleanup()
+		ctx := context.Background()
+
+		for _, ns := range []string{"", "eng"} {
+			err := s.CreateRelation(ctx, &relation.Tuple{
+				ID: id.NewRelationID(), TenantID: "t1", NamespacePath: ns,
+				ObjectType: "doc", ObjectID: "d1", Relation: "viewer",
+				SubjectType: "user", SubjectID: "alice",
+			})
+			if err != nil {
+				t.Fatalf("create in ns %q: %v", ns, err)
+			}
+		}
+	})
+}
+
 // seedRole creates a role and returns its ID. Used by tests that
 // need a foreign-key target.
-func seedRole(t *testing.T, s store.Store, tenantID, namespacePath, slug string) id.RoleID { //nolint:unparam // shared test seed helper; tenantID kept as a parameter for clarity
+func seedRole(t *testing.T, s store.Store, tenantID, namespacePath, slug string) id.RoleID {
 	t.Helper()
 	r := &role.Role{
 		ID: id.NewRoleID(), TenantID: tenantID, NamespacePath: namespacePath,

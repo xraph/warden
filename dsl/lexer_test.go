@@ -1,7 +1,10 @@
 package dsl
 
 import (
+	"os"
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -210,4 +213,38 @@ func lexAll(t *testing.T, src string) []Token {
 		}
 	}
 	return toks
+}
+
+// TestTreeSitterFieldSegmentsMatchTheKeywords keeps the tree-sitter
+// grammar's _field_segment in step with the keyword table: parseFieldPath
+// accepts every keyword as a path segment (isWord), so the editor grammar
+// must too.
+func TestTreeSitterFieldSegmentsMatchTheKeywords(t *testing.T) {
+	src, err := os.ReadFile("../editor/tree-sitter-warden/grammar.js")
+	if err != nil {
+		t.Skipf("grammar not found: %v", err)
+	}
+	body := string(src)
+	start := strings.Index(body, "_field_segment: $ => choice(")
+	if start < 0 {
+		t.Fatal("grammar.js has no _field_segment rule")
+	}
+	end := strings.Index(body[start:], "), $.identifier)")
+	if end < 0 {
+		t.Fatal("cannot find the end of _field_segment's keyword list")
+	}
+	listed := map[string]bool{}
+	for _, m := range regexp.MustCompile(`'([a-z_]+)'`).FindAllStringSubmatch(body[start:start+end], -1) {
+		listed[m[1]] = true
+	}
+	for kw := range keywords {
+		if !listed[kw] {
+			t.Errorf("keyword %q is a valid field segment in Go but missing from grammar.js _field_segment", kw)
+		}
+	}
+	for kw := range listed {
+		if _, ok := keywords[kw]; !ok {
+			t.Errorf("grammar.js _field_segment lists %q, which is not a keyword", kw)
+		}
+	}
 }

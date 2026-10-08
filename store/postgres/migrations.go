@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/xraph/grove/migrate"
 )
@@ -10,6 +12,38 @@ import (
 // It can be registered with the grove extension for orchestrated migration
 // management (locking, version tracking, rollback support).
 var Migrations = migrate.NewGroup("warden")
+
+// uniqueConstraintGuard returns SQL that fails the migration if a UNIQUE
+// constraint matching columns still exists on table.
+//
+// It follows a `DROP CONSTRAINT IF EXISTS <name>` in a migration that is
+// swapping one unique key for a wider one. The IF EXISTS makes the drop
+// idempotent under a retry, but idempotent-by-silently-doing-nothing is
+// exactly the failure mode this guards: if the constraint's actual name
+// ever drifts from what the migration assumes (a hand-edited schema, a
+// differently-named constraint left over from a partial run), the DROP
+// becomes a no-op and the migration proceeds as if the swap happened when
+// the old, narrower constraint is still live. This checks the constraint's
+// actual definition, not its name, so it catches that case regardless of
+// what the leftover constraint happens to be called.
+func uniqueConstraintGuard(table string, columns ...string) string {
+	def := "UNIQUE (" + strings.Join(columns, ", ") + ")"
+	msg := fmt.Sprintf("warden migration: unique constraint %s on %s still present after DROP CONSTRAINT", def, table)
+	return fmt.Sprintf(`
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    WHERE t.relname = '%s'
+      AND c.contype = 'u'
+      AND pg_get_constraintdef(c.oid) = '%s'
+  ) THEN
+    RAISE EXCEPTION '%s';
+  END IF;
+END $$;
+`, table, def, msg)
+}
 
 func init() {
 	Migrations.MustRegister(
@@ -238,8 +272,8 @@ CREATE INDEX IF NOT EXISTS idx_warden_rtypes_tenant ON warden_resource_types (te
 			Up: func(ctx context.Context, exec migrate.Executor) error {
 				_, err := exec.Exec(ctx, `
 ALTER TABLE warden_role_permissions
-    ADD COLUMN perm_namespace_path TEXT,
-    ADD COLUMN perm_name           TEXT;
+    ADD COLUMN IF NOT EXISTS perm_namespace_path TEXT,
+    ADD COLUMN IF NOT EXISTS perm_name           TEXT;
 
 UPDATE warden_role_permissions rp
 SET perm_namespace_path = p.namespace_path,
@@ -251,8 +285,8 @@ ALTER TABLE warden_role_permissions
     ALTER COLUMN perm_namespace_path SET NOT NULL,
     ALTER COLUMN perm_name           SET NOT NULL;
 
-ALTER TABLE warden_role_permissions DROP CONSTRAINT warden_role_permissions_pkey;
-ALTER TABLE warden_role_permissions DROP COLUMN permission_id;
+ALTER TABLE warden_role_permissions DROP CONSTRAINT IF EXISTS warden_role_permissions_pkey;
+ALTER TABLE warden_role_permissions DROP COLUMN IF EXISTS permission_id;
 
 ALTER TABLE warden_role_permissions
     ADD PRIMARY KEY (role_id, perm_namespace_path, perm_name);
@@ -265,7 +299,7 @@ CREATE INDEX idx_warden_role_perms_perm
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
 				_, err := exec.Exec(ctx, `
-ALTER TABLE warden_role_permissions ADD COLUMN permission_id TEXT;
+ALTER TABLE warden_role_permissions ADD COLUMN IF NOT EXISTS permission_id TEXT;
 
 UPDATE warden_role_permissions rp
 SET permission_id = p.id
@@ -278,10 +312,10 @@ WHERE rp.role_id = r.id;
 
 ALTER TABLE warden_role_permissions ALTER COLUMN permission_id SET NOT NULL;
 
-ALTER TABLE warden_role_permissions DROP CONSTRAINT warden_role_permissions_pkey;
+ALTER TABLE warden_role_permissions DROP CONSTRAINT IF EXISTS warden_role_permissions_pkey;
 ALTER TABLE warden_role_permissions
-    DROP COLUMN perm_namespace_path,
-    DROP COLUMN perm_name;
+    DROP COLUMN IF EXISTS perm_namespace_path,
+    DROP COLUMN IF EXISTS perm_name;
 ALTER TABLE warden_role_permissions ADD PRIMARY KEY (role_id, permission_id);
 
 DROP INDEX IF EXISTS idx_warden_role_perms_perm;
@@ -295,13 +329,13 @@ CREATE INDEX idx_warden_role_perms_perm ON warden_role_permissions (permission_i
 			Version: "20260101000002",
 			Up: func(ctx context.Context, exec migrate.Executor) error {
 				_, err := exec.Exec(ctx, `
-ALTER TABLE warden_roles            ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
-ALTER TABLE warden_permissions      ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
-ALTER TABLE warden_policies         ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
-ALTER TABLE warden_resource_types   ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
-ALTER TABLE warden_assignments      ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
-ALTER TABLE warden_relations        ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
-ALTER TABLE warden_check_logs       ADD COLUMN namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_roles            ADD COLUMN IF NOT EXISTS namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_permissions      ADD COLUMN IF NOT EXISTS namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_policies         ADD COLUMN IF NOT EXISTS namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_resource_types   ADD COLUMN IF NOT EXISTS namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_assignments      ADD COLUMN IF NOT EXISTS namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_relations        ADD COLUMN IF NOT EXISTS namespace_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE warden_check_logs       ADD COLUMN IF NOT EXISTS namespace_path TEXT NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_warden_roles_ns         ON warden_roles         (tenant_id, namespace_path);
 CREATE INDEX IF NOT EXISTS idx_warden_perms_ns         ON warden_permissions   (tenant_id, namespace_path);
@@ -337,14 +371,14 @@ ALTER TABLE warden_check_logs       DROP COLUMN IF EXISTS namespace_path;
 			Version: "20260101000001",
 			Up: func(ctx context.Context, exec migrate.Executor) error {
 				_, err := exec.Exec(ctx, `
-ALTER TABLE warden_roles ADD COLUMN parent_slug TEXT;
+ALTER TABLE warden_roles ADD COLUMN IF NOT EXISTS parent_slug TEXT;
 
 UPDATE warden_roles c
 SET parent_slug = p.slug
 FROM warden_roles p
 WHERE c.parent_id = p.id AND c.tenant_id = p.tenant_id;
 
-ALTER TABLE warden_roles DROP COLUMN parent_id;
+ALTER TABLE warden_roles DROP COLUMN IF EXISTS parent_id;
 
 ALTER TABLE warden_roles
     ADD CONSTRAINT warden_roles_parent_fk
@@ -365,14 +399,14 @@ CREATE INDEX IF NOT EXISTS idx_warden_roles_parent_slug ON warden_roles (tenant_
 ALTER TABLE warden_roles DROP CONSTRAINT IF EXISTS warden_roles_parent_fk;
 DROP INDEX IF EXISTS idx_warden_roles_parent_slug;
 
-ALTER TABLE warden_roles ADD COLUMN parent_id TEXT;
+ALTER TABLE warden_roles ADD COLUMN IF NOT EXISTS parent_id TEXT;
 
 UPDATE warden_roles c
 SET parent_id = p.id
 FROM warden_roles p
 WHERE c.parent_slug = p.slug AND c.tenant_id = p.tenant_id;
 
-ALTER TABLE warden_roles DROP COLUMN parent_slug;
+ALTER TABLE warden_roles DROP COLUMN IF EXISTS parent_slug;
 
 CREATE INDEX IF NOT EXISTS idx_warden_roles_parent ON warden_roles (parent_id);
 `)
@@ -385,9 +419,9 @@ CREATE INDEX IF NOT EXISTS idx_warden_roles_parent ON warden_roles (parent_id);
 			Up: func(ctx context.Context, exec migrate.Executor) error {
 				_, err := exec.Exec(ctx, `
 ALTER TABLE warden_policies
-    ADD COLUMN not_before  TIMESTAMPTZ,
-    ADD COLUMN not_after   TIMESTAMPTZ,
-    ADD COLUMN obligations JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ADD COLUMN IF NOT EXISTS not_before  TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS not_after   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS obligations JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE INDEX IF NOT EXISTS idx_warden_policies_window
     ON warden_policies (tenant_id, namespace_path)
@@ -446,7 +480,7 @@ CREATE INDEX IF NOT EXISTS idx_warden_clogs_created ON warden_check_logs (create
 			Name:    "namespace_scoped_uniqueness",
 			Version: "20260201000001",
 			Up: func(ctx context.Context, exec migrate.Executor) error {
-				_, err := exec.Exec(ctx, `
+				sql := `
 -- warden_roles: drop (tenant_id, slug); add (tenant_id, namespace_path, slug).
 -- The old constraint was created without an explicit name, so its auto-name
 -- follows Postgres's default <table>_<col>_..._<col>_key pattern.
@@ -502,7 +536,13 @@ ALTER TABLE warden_assignments
 ALTER TABLE warden_assignments
     ADD CONSTRAINT warden_assignments_scope_key
     UNIQUE (tenant_id, namespace_path, role_id, subject_kind, subject_id, resource_type, resource_id);
-`)
+` +
+					uniqueConstraintGuard("warden_roles", "tenant_id", "slug") +
+					uniqueConstraintGuard("warden_permissions", "tenant_id", "name") +
+					uniqueConstraintGuard("warden_policies", "tenant_id", "name") +
+					uniqueConstraintGuard("warden_resource_types", "tenant_id", "name") +
+					uniqueConstraintGuard("warden_assignments", "tenant_id", "role_id", "subject_kind", "subject_id", "resource_type", "resource_id")
+				_, err := exec.Exec(ctx, sql)
 				return err
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
@@ -530,6 +570,189 @@ ALTER TABLE warden_resource_types   ADD  CONSTRAINT warden_resource_types_tenant
 ALTER TABLE warden_assignments      DROP CONSTRAINT IF EXISTS warden_assignments_scope_key;
 ALTER TABLE warden_assignments      ADD  CONSTRAINT warden_assignments_tenant_id_role_id_subject_kind_subject_i_key
     UNIQUE (tenant_id, role_id, subject_kind, subject_id, resource_type, resource_id);
+`)
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "check_logs_v2",
+			Version: "20260922000003",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Columns an auditor needs to reconstruct a decision without
+				// replaying the check, plus the index the audit UI reads by.
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_check_logs
+    ADD COLUMN IF NOT EXISTS matched_by  JSONB NOT NULL DEFAULT '[]',
+    ADD COLUMN IF NOT EXISTS obligations JSONB NOT NULL DEFAULT '[]',
+    ADD COLUMN IF NOT EXISTS request_id  TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS trace_id    TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS cached      BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS error       TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_warden_clogs_tenant_created
+    ON warden_check_logs (tenant_id, created_at DESC);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_warden_clogs_tenant_created;
+
+ALTER TABLE warden_check_logs
+    DROP COLUMN IF EXISTS matched_by,
+    DROP COLUMN IF EXISTS obligations,
+    DROP COLUMN IF EXISTS request_id,
+    DROP COLUMN IF EXISTS trace_id,
+    DROP COLUMN IF EXISTS cached,
+    DROP COLUMN IF EXISTS error;
+`)
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "relations_namespace_unique",
+			Version: "20260922000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				sql := `
+-- The original UNIQUE on warden_relations was declared inline in
+-- CREATE TABLE with no explicit name, before namespace_path existed, so
+-- Postgres auto-named it and then truncated that name to fit
+-- NAMEDATALEN (63 bytes). Rather than hand-compute the truncation, find
+-- the constraint by its actual definition and drop it by whatever name it
+-- landed on.
+DO $$
+DECLARE
+  cname text;
+BEGIN
+  SELECT c.conname INTO cname
+  FROM pg_constraint c
+  JOIN pg_class t ON t.oid = c.conrelid
+  WHERE t.relname = 'warden_relations'
+    AND c.contype = 'u'
+    AND pg_get_constraintdef(c.oid) = 'UNIQUE (tenant_id, object_type, object_id, relation, subject_type, subject_id, subject_relation)';
+  IF cname IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE warden_relations DROP CONSTRAINT %I', cname);
+  END IF;
+END $$;
+
+ALTER TABLE warden_relations
+    ADD CONSTRAINT warden_relations_scope_key
+    UNIQUE (tenant_id, namespace_path, object_type, object_id, relation, subject_type, subject_id, subject_relation);
+` +
+					uniqueConstraintGuard("warden_relations", "tenant_id", "object_type", "object_id", "relation", "subject_type", "subject_id", "subject_relation")
+				_, err := exec.Exec(ctx, sql)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_relations DROP CONSTRAINT IF EXISTS warden_relations_scope_key;
+ALTER TABLE warden_relations
+    ADD CONSTRAINT warden_relations_tenant_id_object_type_object_id_relation_su_key
+    UNIQUE (tenant_id, object_type, object_id, relation, subject_type, subject_id, subject_relation);
+`)
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "role_permissions_tenant",
+			Version: "20260922000002",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_role_permissions
+    ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+
+UPDATE warden_role_permissions rp
+SET tenant_id = r.tenant_id
+FROM warden_roles r
+WHERE rp.role_id = r.id AND rp.tenant_id = '';
+
+CREATE INDEX IF NOT EXISTS idx_warden_role_perms_tenant_perm
+    ON warden_role_permissions (tenant_id, perm_namespace_path, perm_name);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_warden_role_perms_tenant_perm;
+ALTER TABLE warden_role_permissions DROP COLUMN IF EXISTS tenant_id;
+`)
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "actor_columns",
+			Version: "20260922000004",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Every admin mutation must record who made it. Assignments
+				// already carry granted_by; this adds the equivalent
+				// created_by/updated_by pair to the remaining mutable
+				// entities. Relations have no update path, so created_by is
+				// the only column there.
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_roles
+    ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS updated_by TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE warden_permissions
+    ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS updated_by TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE warden_policies
+    ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS updated_by TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE warden_resource_types
+    ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS updated_by TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE warden_relations
+    ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '';
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE warden_roles          DROP COLUMN IF EXISTS created_by, DROP COLUMN IF EXISTS updated_by;
+ALTER TABLE warden_permissions    DROP COLUMN IF EXISTS created_by, DROP COLUMN IF EXISTS updated_by;
+ALTER TABLE warden_policies       DROP COLUMN IF EXISTS created_by, DROP COLUMN IF EXISTS updated_by;
+ALTER TABLE warden_resource_types DROP COLUMN IF EXISTS created_by, DROP COLUMN IF EXISTS updated_by;
+ALTER TABLE warden_relations      DROP COLUMN IF EXISTS created_by;
+`)
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "check_logs_indexes",
+			Version: "20260922000005",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// idx_warden_clogs_tenant is redundant: every query that used
+				// it is also served by idx_warden_clogs_tenant_created's
+				// leading column. Also make the table append-only: audit
+				// integrity depends on a logged decision never being edited
+				// after the fact. Deletes stay allowed so retention/purge
+				// (PurgeCheckLogs) keeps working.
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_warden_clogs_tenant;
+
+CREATE OR REPLACE FUNCTION warden_check_logs_immutable() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'warden_check_logs is append-only';
+END
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS warden_check_logs_no_update ON warden_check_logs;
+CREATE TRIGGER warden_check_logs_no_update
+    BEFORE UPDATE ON warden_check_logs
+    FOR EACH ROW EXECUTE FUNCTION warden_check_logs_immutable();
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP TRIGGER IF EXISTS warden_check_logs_no_update ON warden_check_logs;
+DROP FUNCTION IF EXISTS warden_check_logs_immutable();
+
+CREATE INDEX IF NOT EXISTS idx_warden_clogs_tenant ON warden_check_logs (tenant_id);
 `)
 				return err
 			},

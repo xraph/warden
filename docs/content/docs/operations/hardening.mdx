@@ -1,0 +1,115 @@
+---
+title: Hardening
+description: Running Warden's management API safely in production.
+---
+
+Warden's management API can grant roles, write relation tuples, and read the audit log. Treat it like any other privileged admin surface: TLS in front of it, authentication on, and the fewest routes exposed that your deployment actually needs.
+
+## Put TLS at the host, not in Warden
+
+Warden doesn't terminate TLS itself: the `api.API` handler is a plain `http.Handler` mounted on `forge.Router`. Terminate TLS at your load balancer, ingress, or reverse proxy in front of the Forge app, the same way you would for any other Forge route. Never expose the `base_path` (default `/warden`) over plaintext HTTP outside a network you fully control.
+
+## Keep authentication on
+
+`auth.require_identity` defaults to `true`: every route under `base_path` gets `401` for an unauthenticated caller and `403` for one without the mapped permission (`warden:<entity>` + `manage`/`read`/`check`/`read_audit`; see [Forge Extension](/docs/integration/forge-extension#rest-api-endpoints)). Leave it on in production.
+
+Setting it to `false` is refused unless you also call `extension.WithInsecureAllowUnauthenticatedRoutes()`:
+
+```go
+wardenext.New(
+    wardenext.WithConfig(wardenext.Config{
+        Auth: wardenext.AuthConfig{RequireIdentity: false},
+    }),
+    wardenext.WithInsecureAllowUnauthenticatedRoutes(),
+)
+```
+
+That option exists for local development and test harnesses, not production: without an identity check, any network peer that can reach `base_path` could grant itself roles or read the audit log. If you need an open check endpoint for a trusted internal caller, use the narrower `auth.allow_anonymous_checks: true` instead: it only opens `/v1/authz/check`, `/v1/authz/enforce`, and `/v1/authz/batch-check`, and every other route still requires identity.
+
+## Grant yourself access with BootstrapAdmin
+
+Because authentication is on by default, a freshly registered extension has no role holder: nobody can call the management API until something grants a role. Call `Extension.BootstrapAdmin(ctx, tenantID, subject)` once per tenant, right after `Start`, to create the idempotent `warden-admin` system role and assign it to a known subject (see [Forge Extension](/docs/integration/forge-extension#granting-yourself-access-bootstrapadmin)). Do this from a deploy step or an init container you control, not from an open route.
+
+## The dashboard is a second door
+
+The Forge dashboard talks to Warden through a contract path, separate from the REST routes under `base_path`. Its commands can create, edit and delete roles and permissions, replace a role's grants, run maintenance and flush the cache. `auth.require_identity` and `disable_routes` don't touch it.
+
+Warden gates it the same way it gates REST. Every dashboard intent, reads included, needs a signed-in dashboard user and an engine decision for that user in the configured tenant. A request with no user is refused, even when `dashboard.tenant_id` is set. Here's what each intent asks the engine:
+
+| Intents | Action | Resource |
+| --- | --- | --- |
+| `roles.list`, `roles.detail` | `read` | `warden:role` |
+| `roles.create`, `roles.update`, `roles.delete`, `roles.attachPermission`, `roles.detachPermission`, `roles.setPermissions` | `manage` | `warden:role` |
+| `permissions.list`, `permissions.detail` | `read` | `warden:permission` |
+| `permissions.create`, `permissions.update`, `permissions.delete` | `manage` | `warden:permission` |
+| `overview.recentChecks` | `read_audit` | `warden:check_log` |
+| `overview.stats`, `namespaces.list` | `read` | `warden:overview` |
+| `config.detail` | `read` | `warden:config` |
+| `maintenance.run`, `maintenance.cacheInvalidate` | `manage` | `warden:maintenance` |
+
+Three of those resources exist only on the dashboard: `warden:overview`, `warden:config` and `warden:maintenance`. `BootstrapAdmin` grants them along with the rest, so run it again on any tenant you bootstrapped before this change (it's idempotent, and only the missing grants are added). Give `warden:maintenance:manage` on purpose and sparingly: `maintenance.run` deletes the caller's tenant's expired assignments and, when a check log retention is in effect, that tenant's check log entries older than it. Other tenants aren't touched, but with a retention in effect it's a delete of audit rows.
+
+Dashboard writes are audited like REST ones. Each emits the same typed hook and an `Audit` event with the actor set to `{Kind: "user", ID: <dashboard subject>, Via: "dashboard"}`, and a cached decision for the tenant is flushed straight away. `maintenance.run` and `maintenance.cacheInvalidate` emit `maintenance.run` and `maintenance.cache_invalidated`.
+
+If your dashboard has auth turned off, nobody can sign in, so every intent is refused. That's the safe outcome. Turn dashboard auth on before you set `dashboard.tenant_id`.
+
+## SDK-only deployments: disable_routes
+
+If your application only ever calls the engine in-process (`eng.Check`, middleware) and never needs the HTTP management API, set `disable_routes: true`. That removes the entire attack surface of the management API: there's nothing to authenticate against because nothing is mounted:
+
+```yaml
+extensions:
+  warden:
+    disable_routes: true
+```
+
+If you later mount the API yourself with `ext.Handler()` or `ext.RegisterRoutes(router)`, `auth.require_identity: false` still needs `WithInsecureAllowUnauthenticatedRoutes()`: without it, `Handler` panics and `RegisterRoutes` returns an error.
+
+`ext.Handler()` gives you a standalone `http.Handler` on a router of its own. It serves the API at `/v1/...`, plus the AuthZEN endpoints at `/access/v1/...`, with no base path, and it never touches your app's router. Put your own prefix in front of it: `http.StripPrefix("/authz", ext.Handler())` serves `/authz/v1/roles` and `/authz/access/v1/evaluation`.
+
+## Lock down declarative apply in production
+
+If you use the `.warden` DSL with `declarative_on_start: true`, also set `declarative_strict: true` in production:
+
+```yaml
+extensions:
+  warden:
+    declarative_on_start: true
+    declarative_strict: true
+```
+
+With `declarative_strict: false` (the default), a bad `.warden` source logs a warning and the extension starts anyway. That's convenient in development, but it means a broken or malicious config change can silently fail to apply while the app keeps running on stale state. `declarative_strict: true` turns that into a startup failure, so your deploy pipeline catches a bad apply before anyone has to ask why a permission doesn't exist.
+
+## Separate migrations from application startup
+
+`disable_migrate` defaults to `false`, which means every replica that starts runs `store.Migrate(ctx)` before serving traffic. That's fine for a single instance or a dev environment, but in a multi-replica production deployment, running schema migrations from N concurrently-starting replicas is unnecessary contention against the migration lock table. Set `disable_migrate: true` and run migrations as a separate, single step in your deploy pipeline instead:
+
+```yaml
+extensions:
+  warden:
+    disable_migrate: true
+```
+
+Use the `warden` CLI with `WARDEN_STORE_DSN` set to the same DSN your app connects with:
+
+```bash
+export WARDEN_STORE_DSN="postgres://user:pass@host/db"
+warden apply -f ./config.warden --store "$WARDEN_STORE_DSN"
+```
+
+`warden apply` runs the store's migrations before applying (pass `--skip-migrate` to skip that and only apply). Prefer `WARDEN_STORE_DSN` over `--store` for a Postgres DSN specifically, so the password doesn't land in shell history or show up in `ps`. See [Upgrades and migrations](/docs/operations/upgrades-and-migrations) for the full migration story.
+
+## Network placement of the database
+
+The store backends (`store/postgres`, `store/sqlite`, `store/mongo`) connect directly to your database with no built-in network policy of their own. That's your infrastructure's job. Put the database on a private network reachable only from the application tier, not the public internet, and use `postgres.WithStatementTimeout` (see [Upgrades and migrations](/docs/operations/upgrades-and-migrations)) to bound how long a single query can hold a connection.
+
+## Summary checklist
+
+- TLS terminated in front of the app, never plaintext `base_path` outside a trusted network.
+- `auth.require_identity: true` (the default); reach for `WithInsecureAllowUnauthenticatedRoutes()` only in development.
+- `BootstrapAdmin` called from a controlled deploy step, not an open route, and re-run after an upgrade that adds permissions.
+- Dashboard auth on, and `warden:maintenance:manage` held by as few subjects as you can manage.
+- `disable_routes: true` if you never need the HTTP management API.
+- `declarative_strict: true` if you use declarative apply in production.
+- `disable_migrate: true` plus a separate `warden apply`/migrate step, for multi-replica deployments.
+- Database on a private network, with a statement timeout configured.

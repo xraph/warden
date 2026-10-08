@@ -93,7 +93,7 @@ Pre-built archives ship `linux`, `darwin`, `windows` × `amd64`, `arm64` from ev
 
 | Subcommand | Purpose |
 |---|---|
-| `warden lint <path>` | Static checks only — parser + type checker, no DB. Per-file/line diagnostics. |
+| `warden lint <path>` | Static checks only: parser and type checker, no DB. Per-file/line diagnostics. A line starting `warning:` (for example a permission action with a `:`, which apply refuses unless the store already holds that permission with exactly that resource and action) does not fail lint. |
 | `warden apply -f <path> --store DSN` | Apply config to a tenant. Idempotent. |
 | `warden diff -f <path> --store DSN` | Equivalent to `apply --dry-run`. Shows what would change. |
 | `warden fmt <path>` | Format file(s) in place. `-d` prints diff, `--check` exits 1 if reformatting needed. |
@@ -111,7 +111,7 @@ Pre-built archives ship `linux`, `darwin`, `windows` × `amd64`, `arm64` from ev
 - `--tenant ID` / `--app ID` — override `tenant` / `app` declared in source. Both are optional; if neither source nor flag sets a tenant, apply uses the **global scope** (empty `tenant_id`) — the natural default for single-tenant apps. See [Multi-Tenancy](/docs/concepts/multi-tenancy#single-tenant-apps-skip-the-tenant-entirely).
 - `--var KEY=VALUE` — bind a DSL template variable. Repeatable. Wins over `WARDEN_VAR_*` env. See [Variables](#variables) below.
 - `--dry-run` — plan without writing.
-- `--prune` — delete tenant entries not in config (apply only).
+- `--prune` — delete tenant entries not in config (apply only). Prune is scoped to the namespaces the config covers: a namespace is covered when the config declares an entity in it or opens a `namespace` block for it, even an empty one. The tenant root is covered only when something is declared at the root. Coverage is exact, so covering `eng` does not cover `eng/platform`. Entities in any other namespace are left alone, and system roles are never pruned.
 - `--skip-migrate` — don't run store migrations on connect.
 
 **Exit codes:** `0` success, `1` diagnostics, `2` usage error, `3` store/runtime error.
@@ -310,7 +310,7 @@ Editor configs can target either form interchangeably.
 The completion handler classifies the cursor position into one of nine contexts and offers suggestions tailored to each:
 
 1. **Top-level keyword** — `resource`, `permission`, `role`, `policy`, `namespace`, `relation`, `import`.
-2. **Role parent slug** — after `role X :`, every role declared in any open document (with absolute paths for cross-namespace refs).
+2. **Role parent slug**: after `role X :`, every role declared in any open document (with absolute paths for roles in other namespaces, which the resolver then refuses as a parent: a parent must be in the role's own namespace).
 3. **Role grants string** — inside `grants = [`, every permission name in the workspace.
 4. **Permission resource ref** — after `permission "x:y" (`, declared resource type names.
 5. **Permission action ref** — after `permission "x:y" (resource :`, the action names that resource declares.

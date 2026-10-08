@@ -1,8 +1,59 @@
 package extension
 
+import (
+	"fmt"
+	"time"
+
+	"github.com/xraph/warden"
+)
+
+// AuthConfig controls how the extension authenticates and authorizes
+// callers of the warden management/decision HTTP API.
+//
+// An AuthConfig set in code with all three fields false is the zero value,
+// and the extension reads it as unset: it gets DefaultAuthConfig, so
+// identity stays required and the audit log stays on. To turn identity off
+// from code, set another field as well (AuditLog: true, for example). In
+// YAML, auth.require_identity: false is enough on its own.
+type AuthConfig struct {
+	// RequireIdentity, when true (the default), makes every route 401 an
+	// unauthenticated caller, except the three check endpoints when
+	// AllowAnonymousChecks is on. Turning it off is refused wherever the
+	// API can be mounted unless WithInsecureAllowUnauthenticatedRoutes was
+	// also passed, so nobody disables it by accident: with routes enabled
+	// Register returns an error, and with routes disabled Handler panics
+	// and RegisterRoutes returns the error. A code-set false alone does
+	// not turn it off (see AuthConfig).
+	RequireIdentity bool `json:"require_identity" mapstructure:"require_identity" yaml:"require_identity"`
+
+	// AllowAnonymousChecks opens the three check endpoints
+	// (/v1/authz/check, /v1/authz/enforce, /v1/authz/batch-check) to
+	// callers with no resolved identity. Every other route, including
+	// AuthZEN, still requires one. Off by default.
+	AllowAnonymousChecks bool `json:"allow_anonymous_checks" mapstructure:"allow_anonymous_checks" yaml:"allow_anonymous_checks"`
+
+	// AuditLog registers the in-tree plugin/auditlog sink by default,
+	// logging one structured line per audit event through the extension
+	// logger. On by default; set to false to opt out (e.g. because a
+	// different Audit plugin is registered instead).
+	AuditLog bool `json:"audit_log" mapstructure:"audit_log" yaml:"audit_log"`
+}
+
+// DefaultAuthConfig returns the AuthConfig defaults: identity required,
+// anonymous checks off, audit log on.
+func DefaultAuthConfig() AuthConfig {
+	return AuthConfig{
+		RequireIdentity:      true,
+		AllowAnonymousChecks: false,
+		AuditLog:             true,
+	}
+}
+
 // Config holds the Warden extension configuration.
 // Fields can be set programmatically via Option functions or loaded from
 // YAML configuration files (under "extensions.warden" or "warden" keys).
+// A key the YAML section sets wins over the code-set value; a key it
+// leaves out keeps the code-set value, else the default.
 type Config struct {
 	// DisableRoutes prevents HTTP route registration.
 	DisableRoutes bool `json:"disable_routes" mapstructure:"disable_routes" yaml:"disable_routes"`
@@ -58,11 +109,151 @@ type Config struct {
 	// Useful for multi-tenant deployments where the same source is applied
 	// to many tenants.
 	DeclarativeTenantID string `json:"declarative_tenant_id" mapstructure:"declarative_tenant_id" yaml:"declarative_tenant_id"`
+
+	// Auth controls authentication/authorization of the management API
+	// itself. See AuthConfig.
+	Auth AuthConfig `json:"auth" mapstructure:"auth" yaml:"auth"`
+
+	// ─── Engine knobs (mirrors warden.Config; see config.go there) ───
+
+	// CacheTTL is the time-to-live for cached check results. When >0, the
+	// engine builds its memory cache from CacheTTL/CacheMaxSize (unless
+	// WithEngineOptions already supplied a WithCache).
+	CacheTTL time.Duration `json:"cache_ttl" mapstructure:"cache_ttl" yaml:"cache_ttl"`
+
+	// CacheMaxSize bounds the auto-built memory cache's entry count.
+	CacheMaxSize int `json:"cache_max_size" mapstructure:"cache_max_size" yaml:"cache_max_size"`
+
+	// MaxGraphVisited caps the number of distinct nodes a ReBAC graph walk
+	// may visit before it aborts with ErrGraphBudgetExceeded.
+	MaxGraphVisited int `json:"max_graph_visited" mapstructure:"max_graph_visited" yaml:"max_graph_visited"`
+
+	// MaxGraphFanout caps the number of subjects fetched per hop during a
+	// ReBAC graph walk.
+	MaxGraphFanout int `json:"max_graph_fanout" mapstructure:"max_graph_fanout" yaml:"max_graph_fanout"`
+
+	// EvaluateAllModels, when true, always evaluates RBAC, ReBAC and ABAC
+	// even after an earlier model already allowed the request.
+	EvaluateAllModels bool `json:"evaluate_all_models" mapstructure:"evaluate_all_models" yaml:"evaluate_all_models"`
+
+	// CheckLogQueueSize bounds the check-log writer's internal channel.
+	CheckLogQueueSize int `json:"check_log_queue_size" mapstructure:"check_log_queue_size" yaml:"check_log_queue_size"`
+
+	// CheckLogRetention is how long check log entries are kept before
+	// RunMaintenance purges them. A negative value turns purging off. 0
+	// counts as unset: the extension fills it with the programmatic value,
+	// else the 90 day default, so 0 cannot turn purging off here (an engine
+	// built directly reads 0 as off too).
+	CheckLogRetention time.Duration `json:"check_log_retention" mapstructure:"check_log_retention" yaml:"check_log_retention"`
+
+	// MaintenanceInterval is how often the engine runs RunMaintenance in
+	// the background. A negative value turns the loop off. 0 counts as
+	// unset: the extension fills it with the programmatic value, else 1
+	// hour, so 0 cannot turn the loop off here (an engine built directly
+	// reads 0 as off too).
+	MaintenanceInterval time.Duration `json:"maintenance_interval" mapstructure:"maintenance_interval" yaml:"maintenance_interval"`
+
+	// MaxBatchChecks bounds the number of checks a batch-check or AuthZEN
+	// evaluations API call may request in one call.
+	MaxBatchChecks int `json:"max_batch_checks" mapstructure:"max_batch_checks" yaml:"max_batch_checks"`
+
+	// RequireTenant, when true (the default), makes Check return
+	// ErrTenantRequired whenever the resolved scope has no tenant ID. A
+	// nil pointer means "use the engine's default (true)"; only an
+	// explicit false disables the requirement.
+	RequireTenant *bool `json:"require_tenant,omitempty" mapstructure:"require_tenant" yaml:"require_tenant"`
+
+	// EnableCheckLog enables writing authorization check results to the
+	// check log store. A nil pointer means "use the engine's default
+	// (true)"; only an explicit false disables it.
+	EnableCheckLog *bool `json:"enable_check_log,omitempty" mapstructure:"enable_check_log" yaml:"enable_check_log"`
+
+	// Dashboard configures the React dashboard surfaces.
+	Dashboard DashboardConfig `json:"dashboard" mapstructure:"dashboard" yaml:"dashboard"`
+}
+
+// DashboardConfig configures warden's dashboard surfaces.
+type DashboardConfig struct {
+	// TenantID scopes every dashboard request when the caller's principal
+	// carries no tenant claim.
+	//
+	// Nothing populates dashboard principal claims today, so in practice
+	// this is what makes the dashboard answer at all. Set it for a
+	// single-tenant deployment.
+	//
+	// Leave it empty in a multi-tenant deployment. Every read then refuses
+	// with PERMISSION_DENIED, which is the correct behaviour: the empty
+	// string in a store ListFilter matches every tenant's rows rather than
+	// none, so guessing would serve one operator every tenant's data, and
+	// on a check could return an allow the real tenant would have denied.
+	TenantID string `json:"tenant_id" mapstructure:"tenant_id" yaml:"tenant_id"`
+}
+
+// clone returns a copy of c that shares no memory a config binder could
+// write through. The binder sets a *bool by writing to the existing
+// pointee, so binding YAML over a shallow copy would change the caller's
+// own bool.
+func (c Config) clone() Config {
+	if c.RequireTenant != nil {
+		v := *c.RequireTenant
+		c.RequireTenant = &v
+	}
+	if c.EnableCheckLog != nil {
+		v := *c.EnableCheckLog
+		c.EnableCheckLog = &v
+	}
+	c.DeclarativePaths = append([]string(nil), c.DeclarativePaths...)
+	return c
 }
 
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
+	d := warden.DefaultConfig()
 	return Config{
-		MaxGraphDepth: 10,
+		MaxGraphDepth:       10,
+		Auth:                DefaultAuthConfig(),
+		CacheMaxSize:        d.CacheMaxSize,
+		MaxGraphVisited:     d.MaxGraphVisited,
+		MaxGraphFanout:      d.MaxGraphFanout,
+		CheckLogQueueSize:   d.CheckLogQueueSize,
+		CheckLogRetention:   d.CheckLogRetention,
+		MaintenanceInterval: d.MaintenanceInterval,
+		MaxBatchChecks:      d.MaxBatchChecks,
+	}
+}
+
+// Validate checks the extension configuration for internally
+// inconsistent values. It delegates the engine-knob checks to
+// warden.Config.Validate via toEngineConfig, so the same bounds apply
+// whether a value came from YAML, an Option, or a default.
+func (c Config) Validate() error {
+	if c.MaxGraphDepth < 0 {
+		return fmt.Errorf("warden: extension config: max_graph_depth must not be negative, got %d", c.MaxGraphDepth)
+	}
+	if c.MaxGraphDepth > 64 {
+		return fmt.Errorf("warden: extension config: max_graph_depth must not exceed 64, got %d", c.MaxGraphDepth)
+	}
+	if err := c.toEngineConfig().Validate(); err != nil {
+		return fmt.Errorf("warden: extension config: %w", err)
+	}
+	return nil
+}
+
+// toEngineConfig maps the extension's mirrored engine knobs onto a
+// warden.Config, for both Validate and the extension's engine wiring.
+func (c Config) toEngineConfig() warden.Config {
+	return warden.Config{
+		MaxGraphDepth:       c.MaxGraphDepth,
+		CacheTTL:            c.CacheTTL,
+		CacheMaxSize:        c.CacheMaxSize,
+		MaxGraphVisited:     c.MaxGraphVisited,
+		MaxGraphFanout:      c.MaxGraphFanout,
+		EvaluateAllModels:   c.EvaluateAllModels,
+		CheckLogQueueSize:   c.CheckLogQueueSize,
+		CheckLogRetention:   c.CheckLogRetention,
+		MaintenanceInterval: c.MaintenanceInterval,
+		MaxBatchChecks:      c.MaxBatchChecks,
+		RequireTenant:       c.RequireTenant,
+		EnableCheckLog:      c.EnableCheckLog,
 	}
 }

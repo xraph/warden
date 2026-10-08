@@ -37,6 +37,13 @@ func NewEngineEvaluator(s engineStore) *EngineEvaluator {
 	return ee
 }
 
+// Evaluator returns the underlying compiled-expression Evaluator, so a
+// caller can wire dsl.NewInvalidatorPlugin(ee.Evaluator()) onto the same
+// engine that uses this EngineEvaluator for expression evaluation. The
+// two share the compiled-AST cache, so invalidating one invalidates the
+// other.
+func (e *EngineEvaluator) Evaluator() *Evaluator { return e.ev }
+
 // resolvePerm implements dsl.PermResolver — looks up the compiled
 // expression for a permission on a resource type, walking the namespace
 // ancestor chain.
@@ -47,7 +54,7 @@ func (e *EngineEvaluator) resolvePerm(ctx context.Context, tenantID, namespacePa
 	}
 	for i := range rt.Permissions {
 		if rt.Permissions[i].Name == permName && rt.Permissions[i].Expression != "" {
-			expr, errs := e.ev.CompileAndCache(tenantID, ns, resourceType, permName, rt.Permissions[i].Expression)
+			expr, errs := e.ev.CompileAndCacheVersioned(tenantID, ns, resourceType, permName, rt.Permissions[i].Expression, rt.UpdatedAt)
 			if len(errs) > 0 {
 				return nil, false
 			}
@@ -81,7 +88,7 @@ func (e *EngineEvaluator) EvalPermission(
 	if permDef == nil || permDef.Expression == "" {
 		return false, nil
 	}
-	expr, errs := e.ev.CompileAndCache(tenantID, ns, resourceType, permName, permDef.Expression)
+	expr, errs := e.ev.CompileAndCacheVersioned(tenantID, ns, resourceType, permName, permDef.Expression, rt.UpdatedAt)
 	if len(errs) > 0 {
 		// Don't fail closed on compile errors — the parser already runs at
 		// apply time. Returning false here is safe (the engine will fall
@@ -104,19 +111,15 @@ func (e *EngineEvaluator) EvalPermission(
 // namespace it was found at.
 func (e *EngineEvaluator) findResourceType(ctx context.Context, tenantID, ns, name string) (rt *resourcetype.ResourceType, namespace string) {
 	for _, candidate := range warden.AncestorNamespaces(ns) {
-		filterNS := candidate
-		rts, err := e.store.ListResourceTypes(ctx, &resourcetype.ListFilter{
-			TenantID:      tenantID,
-			NamespacePath: &filterNS,
-		})
-		if err != nil {
+		// Look the name up directly rather than listing the namespace and
+		// scanning. A list is capped at the store's default limit, so a
+		// namespace holding more resource types than that would hide the
+		// one being resolved and silently deny every check against it.
+		found, err := e.store.GetResourceTypeByName(ctx, tenantID, candidate, name)
+		if err != nil || found == nil {
 			continue
 		}
-		for _, rt := range rts {
-			if rt.Name == name {
-				return rt, candidate
-			}
-		}
+		return found, candidate
 	}
 	return nil, ""
 }

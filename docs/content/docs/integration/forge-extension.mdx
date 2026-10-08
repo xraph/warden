@@ -15,6 +15,7 @@ import (
 
 app := forge.New()
 app.Use(wardenext.New(
+    wardenext.WithStore(store),
     wardenext.WithConfig(wardenext.Config{
         DisableRoutes:  false,  // Set true to skip API route registration
         DisableMigrate: false,  // Set true to skip auto-migration
@@ -23,24 +24,81 @@ app.Use(wardenext.New(
 app.Start(context.Background())
 ```
 
+You must supply a store, either via `WithStore`, `WithGroveDatabase`, or a `store.Store` already registered in the Forge DI container: there's no automatic in-memory fallback. `warden.NewEngine` (which `Register` calls internally) returns an error if no store resolves.
+
+## Authentication is on by default
+
+Every route the extension registers is authenticated and authorized: an unauthenticated caller gets `401`, and a caller without the mapped permission gets `403`. This is `auth.require_identity: true`, the default.
+
+Setting `auth.require_identity: false` is refused unless you also call `WithInsecureAllowUnauthenticatedRoutes()`:
+
+```go
+wardenext.New(
+    wardenext.WithConfig(wardenext.Config{Auth: wardenext.AuthConfig{
+        RequireIdentity: false,
+        AuditLog:        true, // keeps this from being the all-false AuthConfig, which reads as unset
+    }}),
+    wardenext.WithInsecureAllowUnauthenticatedRoutes(), // required, or the API refuses to mount
+)
+```
+
+Mind the `AuditLog: true` there. An `AuthConfig` set in code with all three fields false is the zero value, and the extension reads it as unset: you get the defaults, identity required and audit log on. So `AuthConfig{RequireIdentity: false}` on its own changes nothing. In YAML, `auth.require_identity: false` is enough by itself.
+
+The refusal follows the API wherever you mount it. With routes enabled, `Register` returns an error. With `disable_routes: true`, `Register` succeeds, since it mounts nothing, but `ext.Handler()` panics and `ext.RegisterRoutes(router)` returns the same error and registers nothing. The `*api.API` from `ext.API()` is built requiring an identity on every route (except the three check endpoints when `auth.allow_anonymous_checks` is on), so mounting it yourself answers an anonymous caller `401` everywhere else. Only the opt-in gives you an API without the identity check.
+
+`ext.Handler()` builds the API on a router of its own, never your app's. It serves warden's routes at `/v1/...` and the AuthZEN endpoints at `/access/v1/...`, and nothing else. It adds no routes or middleware to your app, and it hands back the same handler every time you call it. There's no base path on it, so you mount it where you want and strip your prefix first: `http.StripPrefix("/authz", ext.Handler())` serves `/authz/v1/roles` and `/authz/access/v1/evaluation`. You can do that with routes enabled too; it sits beside the `base_path` mount and doesn't register anything twice. If you'd rather have the routes on a Forge router, `ext.RegisterRoutes(router)` puts them at `/v1/...` and `/access/v1/...` on the router you pass.
+
+The option name is deliberately long: without it, any network peer that can reach the base path could grant itself roles or read the audit log. Reach for it only for local development or behind a network boundary you already trust completely. See [Hardening](/docs/operations/hardening).
+
+`auth.allow_anonymous_checks` (default `false`) is a narrower opt-in: it opens only the three check endpoints (`/v1/authz/check`, `/v1/authz/enforce`, `/v1/authz/batch-check`) to callers with no resolved identity. Every other route, including the AuthZEN endpoints, still requires one.
+
+## Granting yourself access: BootstrapAdmin
+
+With authentication on by default, a freshly registered extension has no role holder: nobody can call the management API until something grants a role. `Extension.BootstrapAdmin` is that something:
+
+```go
+func (e *Extension) BootstrapAdmin(ctx context.Context, tenantID string, subject warden.Subject) error
+```
+
+It creates (idempotently, by slug `warden-admin`) a system role in `tenantID` with `manage` and `read` on every entity plus `warden:authz:check`, `warden:check_log:read_audit` and the three dashboard-only grants (`warden:maintenance:manage`, `warden:config:read`, `warden:overview:read`), and assigns it to `subject`. Each row it creates is audited as the system actor with `Via: "bootstrap"`. Call it once per tenant, typically right after `Start`:
+
+```go
+ext := wardenext.New(wardenext.WithStore(store))
+app.Use(ext)
+if err := app.Start(ctx); err != nil {
+    log.Fatal(err)
+}
+if err := ext.BootstrapAdmin(ctx, "tenant-1", warden.Subject{Kind: warden.SubjectUser, ID: "you"}); err != nil {
+    log.Fatal(err)
+}
+```
+
+Safe to call repeatedly: the role, its permissions, the attachments, and the assignment are all idempotent.
+
 ## What the Extension Does
 
 ### Register Phase
 
-1. Resolves a `store.Store` from the Forge DI container
-2. Creates a `warden.Engine` with the store and any configured options
-3. Registers the engine in the DI container via `vessel.Provide()`
-4. If routes are enabled, registers REST API endpoints on `forge.Router`
+1. Loads and validates configuration (YAML or programmatic)
+2. Refuses to start if routes are enabled, `auth.require_identity` is false, and `WithInsecureAllowUnauthenticatedRoutes()` wasn't called (with routes disabled, `Handler` and `RegisterRoutes` refuse instead)
+3. Resolves a `store.Store` (explicit, grove-backed, or from the DI container)
+4. Creates a `warden.Engine` with the store and any configured options, wires a `forge.Metrics`-backed `warden.Metrics` adapter, and registers the in-tree `plugin/auditlog` sink when `auth.audit_log` is true (the default)
+5. Registers the engine in the DI container via `vessel.Provide()`
+6. If routes are enabled, registers REST API endpoints on `forge.Router`
 
 ### Start Phase
 
-1. Runs database migrations (unless `DisableMigrate` is true)
-2. Starts the engine
+1. Runs database migrations (unless `disable_migrate` is true)
+2. Applies declarative `.warden` config, if `declarative_on_start` is set
+3. Starts the engine: logs a summary line (check-log/cache/maintenance settings) and starts the background maintenance loop, unless `maintenance_interval` is negative. `maintenance_interval: 0` doesn't skip it: the extension replaces `0` with the default, `1h` (see the table below)
 
 ### Stop Phase
 
-1. Gracefully shuts down the engine
-2. Fires `Shutdown` hooks on all plugins
+`Extension.Stop` calls `Engine.Stop`, which:
+
+1. Cancels the maintenance loop
+2. Drains the check-log writer (best-effort, bounded by the passed context)
+3. Fires `OnShutdown` on every plugin that implements the `Shutdown` hook
 
 ## Extension options
 
@@ -52,32 +110,36 @@ app.Start(context.Background())
 | `WithPlugin(x)` | `plugin.Plugin` | -- | Register a lifecycle plugin (repeatable) |
 | `WithDisableRoutes()` | -- | `false` | Skip HTTP route registration |
 | `WithDisableMigrate()` | -- | `false` | Skip migrations on Start |
-| `WithBasePath(path)` | `string` | `""` | URL prefix for warden routes |
+| `WithBasePath(path)` | `string` | `"/warden"` | URL prefix for warden routes |
 | `WithGroveDatabase(name)` | `string` | `""` | Named grove.DB to resolve from DI |
 | `WithRequireConfig()` | -- | `false` | Require config in YAML files |
+| `WithInsecureAllowUnauthenticatedRoutes()` | -- | `false` | Required alongside `auth.require_identity: false`; see above |
 
 ## Accessing the Engine
 
-After registration, resolve the engine from any Forge handler:
+The extension registers the engine in the Forge DI container via `vessel.Provide`, so any code with access to the app's `Container()` can resolve it with `forge.Inject[*warden.Engine](container)`:
 
 ```go
-func myHandler(ctx forge.Context) error {
-    eng := forge.Inject[*warden.Engine](ctx)
-    result, _ := eng.Check(ctx.Context(), &warden.CheckRequest{
-        Subject: warden.Subject{Kind: "user", ID: ctx.Get("userID")},
-        Action:  "read",
-        ResourceType: "document",
-    })
-    if !result.Allowed {
-        return forge.Forbidden("access denied")
-    }
-    return ctx.JSON(200, data)
-}
+eng, err := forge.Inject[*warden.Engine](app.Container())
+```
+
+Or, if you kept a reference to the extension itself, `Engine()` returns it directly:
+
+```go
+ext := wardenext.New(wardenext.WithStore(store))
+app.Use(ext)
+// ... after app.Start ...
+eng := ext.Engine()
+result, err := eng.Check(ctx, &warden.CheckRequest{
+    Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "user-42"},
+    Action:   warden.Action{Name: "read"},
+    Resource: warden.Resource{Type: "document"},
+})
 ```
 
 ## Grove database integration
 
-When your Forge app uses the [Grove extension](https://github.com/xraph/grove) to manage database connections, Warden can automatically resolve a `grove.DB` from the DI container and construct the correct store backend based on the driver type.
+When your Forge app uses the [Grove extension](https://github.com/xraph/grove) to manage database connections, Warden can automatically resolve a `grove.DB` from the DI container and construct the correct store backend based on the driver type (`pg`, `sqlite`, or `mongo`).
 
 ### Using the default grove database
 
@@ -106,8 +168,10 @@ This resolves the grove.DB named `"warden"` from the DI container and auto-const
 The extension resolves its store in this order:
 
 1. **Explicit store** -- if `WithStore(s)` was called, it is used directly and grove is ignored.
-2. **Grove database** -- if `WithGroveDatabase(name)` was called, the named or default `grove.DB` is resolved from DI.
-3. **In-memory fallback** -- if neither is configured, an in-memory store is used.
+2. **Grove database** -- if `WithGroveDatabase(name)` was called, or a `grove.DB` is auto-discovered in the DI container, the matching store backend (`postgres`, `sqlite`, or `mongo`) is built from it.
+3. **DI-registered store** -- if a `store.Store` is already provided in the DI container, that's used.
+
+There's no in-memory fallback: if none of the above resolves a store, `Register` fails with `warden: create engine: warden: store is required`.
 
 ## File-based configuration (YAML)
 
@@ -127,37 +191,72 @@ extensions:
     base_path: "/warden"
     max_graph_depth: 10
     grove_database: ""
+    auth:
+      require_identity: true
+      allow_anonymous_checks: false
+      audit_log: true
 ```
 
 ### Config fields
+
+All defaults below come from `extension.DefaultConfig()`, which itself mirrors `warden.DefaultConfig()` for the engine knobs.
 
 | YAML Key | Type | Default | Description |
 |----------|------|---------|-------------|
 | `disable_routes` | `bool` | `false` | Skip HTTP route registration |
 | `disable_migrate` | `bool` | `false` | Skip migrations on Start |
-| `base_path` | `string` | `""` | URL prefix for all routes |
-| `max_graph_depth` | `int` | `10` | Max depth for ReBAC graph traversal |
+| `base_path` | `string` | `"/warden"` | URL prefix for all routes (empty string in config also resolves to `/warden`) |
+| `max_graph_depth` | `int` | `10` | Max depth for ReBAC graph traversal (0-64) |
 | `grove_database` | `string` | `""` | Named grove.DB from DI |
+| `declarative_path` | `string` | `""` | A single `.warden` file, directory, or glob to auto-apply |
+| `declarative_paths` | `[]string` | `nil` | Additional paths to load alongside `declarative_path` |
+| `declarative_on_start` | `bool` | `false` | Auto-apply the declarative config at Start, after migrations |
+| `declarative_prune` | `bool` | `false` | Delete tenant entries not present in the config (kubectl-apply style), only in namespaces the config covers: one it declares an entity in or opens a `namespace` block for (even an empty one), counted across every configured path. The tenant root is covered only when something is declared there, and `eng` does not cover `eng/platform`. Other namespaces are left alone |
+| `declarative_strict` | `bool` | `false` | Fail startup when the apply produces diagnostics (when `false`, errors are logged and startup continues) |
+| `declarative_tenant_id` | `string` | `""` | Overrides any `tenant <id>` declared in source |
+| `auth.require_identity` | `bool` | `true` | Require a resolved identity on every route |
+| `auth.allow_anonymous_checks` | `bool` | `false` | Open the three check endpoints to unauthenticated callers |
+| `auth.audit_log` | `bool` | `true` | Register the built-in `plugin/auditlog` sink |
+| `cache_ttl` | `duration` | `0` (disabled) | TTL for the auto-built check-result cache |
+| `cache_max_size` | `int` | `10000` | Entry cap for the auto-built cache |
+| `max_graph_visited` | `int` | `5000` | Node budget for one ReBAC graph walk |
+| `max_graph_fanout` | `int` | `1000` | Subjects fetched per hop during a graph walk |
+| `evaluate_all_models` | `bool` | `false` | Always evaluate RBAC, ReBAC and ABAC, even after an earlier model allowed |
+| `check_log_queue_size` | `int` | `4096` | Check-log writer's internal channel size |
+| `check_log_retention` | `duration` | `2160h` (90 days) | How long check-log entries are kept before `RunMaintenance` purges them. A negative value (`-1h`) switches purging off: nothing deletes entries by age, so they stay until you delete them yourself. `0` is unset: the extension takes the programmatic value if there is one, else `2160h` |
+| `maintenance_interval` | `duration` | `1h` | How often `RunMaintenance` runs in the background. A negative value (`-1h`) switches the loop off, so nothing purges expired assignments or check logs unless you run maintenance yourself. `0` is unset, like `check_log_retention`: the programmatic value, else `1h` |
+| `max_batch_checks` | `int` | `100` | Cap on checks per batch-check/AuthZEN evaluations call |
+| `require_tenant` | `*bool` | `true` | `Check` returns `ErrTenantRequired` when the resolved scope has no tenant |
+| `enable_check_log` | `*bool` | `true` | Write authorization check results to the check-log store |
 
 ### Merge behaviour
 
-File-based configuration is merged with programmatic options. Programmatic boolean flags (`DisableRoutes`, `DisableMigrate`) always win when set to `true`. For other fields, YAML values take precedence, then programmatic values, then defaults.
+File-based configuration is merged with programmatic options. A key the YAML section sets wins over the value you set in code. A key it leaves out keeps your code-set value, and anything neither sets gets the default, so `WithConfig(Config{CheckLogRetention: -time.Hour})` still switches purging off when the YAML section holds only `disable_routes: true`. Two rules sit on top of that:
+
+- `DisableRoutes`, `DisableMigrate` and `EvaluateAllModels` set to `true` in code always win, even over a YAML `false`.
+- For `base_path`, `grove_database` and the numeric and duration knobs, an explicit `0` or empty value in YAML counts as unset: your code-set value fills it if there is one, else the default.
+
+`auth` follows the main rule with no exception: each of `require_identity`, `allow_anonymous_checks` and `audit_log` that the YAML sets wins, `false` included, and each it leaves out keeps your code-set value (or the default when code set no `auth`, or one with all three `false`). So `allow_anonymous_checks: false` in YAML switches anonymous checks off even when code turned them on. Setting `require_identity: false` from either side still needs `WithInsecureAllowUnauthenticatedRoutes()` to mount the API, whether routes are enabled or you mount it yourself.
 
 ## REST API Endpoints
 
-When routes are enabled, the extension registers these endpoints:
+When routes are enabled, the extension registers these endpoints under `base_path` (default `/warden`). Every route requires identity and a resolved tenant; `permission` is the `action:resource` pair the default authorizer checks (`warden:<resource>` with the given action):
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/v1/authz/check` | Authorization check |
-| `POST` | `/v1/authz/enforce` | Authorization enforce |
-| `POST` | `/v1/authz/batch-check` | Batch authorization check |
-| `POST/GET/PUT/DELETE` | `/v1/roles/*` | Role management |
-| `POST/GET/DELETE` | `/v1/permissions/*` | Permission management |
-| `POST/GET/DELETE` | `/v1/assignments/*` | Assignment management |
-| `POST/GET` | `/v1/relations/*` | Relation tuple management |
-| `POST/GET/PUT/DELETE` | `/v1/policies/*` | Policy management |
-| `POST/GET/PUT/DELETE` | `/v1/resource-types/*` | Resource type management |
-| `GET` | `/v1/check-logs` | Query check audit logs |
+| Method | Path | Permission |
+|--------|------|------------|
+| `POST` | `/v1/authz/check` | `check` on `warden:authz` |
+| `POST` | `/v1/authz/enforce` | `check` on `warden:authz` |
+| `POST` | `/v1/authz/batch-check` | `check` on `warden:authz` |
+| `POST` | `/access/v1/evaluation` | `check` on `warden:authz` (AuthZEN single evaluation) |
+| `POST` | `/access/v1/evaluations` | `check` on `warden:authz` (AuthZEN boxcarred evaluations) |
+| `POST/GET/PUT/DELETE` | `/v1/roles`, `/v1/roles/:roleId` | `manage`/`read` on `warden:role` |
+| `POST/DELETE` | `/v1/roles/:roleId/permissions[/:permissionId]` | `manage` on `warden:role` |
+| `POST/GET/DELETE` | `/v1/permissions`, `/v1/permissions/:permissionId` | `manage`/`read` on `warden:permission` |
+| `POST/GET/DELETE` | `/v1/assignments`, `/v1/assignments/:assignmentId` | `manage`/`read` on `warden:assignment` |
+| `GET` | `/v1/subjects/:subjectKind/:subjectId/roles` | `read` on `warden:assignment` |
+| `POST/GET` | `/v1/relations`, `/v1/relations/delete` | `manage`/`read` on `warden:relation` |
+| `POST/GET/PUT/DELETE` | `/v1/policies`, `/v1/policies/:policyId` | `manage`/`read` on `warden:policy` |
+| `POST/GET/DELETE` | `/v1/resource-types`, `/v1/resource-types/:resourceTypeId` | `manage`/`read` on `warden:resourcetype` |
+| `GET` | `/v1/check-logs` | `read_audit` on `warden:check_log` |
 
-All endpoints include OpenAPI metadata for automatic documentation generation.
+All endpoints include OpenAPI metadata for automatic documentation generation. See [Hardening](/docs/operations/hardening) for running this behind TLS and a network boundary, and [Access reviews](/docs/operations/access-reviews) for auditing who holds which permission.

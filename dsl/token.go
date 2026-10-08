@@ -55,6 +55,10 @@ const (
 	// INT is an unsigned integer literal — `[0-9]+`.
 	INT
 
+	// FLOAT is an unsigned decimal literal: `[0-9]+\.[0-9]+`. A sign is
+	// the MINUS token in front of it (or of an INT).
+	FLOAT
+
 	// BOOL is `true` or `false`.
 	BOOL
 
@@ -199,6 +203,8 @@ func (k TokenKind) String() string {
 		return "STRING"
 	case INT:
 		return "INT"
+	case FLOAT:
+		return "FLOAT"
 	case BOOL:
 		return "BOOL"
 	case LBRACE:

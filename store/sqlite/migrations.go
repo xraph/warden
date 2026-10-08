@@ -2,12 +2,179 @@ package sqlite
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/xraph/grove/migrate"
 )
 
 // Migrations is the grove migration group for the Warden store (SQLite).
 var Migrations = migrate.NewGroup("warden")
+
+// recreateTable runs a "create new table, copy rows, drop old, rename"
+// migration body safely under SQLite's foreign-key enforcement.
+//
+// SQLite can't ALTER a UNIQUE constraint or drop a column in place, so
+// widening a unique key (or any other structural change) means recreating
+// the table. But the store enables `PRAGMA foreign_keys=ON` for every
+// connection it opens (see sqlitedriver.SqliteDB.Open), and under FK
+// enforcement a bare `DROP TABLE` on a table something else references can
+// cascade-delete or fail depending on the referencing table's ON DELETE
+// clause, which is not what a schema migration wants. recreateTable disables FK
+// enforcement for the duration, runs sqlStmts (expected to create the new
+// table, copy rows, drop the old table and rename), verifies no dangling
+// reference was left behind with `PRAGMA foreign_key_check`, and only then
+// commits and re-enables enforcement.
+//
+// PRAGMA foreign_keys is a no-op while a transaction is open, so it has to
+// be issued before BEGIN and after COMMIT, never inside. Grove's
+// migrate.Executor here doesn't expose a single pinned connection (it wraps
+// the driver's pool), so the PRAGMA, BEGIN and the DDL are separate Exec
+// calls that only land on one physical connection when nothing else is
+// using the pool. Migrations must therefore not run concurrently with
+// traffic on the same database (see the upgrades guide).
+//
+// Because that can't be guaranteed here, recreateTable checks instead of
+// trusting. It aborts (ROLLBACK) if PRAGMA foreign_keys still reads 1 once
+// the transaction is open, which means enforcement is on for the
+// connection that will run the DDL. And it counts the rows of every table
+// named in guarded before and after the DDL, aborting if any count changed.
+// The second check exists because PRAGMA foreign_key_check cannot catch the
+// failure: if DROP TABLE cascaded, the referencing rows are already gone
+// and there is nothing left to find dangling.
+//
+// guarded lists the tables that reference the recreated one and must come
+// through with every row. A table the caller is itself rebuilding from a
+// join that may legitimately drop orphans must not be listed. Tables that
+// don't exist yet are skipped.
+func recreateTable(ctx context.Context, exec migrate.Executor, sqlStmts string, guarded ...string) error {
+	if _, err := exec.Exec(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("sqlite recreate: disable foreign keys: %w", err)
+	}
+	// Always try to restore enforcement, even on a failure path below.
+	defer func() { _, _ = exec.Exec(ctx, "PRAGMA foreign_keys=ON") }() //nolint:errcheck // best-effort restore
+
+	if _, err := exec.Exec(ctx, "BEGIN"); err != nil {
+		return fmt.Errorf("sqlite recreate: begin: %w", err)
+	}
+	rollback := func() {
+		_, _ = exec.Exec(ctx, "ROLLBACK") //nolint:errcheck // best-effort rollback on the error path
+	}
+
+	on, err := foreignKeysEnabled(ctx, exec)
+	if err != nil {
+		rollback()
+		return fmt.Errorf("sqlite recreate: read foreign_keys: %w", err)
+	}
+	if on {
+		rollback()
+		return errors.New("sqlite recreate: foreign keys are still enforced after PRAGMA foreign_keys=OFF " +
+			"(the PRAGMA and the transaction did not share a connection); refusing to run the DDL")
+	}
+
+	before := make(map[string]int64, len(guarded))
+	for _, table := range guarded {
+		n, ok, err := countIfExists(ctx, exec, table)
+		if err != nil {
+			rollback()
+			return fmt.Errorf("sqlite recreate: count %s: %w", table, err)
+		}
+		if ok {
+			before[table] = n
+		}
+	}
+
+	if _, err := exec.Exec(ctx, sqlStmts); err != nil {
+		rollback()
+		return fmt.Errorf("sqlite recreate: exec: %w", err)
+	}
+
+	for table, was := range before {
+		now, _, err := countIfExists(ctx, exec, table)
+		if err != nil {
+			rollback()
+			return fmt.Errorf("sqlite recreate: recount %s: %w", table, err)
+		}
+		if now != was {
+			rollback()
+			return fmt.Errorf("sqlite recreate: %s had %d rows before the recreate and %d after; rolled back", table, was, now)
+		}
+	}
+
+	rows, err := exec.Query(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		rollback()
+		return fmt.Errorf("sqlite recreate: foreign key check: %w", err)
+	}
+	hasViolation := rows.Next()
+	_ = rows.Close()
+	if hasViolation {
+		rollback()
+		return errors.New("sqlite recreate: foreign key violations found after recreate")
+	}
+
+	if _, err := exec.Exec(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("sqlite recreate: commit: %w", err)
+	}
+	return nil
+}
+
+// foreignKeysEnabled reports whether PRAGMA foreign_keys reads 1 on the
+// connection that served the query.
+func foreignKeysEnabled(ctx context.Context, exec migrate.Executor) (bool, error) {
+	rows, err := exec.Query(ctx, "PRAGMA foreign_keys")
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return false, errors.New("PRAGMA foreign_keys returned no row")
+	}
+	var v int
+	if err := rows.Scan(&v); err != nil {
+		return false, err
+	}
+	return v != 0, nil
+}
+
+// countIfExists returns the row count of table, and ok=false when the table
+// does not exist. table is always a package constant, never caller input.
+func countIfExists(ctx context.Context, exec migrate.Executor, table string) (n int64, ok bool, err error) {
+	rows, err := exec.Query(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '"+table+"'")
+	if err != nil {
+		return 0, false, err
+	}
+	var present int
+	if rows.Next() {
+		if err := rows.Scan(&present); err != nil {
+			_ = rows.Close()
+			return 0, false, err
+		}
+	}
+	_ = rows.Close()
+	if present == 0 {
+		return 0, false, nil
+	}
+
+	rows, err = exec.Query(ctx, "SELECT COUNT(*) FROM "+table)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return 0, false, errors.New("count returned no row")
+	}
+	if err := rows.Scan(&n); err != nil {
+		return 0, false, err
+	}
+	return n, true, nil
+}
+
+// guardReferrers names the tables that reference warden_roles. Any migration
+// that drops or rebuilds warden_roles passes them to recreateTable, so a
+// cascade through either one aborts the migration instead of committing.
+var guardReferrers = []string{"warden_assignments", "warden_role_permissions"}
 
 func init() {
 	Migrations.MustRegister(
@@ -236,7 +403,7 @@ CREATE INDEX IF NOT EXISTS idx_warden_rtypes_tenant ON warden_resource_types (te
 			Up: func(ctx context.Context, exec migrate.Executor) error {
 				// Backfill perm natural keys, recreate the table with the new
 				// schema (SQLite can't drop columns or change PK in-place).
-				_, err := exec.Exec(ctx, `
+				return recreateTable(ctx, exec, `
 CREATE TABLE warden_role_permissions_new (
     role_id              TEXT NOT NULL REFERENCES warden_roles(id) ON DELETE CASCADE,
     perm_namespace_path  TEXT NOT NULL,
@@ -256,11 +423,10 @@ ALTER TABLE warden_role_permissions_new RENAME TO warden_role_permissions;
 
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_role ON warden_role_permissions (role_id);
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_perm ON warden_role_permissions (perm_namespace_path, perm_name);
-`)
-				return err
+`, "warden_assignments")
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
-				_, err := exec.Exec(ctx, `
+				return recreateTable(ctx, exec, `
 CREATE TABLE warden_role_permissions_old (
     role_id         TEXT NOT NULL REFERENCES warden_roles(id) ON DELETE CASCADE,
     permission_id   TEXT NOT NULL REFERENCES warden_permissions(id) ON DELETE CASCADE,
@@ -283,8 +449,7 @@ ALTER TABLE warden_role_permissions_old RENAME TO warden_role_permissions;
 
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_role ON warden_role_permissions (role_id);
 CREATE INDEX IF NOT EXISTS idx_warden_role_perms_perm ON warden_role_permissions (permission_id);
-`)
-				return err
+`, "warden_assignments")
 			},
 		},
 		&migrate.Migration{
@@ -329,7 +494,7 @@ DROP INDEX IF EXISTS idx_warden_rel_ns;
 			Up: func(ctx context.Context, exec migrate.Executor) error {
 				// SQLite cannot drop columns or change FK constraints in place,
 				// so recreate the table with the new schema.
-				_, err := exec.Exec(ctx, `
+				return recreateTable(ctx, exec, `
 CREATE TABLE warden_roles_new (
     id              TEXT PRIMARY KEY,
     tenant_id       TEXT NOT NULL,
@@ -368,11 +533,10 @@ ALTER TABLE warden_roles_new RENAME TO warden_roles;
 CREATE INDEX IF NOT EXISTS idx_warden_roles_tenant ON warden_roles (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_parent_slug ON warden_roles (tenant_id, parent_slug) WHERE parent_slug IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_warden_roles_system ON warden_roles (tenant_id, is_system);
-`)
-				return err
+`, guardReferrers...)
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
-				_, err := exec.Exec(ctx, `
+				return recreateTable(ctx, exec, `
 CREATE TABLE warden_roles_old (
     id              TEXT PRIMARY KEY,
     tenant_id       TEXT NOT NULL,
@@ -410,8 +574,7 @@ ALTER TABLE warden_roles_old RENAME TO warden_roles;
 CREATE INDEX IF NOT EXISTS idx_warden_roles_tenant ON warden_roles (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_parent ON warden_roles (parent_id);
 CREATE INDEX IF NOT EXISTS idx_warden_roles_system ON warden_roles (tenant_id, is_system);
-`)
-				return err
+`, guardReferrers...)
 			},
 		},
 		&migrate.Migration{
@@ -483,7 +646,16 @@ CREATE INDEX IF NOT EXISTS idx_warden_clogs_created ON warden_check_logs (create
 			// Only the constraint and the FK widening differ from the original
 			// schema — column lists and types stay the same.
 			Up: func(ctx context.Context, exec migrate.Executor) error {
-				_, err := exec.Exec(ctx, `
+				// This recreates warden_roles among others, and
+				// warden_assignments and warden_role_permissions both hold
+				// an `ON DELETE CASCADE` FK to warden_roles(id). With FK
+				// enforcement on (the default for every connection this
+				// store opens), SQLite's DROP TABLE runs an implicit DELETE
+				// against the table first, which fires that cascade and
+				// wipes both referencing tables: recreateTable is what
+				// keeps this migration from silently deleting every
+				// assignment and role-permission grant on a fresh upgrade.
+				return recreateTable(ctx, exec, `
 -- ─── warden_roles (drop self-FK first; widen unique; widen FK) ───
 DROP INDEX IF EXISTS idx_warden_roles_tenant;
 DROP INDEX IF EXISTS idx_warden_roles_parent_slug;
@@ -680,8 +852,7 @@ CREATE INDEX IF NOT EXISTS idx_warden_assign_role     ON warden_assignments (rol
 CREATE INDEX IF NOT EXISTS idx_warden_assign_resource ON warden_assignments (tenant_id, subject_kind, subject_id, resource_type, resource_id);
 CREATE INDEX IF NOT EXISTS idx_warden_assign_expires  ON warden_assignments (expires_at);
 CREATE INDEX IF NOT EXISTS idx_warden_assign_ns       ON warden_assignments (tenant_id, namespace_path, subject_kind, subject_id);
-`)
-				return err
+`, guardReferrers...)
 			},
 			Down: func(_ context.Context, _ migrate.Executor) error {
 				// SQLite down for table-recreate migrations is intentionally
@@ -689,6 +860,182 @@ CREATE INDEX IF NOT EXISTS idx_warden_assign_ns       ON warden_assignments (ten
 				// roll back. The forward migration is idempotent if no rows
 				// share a (tenant, ns, key) triple.
 				return nil
+			},
+		},
+		&migrate.Migration{
+			Name:    "check_logs_v2",
+			Version: "20260922000003",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Columns an auditor needs to reconstruct a decision without
+				// replaying the check, plus the index the audit UI reads by.
+				// SQLite has no ADD COLUMN IF NOT EXISTS, so each statement
+				// runs on its own and an "duplicate column name" is treated
+				// as already applied.
+				stmts := []string{
+					`ALTER TABLE warden_check_logs ADD COLUMN matched_by  TEXT NOT NULL DEFAULT '[]'`,
+					`ALTER TABLE warden_check_logs ADD COLUMN obligations TEXT NOT NULL DEFAULT '[]'`,
+					`ALTER TABLE warden_check_logs ADD COLUMN request_id  TEXT NOT NULL DEFAULT ''`,
+					`ALTER TABLE warden_check_logs ADD COLUMN trace_id    TEXT NOT NULL DEFAULT ''`,
+					`ALTER TABLE warden_check_logs ADD COLUMN cached      INTEGER NOT NULL DEFAULT 0`,
+					`ALTER TABLE warden_check_logs ADD COLUMN error       TEXT NOT NULL DEFAULT ''`,
+				}
+				for _, stmt := range stmts {
+					if _, err := exec.Exec(ctx, stmt); err != nil {
+						if strings.Contains(err.Error(), "duplicate column name") {
+							continue
+						}
+						return err
+					}
+				}
+				_, err := exec.Exec(ctx, `
+CREATE INDEX IF NOT EXISTS idx_warden_clogs_tenant_created
+    ON warden_check_logs (tenant_id, created_at DESC);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `DROP INDEX IF EXISTS idx_warden_clogs_tenant_created`)
+				if err != nil {
+					return err
+				}
+				// SQLite only learned DROP COLUMN in 3.35 and refuses it for
+				// indexed columns, so the added columns stay. They are all
+				// defaulted, which keeps the older schema readable.
+				return nil
+			},
+		},
+		&migrate.Migration{
+			Name:    "relations_namespace_unique",
+			Version: "20260922000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Widening a UNIQUE constraint means recreating the table;
+				// SQLite can't ALTER a constraint in place.
+				return recreateTable(ctx, exec, `
+DROP INDEX IF EXISTS idx_warden_rel_object;
+DROP INDEX IF EXISTS idx_warden_rel_subject;
+DROP INDEX IF EXISTS idx_warden_rel_check;
+DROP INDEX IF EXISTS idx_warden_rel_ns;
+
+CREATE TABLE warden_relations_new (
+    id                TEXT PRIMARY KEY,
+    tenant_id         TEXT NOT NULL,
+    namespace_path    TEXT NOT NULL DEFAULT '',
+    app_id            TEXT NOT NULL DEFAULT '',
+    object_type       TEXT NOT NULL,
+    object_id         TEXT NOT NULL,
+    relation          TEXT NOT NULL,
+    subject_type      TEXT NOT NULL,
+    subject_id        TEXT NOT NULL,
+    subject_relation  TEXT NOT NULL DEFAULT '',
+    metadata          TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(tenant_id, namespace_path, object_type, object_id, relation, subject_type, subject_id, subject_relation)
+);
+
+INSERT INTO warden_relations_new (
+    id, tenant_id, namespace_path, app_id, object_type, object_id, relation,
+    subject_type, subject_id, subject_relation, metadata, created_at
+) SELECT
+    id, tenant_id, namespace_path, app_id, object_type, object_id, relation,
+    subject_type, subject_id, subject_relation, metadata, created_at
+FROM warden_relations;
+
+DROP TABLE warden_relations;
+ALTER TABLE warden_relations_new RENAME TO warden_relations;
+
+CREATE INDEX IF NOT EXISTS idx_warden_rel_object  ON warden_relations (tenant_id, object_type, object_id, relation);
+CREATE INDEX IF NOT EXISTS idx_warden_rel_subject ON warden_relations (tenant_id, subject_type, subject_id, relation);
+CREATE INDEX IF NOT EXISTS idx_warden_rel_check   ON warden_relations (tenant_id, object_type, object_id, relation, subject_type, subject_id);
+CREATE INDEX IF NOT EXISTS idx_warden_rel_ns      ON warden_relations (tenant_id, namespace_path, object_type, object_id);
+`)
+			},
+			Down: func(_ context.Context, _ migrate.Executor) error {
+				// Table-recreate migrations don't implement a down path here;
+				// the forward migration is idempotent (widening a unique key
+				// never loses rows unless two already violate it).
+				return nil
+			},
+		},
+		&migrate.Migration{
+			Name:    "role_permissions_tenant",
+			Version: "20260922000002",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// A plain ADD COLUMN + backfill + index; no PK/unique change,
+				// so this doesn't need the recreate-table dance.
+				if _, err := exec.Exec(ctx, `ALTER TABLE warden_role_permissions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
+					if !strings.Contains(err.Error(), "duplicate column name") {
+						return err
+					}
+				}
+				_, err := exec.Exec(ctx, `
+UPDATE warden_role_permissions
+SET tenant_id = (SELECT r.tenant_id FROM warden_roles r WHERE r.id = warden_role_permissions.role_id)
+WHERE tenant_id = '';
+
+CREATE INDEX IF NOT EXISTS idx_warden_role_perms_tenant_perm
+    ON warden_role_permissions (tenant_id, perm_namespace_path, perm_name);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `DROP INDEX IF EXISTS idx_warden_role_perms_tenant_perm`)
+				if err != nil {
+					return err
+				}
+				// SQLite only learned DROP COLUMN in 3.35 and refuses it for
+				// indexed columns, so tenant_id stays; it is defaulted, which
+				// keeps the older schema readable.
+				return nil
+			},
+		},
+		&migrate.Migration{
+			Name:    "actor_columns",
+			Version: "20260922000004",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// SQLite has no ADD COLUMN IF NOT EXISTS, so each column is
+				// added individually and a "duplicate column name" error
+				// (a retry after a partial run) is treated as already-done.
+				cols := []struct{ table, column string }{
+					{"warden_roles", "created_by"},
+					{"warden_roles", "updated_by"},
+					{"warden_permissions", "created_by"},
+					{"warden_permissions", "updated_by"},
+					{"warden_policies", "created_by"},
+					{"warden_policies", "updated_by"},
+					{"warden_resource_types", "created_by"},
+					{"warden_resource_types", "updated_by"},
+					{"warden_relations", "created_by"},
+				}
+				for _, c := range cols {
+					stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT ''`, c.table, c.column)
+					if _, err := exec.Exec(ctx, stmt); err != nil {
+						if !strings.Contains(err.Error(), "duplicate column name") {
+							return err
+						}
+					}
+				}
+				return nil
+			},
+			Down: func(_ context.Context, _ migrate.Executor) error {
+				// SQLite only learned DROP COLUMN in 3.35 and refuses it for
+				// indexed columns; leave the (defaulted) columns in place.
+				return nil
+			},
+		},
+		&migrate.Migration{
+			Name:    "check_logs_indexes",
+			Version: "20260922000005",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// idx_warden_clogs_tenant is redundant: every query that used
+				// it is also served by idx_warden_clogs_tenant_created's
+				// leading column.
+				_, err := exec.Exec(ctx, `DROP INDEX IF EXISTS idx_warden_clogs_tenant`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_warden_clogs_tenant ON warden_check_logs (tenant_id)`)
+				return err
 			},
 		},
 	)

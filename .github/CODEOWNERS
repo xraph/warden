@@ -1,0 +1,13 @@
+# Default owner for anything not matched below.
+* @juicycleff
+
+# CI, release, and repo governance changes need the same eye every time.
+/.github/ @juicycleff
+
+# Storage adapters and the core engine/evaluator/DSL are the highest-risk
+# surface in the repo: they hold tenant data and authorization decisions.
+/store/ @juicycleff
+/api/ @juicycleff
+/engine.go @juicycleff
+/evaluator.go @juicycleff
+/dsl/ @juicycleff

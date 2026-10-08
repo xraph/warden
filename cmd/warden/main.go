@@ -2,9 +2,9 @@
 //
 // Usage:
 //
-//	warden lint <path>                   — static checks; no DB required
-//	warden apply -f <path> --store <DSN> — apply config to a tenant
-//	warden diff  -f <path> --store <DSN> — alias for `apply --dry-run`
+//	warden lint <path>                   static checks; no DB required
+//	warden apply -f <path> --store <DSN> apply config to a tenant
+//	warden diff  -f <path> --store <DSN> alias for `apply --dry-run`
 //
 // Path may be a single .warden file, a directory (walked recursively for
 // .warden files), or a glob pattern. Hidden directories are skipped;
@@ -18,10 +18,10 @@
 //
 // Exit codes:
 //
-//	0 — success
-//	1 — diagnostics (lint, dry-run with errors)
-//	2 — usage error
-//	3 — store / runtime error
+//	0: success
+//	1: diagnostics (lint, dry-run with errors)
+//	2: usage error
+//	3: store / runtime error
 package main
 
 import (
@@ -72,7 +72,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `warden — declarative authorization config CLI
+	fmt.Fprintln(os.Stderr, `warden: declarative authorization config CLI
 
 USAGE:
   warden lint <path>                   Static validate (no DB)
@@ -104,6 +104,9 @@ FLAGS:
 
 ENVIRONMENT:
   WARDEN_VAR_<NAME>   Auto-bound to ${NAME} in source. CLI --var wins on conflict.
+  WARDEN_STORE_DSN    Store DSN, used when --store is not given. Prefer this
+                      over --store for a postgres DSN, so the password doesn't
+                      land in shell history or show up in 'ps'.
 
 EXIT CODES:
   0 success | 1 diagnostics | 2 usage | 3 store error`)
@@ -129,7 +132,7 @@ func (v *varList) Set(raw string) error {
 
 // resolveVariables merges (in order: env, CLI) into a single Variables
 // map. CLI flags win over `WARDEN_VAR_*` env vars; env vars win over
-// nothing. Returns nil when neither produced any entries — Load short-
+// nothing. Returns nil when neither produced any entries, so Load short-
 // circuits substitution in that case.
 func resolveVariables(flags *varList) dsl.Variables {
 	merged := dsl.MergeVariables(dsl.EnvVariables(), flags.vars)
@@ -137,6 +140,18 @@ func resolveVariables(flags *varList) dsl.Variables {
 		return nil
 	}
 	return merged
+}
+
+// resolveStoreDSN returns the store DSN to connect with. The --store flag
+// wins when set; otherwise it falls back to WARDEN_STORE_DSN. This lets
+// operators keep a DSN (and its password, for postgres) out of shell
+// history and process listings (`ps`, `/proc/<pid>/cmdline`) by exporting
+// it as an environment variable instead of passing it as a flag.
+func resolveStoreDSN(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	return os.Getenv("WARDEN_STORE_DSN")
 }
 
 func runLint(args []string) int {
@@ -162,10 +177,15 @@ func runLint(args []string) int {
 	for _, d := range allErrs {
 		fmt.Fprintln(os.Stderr, d.String())
 	}
+	// Warnings do not fail lint: whether apply refuses them depends on
+	// what the store holds, and lint reads no store.
+	for _, d := range dsl.Warnings(prog) {
+		fmt.Fprintln(os.Stderr, "warning: "+d.String())
+	}
 	if len(allErrs) > 0 {
 		return 1
 	}
-	fmt.Printf("warden lint: %s — %d roles, %d permissions, %d resource types, %d policies, %d relations — OK\n",
+	fmt.Printf("warden lint: %s: %d roles, %d permissions, %d resource types, %d policies, %d relations, OK\n",
 		fs.Arg(0),
 		len(prog.Roles), len(prog.Permissions), len(prog.ResourceTypes),
 		len(prog.Policies), len(prog.Relations))
@@ -177,7 +197,7 @@ func runApply(args []string, dryRunDefault bool) int {
 	cliVars := &varList{}
 	var (
 		path        = fs.String("f", "", "path to a .warden file, directory, or glob")
-		storeDSN    = fs.String("store", "", "store DSN (memory:, sqlite:..., postgres://...)")
+		storeDSN    = fs.String("store", "", "store DSN (memory:, sqlite:..., postgres://...); falls back to WARDEN_STORE_DSN")
 		tenantID    = fs.String("tenant", "", "override tenant ID")
 		appID       = fs.String("app", "", "override app ID")
 		dryRun      = fs.Bool("dry-run", dryRunDefault, "plan without writing")
@@ -192,8 +212,9 @@ func runApply(args []string, dryRunDefault bool) int {
 		fmt.Fprintln(os.Stderr, "warden: -f <path> is required")
 		return 2
 	}
-	if *storeDSN == "" {
-		fmt.Fprintln(os.Stderr, "warden: --store is required")
+	dsn := resolveStoreDSN(*storeDSN)
+	if dsn == "" {
+		fmt.Fprintln(os.Stderr, "warden: --store or WARDEN_STORE_DSN is required")
 		return 2
 	}
 
@@ -213,7 +234,7 @@ func runApply(args []string, dryRunDefault bool) int {
 	}
 
 	ctx := context.Background()
-	store, closeStore, err := cli.OpenStore(ctx, *storeDSN)
+	store, closeStore, err := cli.OpenStore(ctx, dsn)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warden: %v\n", err)
 		return 3
@@ -368,7 +389,7 @@ func runExport(args []string) int {
 	var (
 		tenantID    = fs.String("tenant", "", "tenant ID (required)")
 		appID       = fs.String("app", "", "optional app ID for the emitted header")
-		storeDSN    = fs.String("store", "", "store DSN (required)")
+		storeDSN    = fs.String("store", "", "store DSN (required unless WARDEN_STORE_DSN is set)")
 		outDir      = fs.String("o", "", "output directory (required)")
 		layoutStr   = fs.String("layout", "flat", "file layout: flat | sectional | domain")
 		nsPrefix    = fs.String("namespace-prefix", "", "limit export to a namespace subtree")
@@ -377,8 +398,9 @@ func runExport(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *tenantID == "" || *storeDSN == "" || *outDir == "" {
-		fmt.Fprintln(os.Stderr, "warden export: --tenant, --store, and -o are required")
+	dsn := resolveStoreDSN(*storeDSN)
+	if *tenantID == "" || dsn == "" || *outDir == "" {
+		fmt.Fprintln(os.Stderr, "warden export: --tenant, --store (or WARDEN_STORE_DSN), and -o are required")
 		return 2
 	}
 	var layout dsl.Layout
@@ -395,7 +417,7 @@ func runExport(args []string) int {
 	}
 
 	ctx := context.Background()
-	store, closeStore, err := cli.OpenStore(ctx, *storeDSN)
+	store, closeStore, err := cli.OpenStore(ctx, dsn)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warden export: %v\n", err)
 		return 3

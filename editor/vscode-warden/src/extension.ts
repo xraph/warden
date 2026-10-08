@@ -1,7 +1,7 @@
 // Warden VS Code extension entry point.
 //
 // Activates on first .warden file open. Spawns warden-lsp as a stdio
-// language client. The extension itself contains no language logic —
+// language client. The extension itself contains no language logic:
 // every syntactic and semantic feature comes from the LSP server,
 // keeping the TypeScript surface tiny (~100 lines) and free of drift.
 
@@ -29,13 +29,13 @@ export async function activate(context: ExtensionContext): Promise<void> {
     return;
   }
 
-  // Default: spawn `warden lsp` — the unified CLI subcommand. The
+  // Default: spawn `warden lsp`, the unified CLI subcommand. The
   // standalone `warden-lsp` binary works equivalently; users can swap by
   // setting warden.lsp.command to ["warden-lsp"].
   const cmd = cfg.get<string[]>("lsp.command", ["warden", "lsp"]);
   if (!cmd.length) {
     void window.showErrorMessage(
-      "warden.lsp.command is empty — set it to [\"warden\", \"lsp\"] or [\"warden-lsp\"]."
+      "warden.lsp.command is empty. Set it to [\"warden\", \"lsp\"] or [\"warden-lsp\"]."
     );
     return;
   }
@@ -87,7 +87,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
       case State.Stopped:
         status.text = "$(error) Warden LSP";
         status.tooltip =
-          "Warden language server has stopped. Check 'warden.lsp.path' in settings.";
+          "Warden language server has stopped. Check 'warden.lsp.command' in settings.";
         break;
     }
   });
@@ -98,7 +98,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     void window.showErrorMessage(
       `Warden LSP failed to start: ${msg}. ` +
-        "Set 'warden.lsp.path' in your settings, or install warden-lsp on PATH " +
+        "Set 'warden.lsp.command' in your settings, or install warden-lsp on PATH " +
         "(e.g. `go install github.com/xraph/warden/cmd/warden-lsp@latest`).",
     );
     if (status) {

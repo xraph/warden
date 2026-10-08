@@ -96,15 +96,17 @@ allowed, err := eng.CanI(
 
 ## Configuration Options
 
+`EnableRBAC`, `EnableABAC`, `EnableReBAC`, `RequireTenant` and `EnableCheckLog` are `*bool`: `nil` means "use the default" (all five default to `true`), and only an explicit pointer to `false` turns one off. Take the address of a local variable to set one:
+
 ```go
+disableABAC := false
+
 eng, _ := warden.NewEngine(
     warden.WithStore(store),
     warden.WithConfig(warden.Config{
-        EnableRBAC:    true,            // Enable role-based checks
-        EnableABAC:    true,            // Enable policy-based checks
-        EnableReBAC:   true,            // Enable relationship-based checks
-        MaxGraphDepth: 10,              // ReBAC traversal limit
-        CacheTTL:      5 * time.Minute, // Cache positive decisions
+        EnableABAC:    &disableABAC,    // Turn off policy-based checks
+        MaxGraphDepth: 10,              // ReBAC traversal limit (default: 10)
+        CacheTTL:      5 * time.Minute, // Cache positive decisions (default: 0, disabled)
     }),
     warden.WithEvaluator(customEval),         // Custom ABAC/PBAC evaluator
     warden.WithGraphWalker(customGW),         // Custom ReBAC graph walker

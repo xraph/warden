@@ -42,7 +42,7 @@ func BenchmarkCheckWithNamespace(b *testing.B) {
 			permID := id.NewPermissionID()
 			_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
 			_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
-			_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: "doc:read"})
+			_ = s.AttachPermission(ctx, "t1", roleID, permission.Ref{Name: "doc:read"})
 			_ = s.CreateAssignment(ctx, &assignment.Assignment{
 				ID: id.NewAssignmentID(), TenantID: "t1", RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
 			})
@@ -98,7 +98,7 @@ func BenchmarkRBACWithPermsCount(b *testing.B) {
 					ID: id.NewPermissionID(), TenantID: "t1", Name: name,
 					Resource: "doc", Action: name[len("doc:"):],
 				})
-				_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: name})
+				_ = s.AttachPermission(ctx, "t1", roleID, permission.Ref{Name: name})
 			}
 			_ = s.CreateAssignment(ctx, &assignment.Assignment{
 				ID: id.NewAssignmentID(), TenantID: "t1", RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
@@ -156,7 +156,7 @@ func BenchmarkRoleInheritance(b *testing.B) {
 				}
 				_ = s.CreateRole(ctx, r)
 			}
-			_ = s.AttachPermission(ctx, roleIDs[0], permission.Ref{Name: "doc:read"})
+			_ = s.AttachPermission(ctx, "t1", roleIDs[0], permission.Ref{Name: "doc:read"})
 
 			_ = s.CreateAssignment(ctx, &assignment.Assignment{
 				ID: id.NewAssignmentID(), TenantID: "t1", RoleID: roleIDs[depth], SubjectKind: "user", SubjectID: "u1",

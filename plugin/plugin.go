@@ -8,6 +8,7 @@ package plugin
 
 import (
 	"context"
+	"time"
 
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
@@ -105,7 +106,12 @@ type RelationWritten interface {
 	OnRelationWritten(ctx context.Context, t *relation.Tuple) error
 }
 
-// RelationDeleted is called after a relation tuple is deleted.
+// RelationDeleted is called after a relation tuple is deleted, once per
+// tuple, with that tuple's ID (never the zero ID). A REST delete by key
+// whose read of the matching tuples named none (it failed, or found
+// nothing) fires no RelationDeleted; it clears the engine's cache for its
+// tenant itself, and when the read failed its one audit event names the
+// key instead of a tuple.
 type RelationDeleted interface {
 	OnRelationDeleted(ctx context.Context, relID id.RelationID) error
 }
@@ -150,4 +156,46 @@ type PolicyObligationFired interface {
 // Shutdown is called during graceful shutdown.
 type Shutdown interface {
 	OnShutdown(ctx context.Context) error
+}
+
+// ──────────────────────────────────────────────────
+// Audit hook
+// ──────────────────────────────────────────────────
+
+// Event describes a single mutation for the audit trail. It is fired for
+// every mutation in addition to the typed hooks above, so a plugin that
+// wants a complete audit stream can implement just Audit instead of every
+// typed hook individually.
+//
+// Actor is warden.Actor, passed as `any` to avoid an import cycle (plugin
+// cannot import the root warden package); it carries Kind, ID and Via.
+// Entity is the entity after the change, or nil on delete. Before is the
+// entity as it stood before an update or a delete (role, policy,
+// permission, assignment, resource type and relation deletes all set it).
+// It is nil on a create, and on an update or delete whose read of the old
+// entity failed.
+type Event struct {
+	Actor     any
+	RequestID string
+	TraceID   string
+	At        time.Time
+	// Action is one of: "role.created", "role.updated", "role.deleted",
+	// "permission.created", "permission.deleted", "permission.attached",
+	// "permission.detached", "assignment.created", "assignment.deleted",
+	// "relation.written", "relation.deleted", "policy.created",
+	// "policy.updated", "policy.deleted", "resourcetype.created",
+	// "resourcetype.updated", "resourcetype.deleted", "declarative.applied",
+	// "permission.updated", "role.permissions_set", "maintenance.run",
+	// "maintenance.cache_invalidated".
+	Action   string
+	TenantID string
+	EntityID string
+	Entity   any
+	Before   any
+}
+
+// Audit is called for every mutation, in addition to whichever typed hook
+// above also fires for it.
+type Audit interface {
+	OnAudit(ctx context.Context, ev Event) error
 }

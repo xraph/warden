@@ -72,12 +72,6 @@ linters:
         - name: unused-parameter
         - name: unreachable-code
 
-    gosec:
-      excludes:
-        - G104
-        - G304
-        - G401  # SHA-256 is used for integrity, not password hashing
-
     errcheck:
       check-type-assertions: true
       check-blank: true

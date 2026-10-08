@@ -7,12 +7,18 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/permission"
+	"github.com/xraph/warden/plugin"
+	"github.com/xraph/warden/role"
 )
 
 func (a *API) registerPermissionRoutes(router forge.Router) error {
 	g := router.Group("/v1", forge.WithGroupTags("permissions"))
+
+	manage := a.authorize("manage", "warden:permission")
+	read := a.authorize("read", "warden:permission")
 
 	if err := g.POST("/permissions", a.createPermission,
 		forge.WithSummary("Create permission"),
@@ -21,6 +27,7 @@ func (a *API) registerPermissionRoutes(router forge.Router) error {
 		forge.WithRequestSchema(CreatePermissionRequest{}),
 		forge.WithCreatedResponse(&permission.Permission{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -30,6 +37,7 @@ func (a *API) registerPermissionRoutes(router forge.Router) error {
 		forge.WithOperationID("getPermission"),
 		forge.WithResponseSchema(http.StatusOK, "Permission details", &permission.Permission{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	); err != nil {
 		return err
 	}
@@ -39,6 +47,7 @@ func (a *API) registerPermissionRoutes(router forge.Router) error {
 		forge.WithOperationID("deletePermission"),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -49,6 +58,7 @@ func (a *API) registerPermissionRoutes(router forge.Router) error {
 		forge.WithRequestSchema(ListPermissionsRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Permission list", []*permission.Permission{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	)
 }
 
@@ -68,8 +78,12 @@ func (a *API) createPermission(ctx forge.Context, req *CreatePermissionRequest) 
 			return nil, verr
 		}
 	}
+	if err := permission.CheckAction(req.Action); err != nil {
+		return nil, forge.BadRequest(err.Error())
+	}
 
 	appID, tenantID := scopeFromForgeContext(ctx)
+	actor, _ := warden.ActorFromContext(ctx.Context())
 	now := time.Now()
 	p := &permission.Permission{
 		ID:          id.NewPermissionID(),
@@ -79,8 +93,9 @@ func (a *API) createPermission(ctx forge.Context, req *CreatePermissionRequest) 
 		Resource:    req.Resource,
 		Action:      req.Action,
 		Description: req.Description,
-		IsSystem:    req.IsSystem,
 		Metadata:    req.Metadata,
+		CreatedBy:   actor.ID,
+		UpdatedBy:   actor.ID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -91,9 +106,13 @@ func (a *API) createPermission(ctx forge.Context, req *CreatePermissionRequest) 
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitPermissionCreated(ctx.Context(), p)
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: now, Action: "permission.created",
+			TenantID: tenantID, EntityID: p.ID.String(), Entity: p,
+		})
 	}
 
-	return p, ctx.JSON(http.StatusCreated, p)
+	return nil, ctx.JSON(http.StatusCreated, p)
 }
 
 func (a *API) getPermission(ctx forge.Context, _ *GetPermissionRequest) (*permission.Permission, error) {
@@ -102,12 +121,14 @@ func (a *API) getPermission(ctx forge.Context, _ *GetPermissionRequest) (*permis
 		return nil, forge.BadRequest(fmt.Sprintf("invalid permission ID: %v", err))
 	}
 
-	p, err := a.eng.Store().GetPermission(ctx.Context(), permID)
+	_, tenantID := scopeFromForgeContext(ctx)
+
+	p, err := a.eng.Store().GetPermission(ctx.Context(), tenantID, permID)
 	if err != nil {
 		return nil, mapError(err)
 	}
 
-	return p, ctx.JSON(http.StatusOK, p)
+	return p, nil
 }
 
 func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*struct{}, error) {
@@ -116,12 +137,33 @@ func (a *API) deletePermission(ctx forge.Context, _ *GetPermissionRequest) (*str
 		return nil, forge.BadRequest(fmt.Sprintf("invalid permission ID: %v", err))
 	}
 
-	if err := a.eng.Store().DeletePermission(ctx.Context(), permID); err != nil {
+	_, tenantID := scopeFromForgeContext(ctx)
+	// Read first so the system guard has something to check.
+	before, err := a.eng.Store().GetPermission(ctx.Context(), tenantID, permID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := permission.CheckWritable(before); err != nil {
+		return nil, mapError(err)
+	}
+	// The store's delete also removes every grant of it, so a permission
+	// a role still grants is refused (409) and the refusal names the
+	// roles, as the dashboard does.
+	if err := role.CheckPermissionUngranted(ctx.Context(), a.eng.Store(), tenantID, before); err != nil {
+		return nil, mapError(err)
+	}
+
+	if err := a.eng.Store().DeletePermission(ctx.Context(), tenantID, permID); err != nil {
 		return nil, mapError(err)
 	}
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitPermissionDeleted(ctx.Context(), permID)
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: time.Now(), Action: "permission.deleted",
+			TenantID: tenantID, EntityID: permID.String(), Before: before,
+		})
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)

@@ -7,6 +7,7 @@ type CheckResponse struct {
 	Reason     string      `json:"reason,omitempty" description:"Human-readable reason"`
 	MatchedBy  []MatchInfo `json:"matched_by,omitempty" description:"Matched rules"`
 	EvalTimeNs int64       `json:"eval_time_ns" description:"Evaluation time in nanoseconds"`
+	Error      string      `json:"error,omitempty" description:"Per-item error (batch responses only)"`
 }
 
 // MatchInfo identifies a matched rule.

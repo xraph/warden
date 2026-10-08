@@ -1,0 +1,11 @@
+{
+  "title": "Operations",
+  "pages": [
+    "hardening",
+    "backup-restore",
+    "retention",
+    "upgrades-and-migrations",
+    "monitoring",
+    "access-reviews"
+  ]
+}

@@ -15,7 +15,7 @@ var (
 	// `role admin :` — possibly with whitespace. The trailing optional
 	// `[a-z_-]*` allows for a partial identifier the user has begun
 	// typing (e.g. `role admin : vie`).
-	roleParentRegex = regexp.MustCompile(`^\s*role\s+[a-z][a-z0-9_-]*\s*:\s*[a-z0-9_/-]*$`)
+	roleParentRegex = regexp.MustCompile(`^\s*role\s+([a-z][a-z0-9_-]*)\s*:\s*[a-z0-9_/-]*$`)
 
 	// Inside `grants = [` — captures both `[` and a partially-typed
 	// string in the list. Matches multi-line lists by accepting
@@ -79,7 +79,7 @@ func (s *server) handleCompletion(raw json.RawMessage) any {
 	case ctxTopLevel:
 		return wrapItems(topLevelKeywordItems())
 	case ctxRoleParent:
-		return wrapItems(roleParentItems(ws, ctx.namespacePath))
+		return wrapItems(roleParentItems(ws, ctx.namespacePath, ctx.roleSlug))
 	case ctxRoleGrants:
 		return wrapItems(permissionGrantItems(ws))
 	case ctxPermissionResource:
@@ -121,7 +121,8 @@ const (
 type completionContext struct {
 	kind          completionCtxKind
 	resourceName  string // for ctxPermissionAction / ctxResourceExpression
-	namespacePath string // for ctxRoleParent — relative resolution scope
+	namespacePath string // for ctxRoleParent: the namespace the role is declared in
+	roleSlug      string // for ctxRoleParent: the role being declared
 }
 
 // classifyContext determines which completion context applies given the
@@ -142,7 +143,7 @@ func classifyContext(prefix, blockText string) completionContext {
 	// Role parent: `role <slug> :` with optional whitespace after the colon.
 	// e.g. `role admin : ` or `role admin :` mid-typing.
 	if m := roleParentRegex.FindStringSubmatch(prefix); m != nil {
-		return completionContext{kind: ctxRoleParent}
+		return completionContext{kind: ctxRoleParent, namespacePath: enclosingNamespacePath(blockText), roleSlug: m[1]}
 	}
 
 	// Inside a `grants = [...]` list.
@@ -215,29 +216,38 @@ func topLevelKeywordItems() []completionItem {
 	return out
 }
 
-func roleParentItems(ws *workspaceIndex, _ string) []completionItem {
+// roleParentItems offers the roles a role declared in namespacePath can
+// name as its parent. The resolver refuses a parent outside the role's
+// own namespace (dsl checkRoleParents), so only roles in that namespace
+// are offered: each by its bare slug and by its absolute path into that
+// namespace (`/eng/viewer`, or `/viewer` at the tenant root), both of
+// which the resolver accepts. The role being declared,
+// self, is left out: naming itself is a parent cycle the resolver refuses.
+func roleParentItems(ws *workspaceIndex, namespacePath, self string) []completionItem {
 	roles := ws.roleSlugs()
 	out := make([]completionItem, 0, len(roles))
 	for _, r := range roles {
-		label := r.Slug
-		insert := r.Slug
-		// Suggest the absolute form for cross-namespace references when
-		// the role lives somewhere other than tenant root.
-		if r.NamespacePath != "" {
-			label = "/" + r.NamespacePath + "/" + r.Slug
-			insert = label
+		if r.NamespacePath != namespacePath || r.Slug == self {
+			continue
 		}
 		detail := formatOriginDetail(r.URI, r.Pos)
 		if r.Name != "" {
 			detail = r.Name + " · " + detail
 		}
-		out = append(out, completionItem{
-			Label:         label,
-			Kind:          completionItemVariable,
-			Detail:        detail,
-			Documentation: r.Description,
-			InsertText:    insert,
-		})
+		abs := "/" + r.Slug
+		if r.NamespacePath != "" {
+			abs = "/" + r.NamespacePath + "/" + r.Slug
+		}
+		labels := []string{r.Slug, abs}
+		for _, label := range labels {
+			out = append(out, completionItem{
+				Label:         label,
+				Kind:          completionItemVariable,
+				Detail:        detail,
+				Documentation: r.Description,
+				InsertText:    label,
+			})
+		}
 	}
 	return out
 }
@@ -473,6 +483,40 @@ func inAnyBlock(text string) bool {
 // `resource <name> { ... ` block, or "" if not inside one.
 func enclosingResourceName(text string) string {
 	return enclosingDeclName(text, "resource")
+}
+
+// enclosingNamespacePath returns the absolute path of the namespace
+// blocks open at the end of text, outermost first and joined with "/"
+// the way the parser stamps NamespacePath, or "" at the tenant root.
+// Like enclosingDeclName it tracks braces only, not strings or comments.
+func enclosingNamespacePath(text string) string {
+	var names []string
+	open := 0
+	for i := len(text) - 1; i >= 0; i-- {
+		switch text[i] {
+		case '}':
+			open++
+		case '{':
+			if open > 0 {
+				open--
+				continue
+			}
+			lineStart := i
+			for lineStart > 0 && text[lineStart-1] != '\n' {
+				lineStart--
+			}
+			fields := strings.Fields(text[lineStart:i])
+			if len(fields) >= 2 && fields[0] == "namespace" {
+				if name := strings.Trim(fields[1], "\""); name != "" {
+					names = append(names, name)
+				}
+			}
+		}
+	}
+	for l, r := 0, len(names)-1; l < r; l, r = l+1, r-1 {
+		names[l], names[r] = names[r], names[l]
+	}
+	return strings.Join(names, "/")
 }
 
 // isInsidePolicyBlock reports whether the cursor is inside an open

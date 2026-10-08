@@ -1,0 +1,331 @@
+// handlers_relations.go: the relation surface.
+//
+// A tuple is object#relation@subject, Zanzibar style:
+// document:readme#viewer@user:bob.
+//
+// Two things about tuples that differ from everything else in this contract.
+//
+// They are create-and-delete only. relation.Store exposes no update, so
+// changing a tuple means deleting one and writing another. There is no
+// patch input here and no edit form on the page.
+//
+// Their namespace cascades at check time but not in the list. Like roles
+// and policies, a tuple stored at a namespace is in scope for a check in
+// that namespace and in every namespace below it: the engine passes
+// AncestorNamespaces(checkNamespace) to every tuple lookup a check makes,
+// in the direct check, the expression evaluator and the graph walker alike
+// (see evaluateReBAC in engine.go and TestReBAC_NamespaceCascade). The list
+// filter, by contrast, is an exact match on purpose, so it shows what is
+// stored in one namespace. A namespace's listing therefore does NOT show a
+// parent's tuples that also apply there, and a page must say so rather
+// than let the listing read as everything in effect.
+package contract
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/relation"
+	"github.com/xraph/warden/resourcetype"
+
+	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
+)
+
+// RelationSummary is one tuple.
+type RelationSummary struct {
+	ID              string `json:"id"`
+	NamespacePath   string `json:"namespacePath"`
+	ObjectType      string `json:"objectType"`
+	ObjectID        string `json:"objectId"`
+	Relation        string `json:"relation"`
+	SubjectType     string `json:"subjectType"`
+	SubjectID       string `json:"subjectId"`
+	SubjectRelation string `json:"subjectRelation,omitempty"`
+	CreatedBy       string `json:"createdBy,omitempty"`
+	CreatedAt       string `json:"createdAt"`
+	// Undeclared is set when the resource type governing the tuple's object
+	// type, from the tuple's own namespace, does not declare it: the reason
+	// (resourcetype.UndeclaredTupleError.Reason) a write of this tuple would
+	// be refused now. A tuple stored before the write check existed, by a
+	// writer that skips it, or before its resource type changed can carry
+	// one. It is absent when the tuple conforms, when no resource type
+	// governs its object type, and on every row when the response says
+	// MarksWithheld.
+	//
+	// It judges the tuple by the write check's rule and no other. A check
+	// reads stored tuples as they are, without consulting the resource
+	// type's relations or allowed subjects: the direct check and the graph
+	// walker read no resource type, and the expression evaluator reads only
+	// its permissions. So a marked tuple still counts.
+	Undeclared string `json:"undeclared,omitempty"`
+}
+
+// RelationsListInput filters the tuple list. Every field the store's filter
+// offers is here, because tracing a tuple means narrowing on whichever end
+// you happen to know.
+type RelationsListInput struct {
+	PageRequest
+	NamespacePath   *string `json:"namespacePath,omitempty"`
+	ObjectType      string  `json:"objectType,omitempty"`
+	ObjectID        string  `json:"objectId,omitempty"`
+	Relation        string  `json:"relation,omitempty"`
+	SubjectType     string  `json:"subjectType,omitempty"`
+	SubjectID       string  `json:"subjectId,omitempty"`
+	SubjectRelation string  `json:"subjectRelation,omitempty"`
+}
+
+// RelationsListResponse is the paged reply.
+type RelationsListResponse struct {
+	PageMeta
+	Items []RelationSummary `json:"items"`
+	// MarksWithheld is true when the caller may not read resource types
+	// (read on warden:resourcetype), so no row was checked against its
+	// resource type and none carries Undeclared. A mark's reason names the
+	// type's relations or allowed subjects, which resourceTypes.* keeps
+	// behind that grant, and this list must not be a way around it. An
+	// unmarked row then says nothing about whether the tuple conforms.
+	MarksWithheld bool `json:"marksWithheld"`
+}
+
+// RelationCreateInput writes one tuple. Every part of the triple is
+// required: a tuple missing any of them matches nothing and is reachable by
+// no filter, so it is silent junk rather than a partial grant.
+type RelationCreateInput struct {
+	NamespacePath   string `json:"namespacePath,omitempty"`
+	ObjectType      string `json:"objectType"`
+	ObjectID        string `json:"objectId"`
+	Relation        string `json:"relation"`
+	SubjectType     string `json:"subjectType"`
+	SubjectID       string `json:"subjectId"`
+	SubjectRelation string `json:"subjectRelation,omitempty"`
+}
+
+// RelationDeleteInput names the tuple to remove, by id.
+//
+// The store also offers DeleteRelationTuple, which takes the whole natural
+// key. By-id is used here because the list hands the page an id, and an id
+// cannot be half-right the way an eight-part key can.
+type RelationDeleteInput struct {
+	ID string `json:"id"`
+}
+
+func parseRelationID(raw string) (id.RelationID, error) {
+	rid, err := id.ParseRelationID(raw)
+	if err != nil {
+		return id.Nil, badRequest("not a relation id: " + raw)
+	}
+	return rid, nil
+}
+
+func projectTuple(tp *relation.Tuple) RelationSummary {
+	return RelationSummary{
+		ID:              tp.ID.String(),
+		NamespacePath:   tp.NamespacePath,
+		ObjectType:      tp.ObjectType,
+		ObjectID:        tp.ObjectID,
+		Relation:        tp.Relation,
+		SubjectType:     tp.SubjectType,
+		SubjectID:       tp.SubjectID,
+		SubjectRelation: tp.SubjectRelation,
+		CreatedBy:       tp.CreatedBy,
+		CreatedAt:       tp.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func relationsListHandler(deps Deps) func(context.Context, RelationsListInput, dashcontract.Principal) (RelationsListResponse, error) {
+	return func(ctx context.Context, in RelationsListInput, p dashcontract.Principal) (RelationsListResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return RelationsListResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return RelationsListResponse{}, err
+		}
+		limit, offset := in.Clamp()
+		filter := &relation.ListFilter{
+			TenantID:        tenantID,
+			NamespacePath:   in.NamespacePath,
+			ObjectType:      in.ObjectType,
+			ObjectID:        in.ObjectID,
+			Relation:        in.Relation,
+			SubjectType:     in.SubjectType,
+			SubjectID:       in.SubjectID,
+			SubjectRelation: in.SubjectRelation,
+			Limit:           limit,
+			Offset:          offset,
+		}
+		s := deps.Engine.Store()
+		rows, err := s.ListRelations(ctx, filter)
+		if err != nil {
+			return RelationsListResponse{}, mapWardenError(err)
+		}
+		total, err := s.CountRelations(ctx, filter)
+		if err != nil {
+			return RelationsListResponse{}, mapWardenError(err)
+		}
+		out := RelationsListResponse{
+			PageMeta: newPageMeta(total, limit, offset),
+			Items:    make([]RelationSummary, 0, len(rows)),
+		}
+		// The intent's grant is read on warden:relation. The marks need
+		// read on warden:resourcetype as well, checked here the way
+		// subjects.detail checks its sections: dry run, since a query
+		// writes no check log, and an engine that cannot decide fails the
+		// request as the authorizer does.
+		mayReadTypes, err := principalHolds(ctx, deps.Engine, p, tenantID, "read", "warden:resourcetype", false)
+		if err != nil {
+			return RelationsListResponse{}, mapWardenError(err)
+		}
+		if !mayReadTypes {
+			out.MarksWithheld = true
+			for _, tp := range rows {
+				out.Items = append(out.Items, projectTuple(tp))
+			}
+			return out, nil
+		}
+		types := &pageTypes{s: s, seen: map[pageTypeKey]pageTypeAnswer{}}
+		for _, tp := range rows {
+			item := projectTuple(tp)
+			err := resourcetype.CheckTupleDeclared(ctx, types, tp)
+			var undeclared *resourcetype.UndeclaredTupleError
+			switch {
+			case errors.As(err, &undeclared):
+				item.Undeclared = undeclared.Reason()
+			case err != nil:
+				// The schema could not be read, so a missing mark would
+				// claim a tuple conforms when nobody knows.
+				return RelationsListResponse{}, mapWardenError(err)
+			}
+			out.Items = append(out.Items, item)
+		}
+		return out, nil
+	}
+}
+
+// pageTypes answers resource type lookups for one page of tuples, reading
+// each (namespace, name) from the store at most once. Rows on a page share
+// object types and namespace chains, so without it a page of 25 tuples
+// would repeat the same reads row after row.
+type pageTypes struct {
+	s    resourcetype.NameGetter
+	seen map[pageTypeKey]pageTypeAnswer
+}
+
+type pageTypeKey struct{ tenantID, namespacePath, name string }
+
+type pageTypeAnswer struct {
+	rt  *resourcetype.ResourceType
+	err error
+}
+
+func (p *pageTypes) GetResourceTypeByName(ctx context.Context, tenantID, namespacePath, name string) (*resourcetype.ResourceType, error) {
+	key := pageTypeKey{tenantID, namespacePath, name}
+	if a, ok := p.seen[key]; ok {
+		return a.rt, a.err
+	}
+	rt, err := p.s.GetResourceTypeByName(ctx, tenantID, namespacePath, name)
+	p.seen[key] = pageTypeAnswer{rt, err}
+	return rt, err
+}
+
+func relationsCreateHandler(deps Deps) func(context.Context, RelationCreateInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in RelationCreateInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		// An ordered slice rather than a map, so the first missing part
+		// reported is the same one on every run.
+		for _, part := range []struct{ field, value string }{
+			{"objectType", in.ObjectType},
+			{"objectId", in.ObjectID},
+			{"relation", in.Relation},
+			{"subjectType", in.SubjectType},
+			{"subjectId", in.SubjectID},
+		} {
+			if part.value == "" {
+				return AckResponse{}, badRequest("a relation needs " + part.field)
+			}
+		}
+		if err := validateNamespace(in.NamespacePath); err != nil {
+			return AckResponse{}, err
+		}
+		ctx = withActor(ctx, p)
+		tp := &relation.Tuple{
+			TenantID:        tenantID,
+			NamespacePath:   in.NamespacePath,
+			ObjectType:      in.ObjectType,
+			ObjectID:        in.ObjectID,
+			Relation:        in.Relation,
+			SubjectType:     in.SubjectType,
+			SubjectID:       in.SubjectID,
+			SubjectRelation: in.SubjectRelation,
+			CreatedBy:       actorFor(p).ID,
+		}
+		// The resource type governing the object type, if there is one,
+		// must declare the relation and allow the subject. The read and the
+		// write are not atomic: a schema change landing between them is not
+		// seen by this write.
+		if err := resourcetype.CheckTupleDeclared(ctx, deps.Engine.Store(), tp); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		if err := deps.Engine.Store().CreateRelation(ctx, tp); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		// Same emissions as the REST handler (api/relation_handler.go). The
+		// typed hook and the audit event each drive the cache invalidator, so
+		// skipping them leaves a stale answer for the new subject until the
+		// cached decision ages out.
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitRelationWritten(ctx, tp)
+		}
+		emitAudit(ctx, deps, p, "relation.written", tenantID, tp.ID.String(), tp, nil)
+		return AckResponse{ID: tp.ID.String()}, nil
+	}
+}
+
+func relationsDeleteHandler(deps Deps) func(context.Context, RelationDeleteInput, dashcontract.Principal) (AckResponse, error) {
+	return func(ctx context.Context, in RelationDeleteInput, p dashcontract.Principal) (AckResponse, error) {
+		if err := requireEngine(deps); err != nil {
+			return AckResponse{}, err
+		}
+		tenantID, err := tenantFrom(p, deps)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		rid, err := parseRelationID(in.ID)
+		if err != nil {
+			return AckResponse{}, err
+		}
+		s := deps.Engine.Store()
+		// Read first: it makes another tenant's tuple NOT_FOUND before
+		// anything is deleted or audited, and gives the audit event the tuple
+		// that is about to disappear rather than a bare ID.
+		//
+		// The read and the delete are two calls, not one transaction. A
+		// tuple has no update path, so the row cannot change between them;
+		// if a concurrent request deletes it first, DeleteRelation returns
+		// ErrRelationNotFound below and this request audits nothing.
+		before, err := s.GetRelation(ctx, tenantID, rid)
+		if err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		ctx = withActor(ctx, p)
+		if err := s.DeleteRelation(ctx, tenantID, rid); err != nil {
+			return AckResponse{}, mapWardenError(err)
+		}
+		// Load-bearing: the typed hook clears the decision cache and the
+		// audit event flushes the tenant. Without them a subject who no
+		// longer holds the relation keeps a cached ALLOW.
+		if pl := deps.Engine.Plugins(); pl != nil {
+			pl.EmitRelationDeleted(ctx, rid)
+		}
+		emitAudit(ctx, deps, p, "relation.deleted", tenantID, rid.String(), nil, before)
+		return AckResponse{}, nil
+	}
+}

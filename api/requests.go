@@ -12,13 +12,12 @@ import (
 
 // CheckRequest is the request body for an authorization check.
 type CheckRequest struct {
-	SubjectKind  string         `json:"subject_kind" description:"Subject type (user, api_key, service, service_acct)"`
+	SubjectKind  string         `json:"subject_kind,omitempty" description:"Subject type (user, api_key, service, service_acct)"`
 	SubjectID    string         `json:"subject_id" description:"Subject identifier"`
 	Action       string         `json:"action" description:"Action name"`
 	ResourceType string         `json:"resource_type" description:"Resource type"`
-	ResourceID   string         `json:"resource_id" description:"Resource identifier"`
+	ResourceID   string         `json:"resource_id,omitempty" description:"Resource identifier"`
 	Context      map[string]any `json:"context,omitempty" description:"Additional context attributes"`
-	TenantID     string         `json:"tenant_id,omitempty" description:"Optional tenant ID override (defaults to context-derived tenant)"`
 }
 
 // BatchCheckRequest contains multiple checks.
@@ -36,9 +35,8 @@ type CreateRoleRequest struct {
 	Slug          string         `json:"slug" description:"URL-safe slug, unique per (tenant, namespace)"`
 	NamespacePath string         `json:"namespace_path,omitempty" description:"Namespace path (e.g. \"engineering/platform\"); empty = tenant root"`
 	Description   string         `json:"description,omitempty" description:"Human-readable description"`
-	ParentSlug    string         `json:"parent_slug,omitempty" description:"Parent role slug for inheritance (must exist in same tenant + namespace, or in an ancestor namespace)"`
+	ParentSlug    string         `json:"parent_slug,omitempty" description:"Parent role slug for inheritance (must name a role in the same tenant and namespace, and not this role)"`
 	MaxMembers    int            `json:"max_members,omitempty" description:"Maximum members (0 = unlimited)"`
-	IsSystem      bool           `json:"is_system,omitempty" description:"System role flag"`
 	IsDefault     bool           `json:"is_default,omitempty" description:"Default role flag"`
 	Metadata      map[string]any `json:"metadata,omitempty" description:"Custom metadata"`
 }
@@ -52,7 +50,7 @@ type UpdateRoleRequest struct {
 	RoleID      string         `path:"roleId" description:"Role ID"`
 	Name        string         `json:"name,omitempty" description:"Role name"`
 	Description string         `json:"description,omitempty" description:"Human-readable description"`
-	ParentSlug  *string        `json:"parent_slug,omitempty" description:"Parent role slug; empty string clears, omit to leave unchanged"`
+	ParentSlug  *string        `json:"parent_slug,omitempty" description:"Parent role slug (must name a role in the same namespace that is neither this role nor one of its descendants); empty string clears, omit to leave unchanged"`
 	MaxMembers  *int           `json:"max_members,omitempty" description:"Maximum members"`
 	IsDefault   *bool          `json:"is_default,omitempty" description:"Default role flag"`
 	Metadata    map[string]any `json:"metadata,omitempty" description:"Custom metadata"`
@@ -65,9 +63,9 @@ type GetRoleRequest struct {
 
 // ListRolesRequest holds query parameters for listing roles.
 type ListRolesRequest struct {
-	Search string `query:"search" description:"Search by name"`
-	Limit  int    `query:"limit" description:"Maximum results (default: 50)"`
-	Offset int    `query:"offset" description:"Results to skip"`
+	Search string `query:"search,omitempty" description:"Search by name"`
+	Limit  int    `query:"limit,omitempty" description:"Maximum results (default: 50)"`
+	Offset int    `query:"offset,omitempty" description:"Results to skip"`
 }
 
 // AttachPermissionRequest is the body for attaching a permission to a role.
@@ -110,7 +108,6 @@ type CreatePermissionRequest struct {
 	Resource    string         `json:"resource" description:"Resource type"`
 	Action      string         `json:"action" description:"Action name"`
 	Description string         `json:"description,omitempty" description:"Human-readable description"`
-	IsSystem    bool           `json:"is_system,omitempty" description:"System permission flag"`
 	Metadata    map[string]any `json:"metadata,omitempty" description:"Custom metadata"`
 }
 
@@ -121,11 +118,11 @@ type GetPermissionRequest struct {
 
 // ListPermissionsRequest holds query parameters.
 type ListPermissionsRequest struct {
-	Resource string `query:"resource" description:"Filter by resource type"`
-	Action   string `query:"action" description:"Filter by action"`
-	Search   string `query:"search" description:"Search by name"`
-	Limit    int    `query:"limit" description:"Maximum results"`
-	Offset   int    `query:"offset" description:"Results to skip"`
+	Resource string `query:"resource,omitempty" description:"Filter by resource type"`
+	Action   string `query:"action,omitempty" description:"Filter by action"`
+	Search   string `query:"search,omitempty" description:"Search by name"`
+	Limit    int    `query:"limit,omitempty" description:"Maximum results"`
+	Offset   int    `query:"offset,omitempty" description:"Results to skip"`
 }
 
 // ──────────────────────────────────────────────────
@@ -149,11 +146,11 @@ type GetAssignmentRequest struct {
 
 // ListAssignmentsRequest holds query parameters.
 type ListAssignmentsRequest struct {
-	SubjectKind string `query:"subject_kind" description:"Filter by subject type"`
-	SubjectID   string `query:"subject_id" description:"Filter by subject ID"`
-	RoleID      string `query:"role_id" description:"Filter by role ID"`
-	Limit       int    `query:"limit" description:"Maximum results"`
-	Offset      int    `query:"offset" description:"Results to skip"`
+	SubjectKind string `query:"subject_kind,omitempty" description:"Filter by subject type"`
+	SubjectID   string `query:"subject_id,omitempty" description:"Filter by subject ID"`
+	RoleID      string `query:"role_id,omitempty" description:"Filter by role ID"`
+	Limit       int    `query:"limit,omitempty" description:"Maximum results"`
+	Offset      int    `query:"offset,omitempty" description:"Results to skip"`
 }
 
 // ListSubjectRolesRequest gets roles for a subject.
@@ -178,23 +175,26 @@ type WriteRelationRequest struct {
 
 // DeleteRelationRequest is the body for deleting a relation tuple.
 type DeleteRelationRequest struct {
-	NamespacePath string `json:"namespace_path,omitempty" description:"Namespace path (defaults to context-derived namespace)"`
+	NamespacePath string `json:"namespace_path,omitempty" description:"Namespace path of the tuple; empty = tenant root"`
 	ObjectType    string `json:"object_type" description:"Object resource type"`
 	ObjectID      string `json:"object_id" description:"Object identifier"`
 	Relation      string `json:"relation" description:"Relation name"`
 	SubjectType   string `json:"subject_type" description:"Subject resource type"`
 	SubjectID     string `json:"subject_id" description:"Subject identifier"`
+	// SubjectRelation is part of the key: empty names the direct tuple
+	// (group:eng), "member" the subject set (group:eng#member).
+	SubjectRelation string `json:"subject_relation,omitempty" description:"Subject relation; empty names the direct tuple, not every subject relation"`
 }
 
 // ListRelationsRequest holds query parameters.
 type ListRelationsRequest struct {
-	ObjectType  string `query:"object_type" description:"Filter by object type"`
-	ObjectID    string `query:"object_id" description:"Filter by object ID"`
-	Relation    string `query:"relation" description:"Filter by relation"`
-	SubjectType string `query:"subject_type" description:"Filter by subject type"`
-	SubjectID   string `query:"subject_id" description:"Filter by subject ID"`
-	Limit       int    `query:"limit" description:"Maximum results"`
-	Offset      int    `query:"offset" description:"Results to skip"`
+	ObjectType  string `query:"object_type,omitempty" description:"Filter by object type"`
+	ObjectID    string `query:"object_id,omitempty" description:"Filter by object ID"`
+	Relation    string `query:"relation,omitempty" description:"Filter by relation"`
+	SubjectType string `query:"subject_type,omitempty" description:"Filter by subject type"`
+	SubjectID   string `query:"subject_id,omitempty" description:"Filter by subject ID"`
+	Limit       int    `query:"limit,omitempty" description:"Maximum results"`
+	Offset      int    `query:"offset,omitempty" description:"Results to skip"`
 }
 
 // ──────────────────────────────────────────────────
@@ -207,7 +207,7 @@ type CreatePolicyRequest struct {
 	Description string                `json:"description,omitempty" description:"Human-readable description"`
 	Effect      string                `json:"effect" description:"Policy effect (allow or deny)"`
 	Priority    int                   `json:"priority,omitempty" description:"Policy priority"`
-	IsActive    bool                  `json:"is_active" description:"Whether the policy is active"`
+	IsActive    bool                  `json:"is_active,omitempty" description:"Whether the policy is active"`
 	NotBefore   *time.Time            `json:"not_before,omitempty" description:"PBAC: policy is inactive before this RFC3339 instant"`
 	NotAfter    *time.Time            `json:"not_after,omitempty" description:"PBAC: policy is inactive after this RFC3339 instant"`
 	Obligations []string              `json:"obligations,omitempty" description:"PBAC: named side-effect actions emitted on match"`
@@ -250,11 +250,11 @@ type GetPolicyRequest struct {
 
 // ListPoliciesRequest holds query parameters.
 type ListPoliciesRequest struct {
-	Effect string `query:"effect" description:"Filter by effect (allow/deny)"`
-	Active string `query:"active" description:"Filter by active status (true/false)"`
-	Search string `query:"search" description:"Search by name"`
-	Limit  int    `query:"limit" description:"Maximum results"`
-	Offset int    `query:"offset" description:"Results to skip"`
+	Effect string `query:"effect,omitempty" description:"Filter by effect (allow/deny)"`
+	Active string `query:"active,omitempty" description:"Filter by active status (true/false)"`
+	Search string `query:"search,omitempty" description:"Search by name"`
+	Limit  int    `query:"limit,omitempty" description:"Maximum results"`
+	Offset int    `query:"offset,omitempty" description:"Results to skip"`
 }
 
 // ──────────────────────────────────────────────────
@@ -289,9 +289,9 @@ type GetResourceTypeRequest struct {
 
 // ListResourceTypesRequest holds query parameters.
 type ListResourceTypesRequest struct {
-	Search string `query:"search" description:"Search by name"`
-	Limit  int    `query:"limit" description:"Maximum results"`
-	Offset int    `query:"offset" description:"Results to skip"`
+	Search string `query:"search,omitempty" description:"Search by name"`
+	Limit  int    `query:"limit,omitempty" description:"Maximum results"`
+	Offset int    `query:"offset,omitempty" description:"Results to skip"`
 }
 
 // ──────────────────────────────────────────────────
@@ -300,13 +300,13 @@ type ListResourceTypesRequest struct {
 
 // ListCheckLogsRequest holds query parameters for querying check logs.
 type ListCheckLogsRequest struct {
-	SubjectKind  string `query:"subject_kind" description:"Filter by subject type"`
-	SubjectID    string `query:"subject_id" description:"Filter by subject ID"`
-	Action       string `query:"action" description:"Filter by action"`
-	ResourceType string `query:"resource_type" description:"Filter by resource type"`
-	Decision     string `query:"decision" description:"Filter by decision"`
-	After        string `query:"after" description:"After timestamp (RFC3339)"`
-	Before       string `query:"before" description:"Before timestamp (RFC3339)"`
-	Limit        int    `query:"limit" description:"Maximum results"`
-	Offset       int    `query:"offset" description:"Results to skip"`
+	SubjectKind  string `query:"subject_kind,omitempty" description:"Filter by subject type"`
+	SubjectID    string `query:"subject_id,omitempty" description:"Filter by subject ID"`
+	Action       string `query:"action,omitempty" description:"Filter by action"`
+	ResourceType string `query:"resource_type,omitempty" description:"Filter by resource type"`
+	Decision     string `query:"decision,omitempty" description:"Filter by decision"`
+	After        string `query:"after,omitempty" description:"After timestamp (RFC3339)"`
+	Before       string `query:"before,omitempty" description:"Before timestamp (RFC3339)"`
+	Limit        int    `query:"limit,omitempty" description:"Maximum results"`
+	Offset       int    `query:"offset,omitempty" description:"Results to skip"`
 }

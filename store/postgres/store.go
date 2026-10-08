@@ -7,9 +7,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/xraph/grove"
+	"github.com/xraph/grove/driver"
 	"github.com/xraph/grove/drivers/pgdriver"
 	"github.com/xraph/grove/migrate"
 
@@ -28,8 +30,73 @@ import (
 // Compile-time interface check.
 var _ store.Store = (*Store)(nil)
 
-// errNotFound is the sentinel for missing entities.
-var errNotFound = fmt.Errorf("not found")
+// nowFunc returns the current time. Tests override it to pin "now" when
+// asserting expiry behavior without sleeping.
+var nowFunc = time.Now
+
+// defaultFanout caps a relation hop, an access-review page, or any other
+// List* call when the caller passes 0: otherwise an unbounded filter (or
+// none at all) could pull an entire table into memory in one round trip.
+const defaultFanout = 1000
+
+// fanoutLimit resolves a caller-supplied limit: 0 (or negative) means the
+// default.
+func fanoutLimit(limit int) int {
+	if limit <= 0 {
+		return defaultFanout
+	}
+	return limit
+}
+
+// escapeLike escapes the three characters that are significant to
+// Postgres's LIKE operator (the escape character itself, then the two
+// wildcards) so a caller-supplied search term is matched literally. Every
+// LIKE built from caller input pairs this with "ESCAPE '\'" in the query.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+// rowsChanged reports how many rows a write touched. A driver that cannot
+// answer is treated as "nothing changed" so the caller returns not-found
+// rather than silently reporting success.
+func rowsChanged(res driver.Result) int64 {
+	if res == nil {
+		return 0
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// Columns an UPDATE is allowed to write, per table. tenant_id is absent by
+// design: an update matches on (id, tenant_id), so writing tenant_id could
+// only ever be a no-op or a tenant move, and a tenant move is not something
+// this API offers. created_at is absent for the same reason the memory store
+// preserves it.
+var (
+	roleUpdateColumns = []string{
+		"namespace_path", "app_id", "name", "description", "slug",
+		"is_system", "is_default", "parent_slug", "max_members", "metadata",
+		"updated_by", "updated_at",
+	}
+	permissionUpdateColumns = []string{
+		"namespace_path", "app_id", "name", "description", "resource",
+		"action", "is_system", "metadata", "updated_by", "updated_at",
+	}
+	policyUpdateColumns = []string{
+		"namespace_path", "app_id", "name", "description", "effect",
+		"priority", "is_active", "not_before", "not_after", "obligations",
+		"version", "subjects", "actions", "resources", "conditions",
+		"metadata", "updated_by", "updated_at",
+	}
+	resourceTypeUpdateColumns = []string{
+		"namespace_path", "app_id", "name", "description", "relations",
+		"permissions", "metadata", "updated_by", "updated_at",
+	}
+)
 
 // Store is a PostgreSQL implementation of the composite Warden store.
 type Store struct {
@@ -37,12 +104,48 @@ type Store struct {
 	pgdb *pgdriver.PgDB
 }
 
-// New creates a new PostgreSQL store.
-func New(db *grove.DB) *Store {
-	return &Store{
+// Option configures a Store at construction time.
+type Option func(*storeConfig)
+
+type storeConfig struct {
+	statementTimeout time.Duration
+}
+
+// WithStatementTimeout returns an Option that caps how long a single
+// statement may run on Postgres before the server cancels it
+// (statement_timeout), so a runaway query can't hold a connection forever.
+//
+// Grove's pgdriver (v1.6.3) builds its pgxpool.Config from the DSN and
+// doesn't expose pgxpool's AfterConnect hook through a driver.Option, so
+// there is no way to guarantee every connection the pool ever opens picks
+// this up. Store applies it as a session-level SET on the connection it
+// acquires immediately at construction (best-effort, useful for a
+// single-connection pool, or as a default before traffic arrives). For a
+// setting that reliably reaches every connection the pool opens, prefer the
+// DSN's `options` startup parameter instead, which pgx applies at connect
+// time for every physical connection:
+//
+//	postgres://user:pass@host/db?options=-c%20statement_timeout%3D5000
+func WithStatementTimeout(d time.Duration) Option {
+	return func(c *storeConfig) { c.statementTimeout = d }
+}
+
+// New creates a new PostgreSQL store. See WithStatementTimeout for the
+// caveats of setting statement_timeout after the pool already exists.
+func New(db *grove.DB, opts ...Option) *Store {
+	cfg := &storeConfig{}
+	for _, o := range opts {
+		o(cfg)
+	}
+	s := &Store{
 		db:   db,
 		pgdb: pgdriver.Unwrap(db),
 	}
+	if cfg.statementTimeout > 0 {
+		ms := cfg.statementTimeout.Milliseconds()
+		_, _ = s.pgdb.NewRaw(fmt.Sprintf("SET statement_timeout = %d", ms)).Exec(context.Background()) //nolint:errcheck // best-effort; see WithStatementTimeout doc
+	}
+	return s
 }
 
 // Migrate runs programmatic migrations via the grove orchestrator.
@@ -95,16 +198,38 @@ func (s *Store) CreateRole(ctx context.Context, r *role.Role) error {
 	return nil
 }
 
-func (s *Store) GetRole(ctx context.Context, roleID id.RoleID) (*role.Role, error) {
+func (s *Store) GetRole(ctx context.Context, tenantID string, roleID id.RoleID) (*role.Role, error) {
 	m := new(roleModel)
-	err := s.pgdb.NewSelect(m).Where("id = ?", roleID.String()).Scan(ctx)
+	err := s.pgdb.NewSelect(m).
+		Where("id = ?", roleID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("role %s: %w", roleID, errNotFound)
+			return nil, fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
 		}
 		return nil, fmt.Errorf("warden: get role: %w", err)
 	}
 	return roleFromModel(m), nil
+}
+
+func (s *Store) GetRoles(ctx context.Context, tenantID string, roleIDs []id.RoleID) ([]*role.Role, error) {
+	if len(roleIDs) == 0 {
+		return nil, nil
+	}
+	var models []roleModel
+	err := s.pgdb.NewSelect(&models).
+		Where("tenant_id = ?", tenantID).
+		WhereArray("id", "= ANY", roleIDStrings(roleIDs)).
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("warden: get roles: %w", err)
+	}
+	result := make([]*role.Role, len(models))
+	for i := range models {
+		result[i] = roleFromModel(&models[i])
+	}
+	return result, nil
 }
 
 func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug string) (*role.Role, error) {
@@ -116,7 +241,7 @@ func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug
 		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, errNotFound)
+			return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, wardenerr.ErrRoleNotFound)
 		}
 		return nil, fmt.Errorf("warden: get role by slug: %w", err)
 	}
@@ -126,28 +251,49 @@ func (s *Store) GetRoleBySlug(ctx context.Context, tenantID, namespacePath, slug
 func (s *Store) UpdateRole(ctx context.Context, r *role.Role) error {
 	r.UpdatedAt = time.Now().UTC()
 	m := roleToModel(r)
-	_, err := s.pgdb.NewUpdate(m).WherePK().Exec(ctx)
+	res, err := s.pgdb.NewUpdate(m).
+		Column(roleUpdateColumns...).
+		WherePK().
+		Where("tenant_id = ?", r.TenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: update role: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("role %s: %w", r.ID, wardenerr.ErrRoleNotFound)
 	}
 	return nil
 }
 
-func (s *Store) DeleteRole(ctx context.Context, roleID id.RoleID) error {
-	_, err := s.pgdb.NewDelete((*roleModel)(nil)).
-		Where("id = ?", roleID.String()).Exec(ctx)
+// DeleteRole removes a role. Assignments and grants go with it via the
+// foreign-key cascades in the schema.
+func (s *Store) DeleteRole(ctx context.Context, tenantID string, roleID id.RoleID) error {
+	res, err := s.pgdb.NewDelete((*roleModel)(nil)).
+		Where("id = ?", roleID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete role: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
 	}
 	return nil
 }
 
 func (s *Store) ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role.Role, error) {
 	var models []roleModel
-	q := s.pgdb.NewSelect(&models).OrderExpr("created_at ASC")
+	q := s.pgdb.NewSelect(&models).OrderExpr("created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
+		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
 		}
 		if filter.IsSystem != nil {
 			q = q.Where("is_system = ?", *filter.IsSystem)
@@ -159,14 +305,16 @@ func (s *Store) ListRoles(ctx context.Context, filter *role.ListFilter) ([]*role
 			q = q.Where("parent_slug = ?", *filter.ParentSlug)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(fanoutLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list roles: %w", err)
@@ -184,6 +332,13 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.IsSystem != nil {
 			q = q.Where("is_system = ?", *filter.IsSystem)
 		}
@@ -194,7 +349,7 @@ func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64,
 			q = q.Where("parent_slug = ?", *filter.ParentSlug)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
 	}
 	count, err := q.Count(ctx)
@@ -217,11 +372,29 @@ JOIN warden_permissions p
  AND p.namespace_path = rp.perm_namespace_path
  AND p.name = rp.perm_name
 WHERE rp.role_id = $1
+  AND r.tenant_id = $2
 `
 
-func (s *Store) ListRolePermissions(ctx context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
+// listRolePermissionsForRolesSQL is the batch form: the same walk for many
+// roles at once, with the granting role carried through so the caller can
+// group the rows in Go.
+const listRolePermissionsForRolesSQL = `
+SELECT rp.role_id,
+       p.id, p.tenant_id, p.namespace_path, p.app_id, p.name, p.description,
+       p.resource, p.action, p.is_system, p.metadata, p.created_at, p.updated_at
+FROM warden_role_permissions rp
+JOIN warden_roles r ON r.id = rp.role_id
+JOIN warden_permissions p
+  ON p.tenant_id = r.tenant_id
+ AND p.namespace_path = rp.perm_namespace_path
+ AND p.name = rp.perm_name
+WHERE r.tenant_id = $1
+  AND rp.role_id = ANY($2)
+`
+
+func (s *Store) ListRolePermissions(ctx context.Context, tenantID string, roleID id.RoleID) ([]*permission.Permission, error) {
 	var models []permissionModel
-	if err := s.pgdb.NewRaw(listRolePermissionsJoinSQL, roleID.String()).Scan(ctx, &models); err != nil {
+	if err := s.pgdb.NewRaw(listRolePermissionsJoinSQL, roleID.String(), tenantID).Scan(ctx, &models); err != nil {
 		return nil, fmt.Errorf("warden: list role permissions: %w", err)
 	}
 	result := make([]*permission.Permission, 0, len(models))
@@ -231,22 +404,87 @@ func (s *Store) ListRolePermissions(ctx context.Context, roleID id.RoleID) ([]*p
 	return result, nil
 }
 
-func (s *Store) AttachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error {
-	m := &rolePermissionModel{
-		RoleID:            roleID.String(),
-		PermNamespacePath: ref.NamespacePath,
-		PermName:          ref.Name,
+func (s *Store) ListRolePermissionsForRoles(ctx context.Context, tenantID string, roleIDs []id.RoleID) (map[id.RoleID][]*permission.Permission, error) {
+	result := make(map[id.RoleID][]*permission.Permission, len(roleIDs))
+	if len(roleIDs) == 0 {
+		return result, nil
 	}
-	_, err := s.pgdb.NewInsert(m).
-		OnConflict("(role_id, perm_namespace_path, perm_name) DO NOTHING").
-		Exec(ctx)
+	var rows []rolePermissionRow
+	err := s.pgdb.NewRaw(listRolePermissionsForRolesSQL, tenantID, roleIDStrings(roleIDs)).Scan(ctx, &rows)
 	if err != nil {
-		return fmt.Errorf("warden: attach permission: %w", err)
+		return nil, fmt.Errorf("warden: list role permissions for roles: %w", err)
+	}
+	for i := range rows {
+		rid, parseErr := id.ParseRoleID(rows[i].RoleID)
+		if parseErr != nil {
+			continue
+		}
+		result[rid] = append(result[rid], permissionFromModel(rows[i].permission()))
+	}
+	return result, nil
+}
+
+// requireRole reports whether the role exists in the tenant, so the junction
+// writes below cannot be aimed at someone else's role.
+func (s *Store) requireRole(ctx context.Context, tenantID string, roleID id.RoleID) error {
+	count, err := s.pgdb.NewSelect((*roleModel)(nil)).
+		Where("id = ?", roleID.String()).
+		Where("tenant_id = ?", tenantID).
+		Count(ctx)
+	if err != nil {
+		return fmt.Errorf("warden: resolve role: %w", err)
+	}
+	if count == 0 {
+		return fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
 	}
 	return nil
 }
 
-func (s *Store) DetachPermission(ctx context.Context, roleID id.RoleID, ref permission.Ref) error {
+func (s *Store) AttachPermission(ctx context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
+	if err := s.requireRole(ctx, tenantID, roleID); err != nil {
+		return err
+	}
+
+	tx, err := s.pgdb.BeginTxQuery(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("warden: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback on error is intentional
+
+	count, err := tx.NewSelect((*permissionModel)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("namespace_path = ?", ref.NamespacePath).
+		Where("name = ?", ref.Name).
+		Count(ctx)
+	if err != nil {
+		return fmt.Errorf("warden: resolve permission: %w", err)
+	}
+	if count == 0 {
+		return fmt.Errorf("permission %q in ns %q: %w", ref.Name, ref.NamespacePath, wardenerr.ErrPermissionNotFound)
+	}
+
+	m := &rolePermissionModel{
+		RoleID:            roleID.String(),
+		PermNamespacePath: ref.NamespacePath,
+		PermName:          ref.Name,
+		TenantID:          tenantID,
+	}
+	if _, err := tx.NewInsert(m).
+		OnConflict("(role_id, perm_namespace_path, perm_name) DO NOTHING").
+		Exec(ctx); err != nil {
+		return fmt.Errorf("warden: attach permission: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("warden: commit tx: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DetachPermission(ctx context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
+	if err := s.requireRole(ctx, tenantID, roleID); err != nil {
+		return err
+	}
 	_, err := s.pgdb.NewDelete((*rolePermissionModel)(nil)).
 		Where("role_id = ?", roleID.String()).
 		Where("perm_namespace_path = ?", ref.NamespacePath).
@@ -258,7 +496,10 @@ func (s *Store) DetachPermission(ctx context.Context, roleID id.RoleID, ref perm
 	return nil
 }
 
-func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, refs []permission.Ref) error {
+func (s *Store) SetRolePermissions(ctx context.Context, tenantID string, roleID id.RoleID, refs []permission.Ref) error {
+	if err := s.requireRole(ctx, tenantID, roleID); err != nil {
+		return err
+	}
 	tx, err := s.pgdb.BeginTxQuery(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("warden: begin tx: %w", err)
@@ -280,6 +521,7 @@ func (s *Store) SetRolePermissions(ctx context.Context, roleID id.RoleID, refs [
 				RoleID:            roleID.String(),
 				PermNamespacePath: ref.NamespacePath,
 				PermName:          ref.Name,
+				TenantID:          tenantID,
 			}
 		}
 		_, err = tx.NewInsert(&models).Exec(ctx)
@@ -299,7 +541,7 @@ func (s *Store) ListChildRoles(ctx context.Context, tenantID, parentSlug string)
 	err := s.pgdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
 		Where("parent_slug = ?", parentSlug).
-		OrderExpr("created_at ASC").
+		OrderExpr("created_at ASC, id ASC").
 		Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("warden: list child roles: %w", err)
@@ -347,12 +589,15 @@ func (s *Store) CreatePermission(ctx context.Context, p *permission.Permission) 
 	return nil
 }
 
-func (s *Store) GetPermission(ctx context.Context, permID id.PermissionID) (*permission.Permission, error) {
+func (s *Store) GetPermission(ctx context.Context, tenantID string, permID id.PermissionID) (*permission.Permission, error) {
 	m := new(permissionModel)
-	err := s.pgdb.NewSelect(m).Where("id = ?", permID.String()).Scan(ctx)
+	err := s.pgdb.NewSelect(m).
+		Where("id = ?", permID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("permission %s: %w", permID, errNotFound)
+			return nil, fmt.Errorf("permission %s: %w", permID, wardenerr.ErrPermissionNotFound)
 		}
 		return nil, fmt.Errorf("warden: get permission: %w", err)
 	}
@@ -368,7 +613,7 @@ func (s *Store) GetPermissionByName(ctx context.Context, tenantID, namespacePath
 		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("permission %q in ns %q: %w", name, namespacePath, errNotFound)
+			return nil, fmt.Errorf("permission %q in ns %q: %w", name, namespacePath, wardenerr.ErrPermissionNotFound)
 		}
 		return nil, fmt.Errorf("warden: get permission by name: %w", err)
 	}
@@ -378,28 +623,78 @@ func (s *Store) GetPermissionByName(ctx context.Context, tenantID, namespacePath
 func (s *Store) UpdatePermission(ctx context.Context, p *permission.Permission) error {
 	p.UpdatedAt = time.Now().UTC()
 	m := permissionToModel(p)
-	_, err := s.pgdb.NewUpdate(m).WherePK().Exec(ctx)
+	res, err := s.pgdb.NewUpdate(m).
+		Column(permissionUpdateColumns...).
+		WherePK().
+		Where("tenant_id = ?", p.TenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: update permission: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("permission %s: %w", p.ID, wardenerr.ErrPermissionNotFound)
 	}
 	return nil
 }
 
-func (s *Store) DeletePermission(ctx context.Context, permID id.PermissionID) error {
-	_, err := s.pgdb.NewDelete((*permissionModel)(nil)).
-		Where("id = ?", permID.String()).Exec(ctx)
+// deletePermissionGrantsSQL scrubs the junction rows that grant a permission.
+// The junction stores the permission's natural key, not its ID, so the rows
+// have to be matched on (namespace_path, name) and narrowed to the roles of
+// the deleting tenant.
+const deletePermissionGrantsSQL = `
+DELETE FROM warden_role_permissions rp
+USING warden_roles r
+WHERE r.id = rp.role_id
+  AND r.tenant_id = $1
+  AND rp.perm_namespace_path = $2
+  AND rp.perm_name = $3
+`
+
+func (s *Store) DeletePermission(ctx context.Context, tenantID string, permID id.PermissionID) error {
+	p, err := s.GetPermission(ctx, tenantID, permID)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.pgdb.BeginTxQuery(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("warden: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback on error is intentional
+
+	res, err := tx.NewDelete((*permissionModel)(nil)).
+		Where("id = ?", permID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete permission: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("permission %s: %w", permID, wardenerr.ErrPermissionNotFound)
+	}
+	if _, err := tx.NewRaw(deletePermissionGrantsSQL, tenantID, p.NamespacePath, p.Name).Exec(ctx); err != nil {
+		return fmt.Errorf("warden: delete permission grants: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("warden: commit tx: %w", err)
 	}
 	return nil
 }
 
 func (s *Store) ListPermissions(ctx context.Context, filter *permission.ListFilter) ([]*permission.Permission, error) {
 	var models []permissionModel
-	q := s.pgdb.NewSelect(&models).OrderExpr("created_at ASC")
+	q := s.pgdb.NewSelect(&models).OrderExpr("created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
+		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
 		}
 		if filter.Resource != "" {
 			q = q.Where("resource = ?", filter.Resource)
@@ -411,14 +706,16 @@ func (s *Store) ListPermissions(ctx context.Context, filter *permission.ListFilt
 			q = q.Where("is_system = ?", *filter.IsSystem)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(fanoutLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list permissions: %w", err)
@@ -436,6 +733,13 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.Resource != "" {
 			q = q.Where("resource = ?", filter.Resource)
 		}
@@ -446,7 +750,7 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 			q = q.Where("is_system = ?", *filter.IsSystem)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
 	}
 	count, err := q.Count(ctx)
@@ -456,8 +760,8 @@ func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFil
 	return count, nil
 }
 
-func (s *Store) ListPermissionsByRole(ctx context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
-	return s.ListRolePermissions(ctx, roleID)
+func (s *Store) ListPermissionsByRole(ctx context.Context, tenantID string, roleID id.RoleID) ([]*permission.Permission, error) {
+	return s.ListRolePermissions(ctx, tenantID, roleID)
 }
 
 const listPermissionsBySubjectSQL = `
@@ -519,33 +823,48 @@ func (s *Store) CreateAssignment(ctx context.Context, a *assignment.Assignment) 
 	return nil
 }
 
-func (s *Store) GetAssignment(ctx context.Context, assID id.AssignmentID) (*assignment.Assignment, error) {
+func (s *Store) GetAssignment(ctx context.Context, tenantID string, assID id.AssignmentID) (*assignment.Assignment, error) {
 	m := new(assignmentModel)
-	err := s.pgdb.NewSelect(m).Where("id = ?", assID.String()).Scan(ctx)
+	err := s.pgdb.NewSelect(m).
+		Where("id = ?", assID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("assignment %s: %w", assID, errNotFound)
+			return nil, fmt.Errorf("assignment %s: %w", assID, wardenerr.ErrAssignmentNotFound)
 		}
 		return nil, fmt.Errorf("warden: get assignment: %w", err)
 	}
 	return assignmentFromModel(m), nil
 }
 
-func (s *Store) DeleteAssignment(ctx context.Context, assID id.AssignmentID) error {
-	_, err := s.pgdb.NewDelete((*assignmentModel)(nil)).
-		Where("id = ?", assID.String()).Exec(ctx)
+func (s *Store) DeleteAssignment(ctx context.Context, tenantID string, assID id.AssignmentID) error {
+	res, err := s.pgdb.NewDelete((*assignmentModel)(nil)).
+		Where("id = ?", assID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete assignment: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("assignment %s: %w", assID, wardenerr.ErrAssignmentNotFound)
 	}
 	return nil
 }
 
 func (s *Store) ListAssignments(ctx context.Context, filter *assignment.ListFilter) ([]*assignment.Assignment, error) {
 	var models []assignmentModel
-	q := s.pgdb.NewSelect(&models).OrderExpr("created_at ASC")
+	q := s.pgdb.NewSelect(&models).OrderExpr("created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
+		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
 		}
 		if filter.RoleID != nil {
 			q = q.Where("role_id = ?", filter.RoleID.String())
@@ -562,12 +881,14 @@ func (s *Store) ListAssignments(ctx context.Context, filter *assignment.ListFilt
 		if filter.ResourceID != "" {
 			q = q.Where("resource_id = ?", filter.ResourceID)
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(fanoutLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list assignments: %w", err)
@@ -584,6 +905,13 @@ func (s *Store) CountAssignments(ctx context.Context, filter *assignment.ListFil
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
+		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
 		}
 		if filter.RoleID != nil {
 			q = q.Where("role_id = ?", filter.RoleID.String())
@@ -614,7 +942,8 @@ func (s *Store) ListRolesForSubject(ctx context.Context, tenantID string, namesp
 		Where("tenant_id = ?", tenantID).
 		Where("subject_kind = ?", subjectKind).
 		Where("subject_id = ?", subjectID).
-		Where("resource_type = ''")
+		Where("resource_type = ''").
+		Where("(expires_at IS NULL OR expires_at > ?)", nowFunc())
 	if len(namespacePaths) > 0 {
 		q = q.WhereArray("namespace_path", "= ANY", namespacePaths)
 	}
@@ -638,7 +967,8 @@ func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID stri
 		Where("subject_kind = ?", subjectKind).
 		Where("subject_id = ?", subjectID).
 		Where("resource_type = ?", resourceType).
-		Where("resource_id = ?", resourceID)
+		Where("resource_id = ?", resourceID).
+		Where("(expires_at IS NULL OR expires_at > ?)", nowFunc())
 	if len(namespacePaths) > 0 {
 		q = q.WhereArray("namespace_path", "= ANY", namespacePaths)
 	}
@@ -655,14 +985,34 @@ func (s *Store) ListRolesForSubjectOnResource(ctx context.Context, tenantID stri
 	return result, nil
 }
 
-func (s *Store) ListSubjectsForRole(ctx context.Context, roleID id.RoleID) ([]*assignment.Assignment, error) {
+func (s *Store) ListSubjectsForRole(ctx context.Context, tenantID string, roleID id.RoleID) ([]*assignment.Assignment, error) {
 	var models []assignmentModel
 	err := s.pgdb.NewSelect(&models).
 		Where("role_id = ?", roleID.String()).
-		OrderExpr("created_at ASC").
+		Where("tenant_id = ?", tenantID).
+		OrderExpr("created_at ASC, id ASC").
 		Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("warden: list subjects for role: %w", err)
+	}
+	result := make([]*assignment.Assignment, len(models))
+	for i := range models {
+		result[i] = assignmentFromModel(&models[i])
+	}
+	return result, nil
+}
+
+func (s *Store) ListExpiringAssignments(ctx context.Context, tenantID string, before time.Time, limit int) ([]*assignment.Assignment, error) {
+	var models []assignmentModel
+	err := s.pgdb.NewSelect(&models).
+		Where("tenant_id = ?", tenantID).
+		Where("expires_at IS NOT NULL").
+		Where("expires_at < ?", before).
+		OrderExpr("expires_at ASC, id ASC").
+		Limit(fanoutLimit(limit)).
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("warden: list expiring assignments: %w", err)
 	}
 	result := make([]*assignment.Assignment, len(models))
 	for i := range models {
@@ -686,6 +1036,25 @@ func (s *Store) DeleteExpiredAssignments(ctx context.Context, now time.Time) (in
 	return n, nil
 }
 
+func (s *Store) DeleteExpiredAssignmentsForTenant(ctx context.Context, tenantID string, now time.Time) (int64, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("warden: delete expired assignments for tenant: %w", wardenerr.ErrTenantRequired)
+	}
+	res, err := s.pgdb.NewDelete((*assignmentModel)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("expires_at IS NOT NULL").
+		Where("expires_at < ?", now).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("warden: delete expired assignments for tenant: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("warden: delete expired assignments for tenant rows: %w", err)
+	}
+	return n, nil
+}
+
 func (s *Store) DeleteAssignmentsBySubject(ctx context.Context, tenantID, subjectKind, subjectID string) error {
 	_, err := s.pgdb.NewDelete((*assignmentModel)(nil)).
 		Where("tenant_id = ?", tenantID).
@@ -698,9 +1067,11 @@ func (s *Store) DeleteAssignmentsBySubject(ctx context.Context, tenantID, subjec
 	return nil
 }
 
-func (s *Store) DeleteAssignmentsByRole(ctx context.Context, roleID id.RoleID) error {
+func (s *Store) DeleteAssignmentsByRole(ctx context.Context, tenantID string, roleID id.RoleID) error {
 	_, err := s.pgdb.NewDelete((*assignmentModel)(nil)).
-		Where("role_id = ?", roleID.String()).Exec(ctx)
+		Where("role_id = ?", roleID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete assignments by role: %w", err)
 	}
@@ -740,16 +1111,38 @@ func (s *Store) CreateRelation(ctx context.Context, t *relation.Tuple) error {
 	return nil
 }
 
-func (s *Store) DeleteRelation(ctx context.Context, relID id.RelationID) error {
-	_, err := s.pgdb.NewDelete((*relationModel)(nil)).
-		Where("id = ?", relID.String()).Exec(ctx)
+func (s *Store) GetRelation(ctx context.Context, tenantID string, relID id.RelationID) (*relation.Tuple, error) {
+	m := new(relationModel)
+	err := s.pgdb.NewSelect(m).
+		Where("id = ?", relID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("relation %s: %w", relID, wardenerr.ErrRelationNotFound)
+		}
+		return nil, fmt.Errorf("warden: get relation: %w", err)
+	}
+	return relationFromModel(m), nil
+}
+
+func (s *Store) DeleteRelation(ctx context.Context, tenantID string, relID id.RelationID) error {
+	res, err := s.pgdb.NewDelete((*relationModel)(nil)).
+		Where("id = ?", relID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete relation: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("relation %s: %w", relID, wardenerr.ErrRelationNotFound)
 	}
 	return nil
 }
 
-func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) error {
+func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID, subjectRelation string) error {
+	// subject_relation is NOT NULL DEFAULT '', so an empty subjectRelation
+	// matches the direct tuple only.
 	_, err := s.pgdb.NewDelete((*relationModel)(nil)).
 		Where("tenant_id = ?", tenantID).
 		Where("namespace_path = ?", namespacePath).
@@ -758,6 +1151,7 @@ func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath
 		Where("relation = ?", rel).
 		Where("subject_type = ?", subjectType).
 		Where("subject_id = ?", subjectID).
+		Where("subject_relation = ?", subjectRelation).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete relation tuple: %w", err)
@@ -767,10 +1161,17 @@ func (s *Store) DeleteRelationTuple(ctx context.Context, tenantID, namespacePath
 
 func (s *Store) ListRelations(ctx context.Context, filter *relation.ListFilter) ([]*relation.Tuple, error) {
 	var models []relationModel
-	q := s.pgdb.NewSelect(&models).OrderExpr("created_at ASC")
+	q := s.pgdb.NewSelect(&models).OrderExpr("created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
+		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
 		}
 		if filter.ObjectType != "" {
 			q = q.Where("object_type = ?", filter.ObjectType)
@@ -790,12 +1191,14 @@ func (s *Store) ListRelations(ctx context.Context, filter *relation.ListFilter) 
 		if filter.SubjectRelation != "" {
 			q = q.Where("subject_relation = ?", filter.SubjectRelation)
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(fanoutLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list relations: %w", err)
@@ -812,6 +1215,13 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
+		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
 		}
 		if filter.ObjectType != "" {
 			q = q.Where("object_type = ?", filter.ObjectType)
@@ -839,7 +1249,7 @@ func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter)
 	return count, nil
 }
 
-func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string, limit int) ([]*relation.Tuple, error) {
 	var models []relationModel
 	q := s.pgdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
@@ -849,7 +1259,7 @@ func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, names
 	if len(namespacePaths) > 0 {
 		q = q.WhereArray("namespace_path", "= ANY", namespacePaths)
 	}
-	err := q.OrderExpr("created_at ASC").Scan(ctx)
+	err := q.OrderExpr("created_at ASC, id ASC").Limit(fanoutLimit(limit)).Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("warden: list relation subjects: %w", err)
 	}
@@ -860,7 +1270,7 @@ func (s *Store) ListRelationSubjects(ctx context.Context, tenantID string, names
 	return result, nil
 }
 
-func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath, subjectType, subjectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath, subjectType, subjectID, rel string, limit int) ([]*relation.Tuple, error) {
 	var models []relationModel
 	err := s.pgdb.NewSelect(&models).
 		Where("tenant_id = ?", tenantID).
@@ -868,7 +1278,8 @@ func (s *Store) ListRelationObjects(ctx context.Context, tenantID, namespacePath
 		Where("subject_type = ?", subjectType).
 		Where("subject_id = ?", subjectID).
 		Where("relation = ?", rel).
-		OrderExpr("created_at ASC").
+		OrderExpr("created_at ASC, id ASC").
+		Limit(fanoutLimit(limit)).
 		Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("warden: list relation objects: %w", err)
@@ -958,12 +1369,15 @@ func (s *Store) CreatePolicy(ctx context.Context, p *policy.Policy) error {
 	return nil
 }
 
-func (s *Store) GetPolicy(ctx context.Context, polID id.PolicyID) (*policy.Policy, error) {
+func (s *Store) GetPolicy(ctx context.Context, tenantID string, polID id.PolicyID) (*policy.Policy, error) {
 	m := new(policyModel)
-	err := s.pgdb.NewSelect(m).Where("id = ?", polID.String()).Scan(ctx)
+	err := s.pgdb.NewSelect(m).
+		Where("id = ?", polID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("policy %s: %w", polID, errNotFound)
+			return nil, fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
 		}
 		return nil, fmt.Errorf("warden: get policy: %w", err)
 	}
@@ -979,7 +1393,7 @@ func (s *Store) GetPolicyByName(ctx context.Context, tenantID, namespacePath, na
 		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, errNotFound)
+			return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, wardenerr.ErrPolicyNotFound)
 		}
 		return nil, fmt.Errorf("warden: get policy by name: %w", err)
 	}
@@ -989,28 +1403,90 @@ func (s *Store) GetPolicyByName(ctx context.Context, tenantID, namespacePath, na
 func (s *Store) UpdatePolicy(ctx context.Context, p *policy.Policy) error {
 	p.UpdatedAt = time.Now().UTC()
 	m := policyToModel(p)
-	_, err := s.pgdb.NewUpdate(m).WherePK().Exec(ctx)
+	res, err := s.pgdb.NewUpdate(m).
+		Column(policyUpdateColumns...).
+		WherePK().
+		Where("tenant_id = ?", p.TenantID).
+		Exec(ctx)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+		}
 		return fmt.Errorf("warden: update policy: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("policy %s: %w", p.ID, wardenerr.ErrPolicyNotFound)
 	}
 	return nil
 }
 
-func (s *Store) DeletePolicy(ctx context.Context, polID id.PolicyID) error {
-	_, err := s.pgdb.NewDelete((*policyModel)(nil)).
-		Where("id = ?", polID.String()).Exec(ctx)
+// UpdatePolicyIfVersion writes p as UpdatePolicy does, only if the stored
+// policy is at version expected. The version check is part of the UPDATE's
+// WHERE clause, so the comparison and the write are one statement: under
+// READ COMMITTED a second writer blocks on the row lock, then re-checks the
+// WHERE against the committed row and matches nothing. When no row changes,
+// a read picks the error: not found if the policy is absent from p's
+// tenant, a version conflict otherwise. That read only chooses the error;
+// the refusal itself was atomic.
+//
+// p.UpdatedAt is set only once the write has happened, so a refused caller's
+// struct does not claim a write that did not happen.
+func (s *Store) UpdatePolicyIfVersion(ctx context.Context, p *policy.Policy, expected int) error {
+	now := time.Now().UTC()
+	next := *p
+	next.UpdatedAt = now
+	m := policyToModel(&next)
+	res, err := s.pgdb.NewUpdate(m).
+		Column(policyUpdateColumns...).
+		WherePK().
+		Where("tenant_id = ?", p.TenantID).
+		Where("version = ?", expected).
+		Exec(ctx)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+				p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+		}
+		return fmt.Errorf("warden: update policy: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		if _, err := s.GetPolicy(ctx, p.TenantID, p.ID); err != nil {
+			return err
+		}
+		return fmt.Errorf("policy %s, expected version %d: %w", p.ID, expected, wardenerr.ErrPolicyVersionConflict)
+	}
+	p.UpdatedAt = now
+	return nil
+}
+
+func (s *Store) DeletePolicy(ctx context.Context, tenantID string, polID id.PolicyID) error {
+	res, err := s.pgdb.NewDelete((*policyModel)(nil)).
+		Where("id = ?", polID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete policy: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
 	}
 	return nil
 }
 
 func (s *Store) ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]*policy.Policy, error) {
 	var models []policyModel
-	q := s.pgdb.NewSelect(&models).OrderExpr("priority ASC, created_at ASC")
+	q := s.pgdb.NewSelect(&models).OrderExpr("priority ASC, created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
+		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
 		}
 		if filter.Effect != "" {
 			q = q.Where("effect = ?", string(filter.Effect))
@@ -1019,14 +1495,16 @@ func (s *Store) ListPolicies(ctx context.Context, filter *policy.ListFilter) ([]
 			q = q.Where("is_active = ?", *filter.IsActive)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(fanoutLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list policies: %w", err)
@@ -1044,6 +1522,13 @@ func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (i
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.Effect != "" {
 			q = q.Where("effect = ?", string(filter.Effect))
 		}
@@ -1051,7 +1536,7 @@ func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (i
 			q = q.Where("is_active = ?", *filter.IsActive)
 		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
 	}
 	count, err := q.Count(ctx)
@@ -1069,7 +1554,7 @@ func (s *Store) ListActivePolicies(ctx context.Context, tenantID string, namespa
 	if len(namespacePaths) > 0 {
 		q = q.WhereArray("namespace_path", "= ANY", namespacePaths)
 	}
-	q = q.OrderExpr("priority ASC")
+	q = q.OrderExpr("priority ASC, created_at ASC, id ASC")
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list active policies: %w", err)
 	}
@@ -1080,14 +1565,18 @@ func (s *Store) ListActivePolicies(ctx context.Context, tenantID string, namespa
 	return result, nil
 }
 
-func (s *Store) SetPolicyVersion(ctx context.Context, polID id.PolicyID, version int) error {
-	_, err := s.pgdb.NewUpdate((*policyModel)(nil)).
+func (s *Store) SetPolicyVersion(ctx context.Context, tenantID string, polID id.PolicyID, version int) error {
+	res, err := s.pgdb.NewUpdate((*policyModel)(nil)).
 		Set("version = ?", version).
 		Set("updated_at = ?", time.Now().UTC()).
 		Where("id = ?", polID.String()).
+		Where("tenant_id = ?", tenantID).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: set policy version: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
 	}
 	return nil
 }
@@ -1128,12 +1617,15 @@ func (s *Store) CreateResourceType(ctx context.Context, rt *resourcetype.Resourc
 	return nil
 }
 
-func (s *Store) GetResourceType(ctx context.Context, rtID id.ResourceTypeID) (*resourcetype.ResourceType, error) {
+func (s *Store) GetResourceType(ctx context.Context, tenantID string, rtID id.ResourceTypeID) (*resourcetype.ResourceType, error) {
 	m := new(resourceTypeModel)
-	err := s.pgdb.NewSelect(m).Where("id = ?", rtID.String()).Scan(ctx)
+	err := s.pgdb.NewSelect(m).
+		Where("id = ?", rtID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("resource type %s: %w", rtID, errNotFound)
+			return nil, fmt.Errorf("resource type %s: %w", rtID, wardenerr.ErrResourceTypeNotFound)
 		}
 		return nil, fmt.Errorf("warden: get resource type: %w", err)
 	}
@@ -1149,7 +1641,7 @@ func (s *Store) GetResourceTypeByName(ctx context.Context, tenantID, namespacePa
 		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("resource type %q in ns %q: %w", name, namespacePath, errNotFound)
+			return nil, fmt.Errorf("resource type %q in ns %q: %w", name, namespacePath, wardenerr.ErrResourceTypeNotFound)
 		}
 		return nil, fmt.Errorf("warden: get resource type by name: %w", err)
 	}
@@ -1159,38 +1651,59 @@ func (s *Store) GetResourceTypeByName(ctx context.Context, tenantID, namespacePa
 func (s *Store) UpdateResourceType(ctx context.Context, rt *resourcetype.ResourceType) error {
 	rt.UpdatedAt = time.Now().UTC()
 	m := resourceTypeToModel(rt)
-	_, err := s.pgdb.NewUpdate(m).WherePK().Exec(ctx)
+	res, err := s.pgdb.NewUpdate(m).
+		Column(resourceTypeUpdateColumns...).
+		WherePK().
+		Where("tenant_id = ?", rt.TenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: update resource type: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("resource type %s: %w", rt.ID, wardenerr.ErrResourceTypeNotFound)
 	}
 	return nil
 }
 
-func (s *Store) DeleteResourceType(ctx context.Context, rtID id.ResourceTypeID) error {
-	_, err := s.pgdb.NewDelete((*resourceTypeModel)(nil)).
-		Where("id = ?", rtID.String()).Exec(ctx)
+func (s *Store) DeleteResourceType(ctx context.Context, tenantID string, rtID id.ResourceTypeID) error {
+	res, err := s.pgdb.NewDelete((*resourceTypeModel)(nil)).
+		Where("id = ?", rtID.String()).
+		Where("tenant_id = ?", tenantID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("warden: delete resource type: %w", err)
+	}
+	if rowsChanged(res) == 0 {
+		return fmt.Errorf("resource type %s: %w", rtID, wardenerr.ErrResourceTypeNotFound)
 	}
 	return nil
 }
 
 func (s *Store) ListResourceTypes(ctx context.Context, filter *resourcetype.ListFilter) ([]*resourcetype.ResourceType, error) {
 	var models []resourceTypeModel
-	q := s.pgdb.NewSelect(&models).OrderExpr("created_at ASC")
+	q := s.pgdb.NewSelect(&models).OrderExpr("created_at ASC, id ASC")
 	if filter != nil {
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+	}
+	reqLimit, reqOffset := 0, 0
+	if filter != nil {
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(fanoutLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list resource types: %w", err)
@@ -1208,8 +1721,15 @@ func (s *Store) CountResourceTypes(ctx context.Context, filter *resourcetype.Lis
 		if filter.TenantID != "" {
 			q = q.Where("tenant_id = ?", filter.TenantID)
 		}
+		if filter.NamespacePath != nil {
+			q = q.Where("namespace_path = ?", *filter.NamespacePath)
+		}
+		if filter.NamespacePrefix != "" {
+			q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+				filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+		}
 		if filter.Search != "" {
-			q = q.Where("LOWER(name) LIKE LOWER(?)", "%"+filter.Search+"%")
+			q = q.Where("LOWER(name) LIKE LOWER(?) ESCAPE '\\'", "%"+escapeLike(filter.Search)+"%")
 		}
 	}
 	count, err := q.Count(ctx)
@@ -1247,55 +1767,82 @@ func (s *Store) CreateCheckLog(ctx context.Context, e *checklog.Entry) error {
 	return nil
 }
 
-func (s *Store) GetCheckLog(ctx context.Context, logID id.CheckLogID) (*checklog.Entry, error) {
+func (s *Store) GetCheckLog(ctx context.Context, tenantID string, logID id.CheckLogID) (*checklog.Entry, error) {
 	m := new(checkLogModel)
-	err := s.pgdb.NewSelect(m).Where("id = ?", logID.String()).Scan(ctx)
+	err := s.pgdb.NewSelect(m).
+		Where("id = ?", logID.String()).
+		Where("tenant_id = ?", tenantID).
+		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("check log %s: %w", logID, errNotFound)
+			return nil, fmt.Errorf("check log %s: %w", logID, wardenerr.ErrCheckLogNotFound)
 		}
 		return nil, fmt.Errorf("warden: get check log: %w", err)
 	}
 	return checkLogFromModel(m), nil
 }
 
+// whereCheckLogs applies a QueryFilter's predicates. ListCheckLogs and
+// CountCheckLogs both build from it, so a pager's total always counts the
+// rows the list would return.
+func whereCheckLogs(q *pgdriver.SelectQuery, filter *checklog.QueryFilter) *pgdriver.SelectQuery {
+	if filter == nil {
+		return q
+	}
+	if filter.TenantID != "" {
+		q = q.Where("tenant_id = ?", filter.TenantID)
+	}
+	if filter.NamespacePath != nil {
+		q = q.Where("namespace_path = ?", *filter.NamespacePath)
+	}
+	if filter.NamespacePrefix != "" {
+		q = q.Where("(namespace_path = ? OR namespace_path LIKE ? ESCAPE '\\')",
+			filter.NamespacePrefix, escapeLike(filter.NamespacePrefix)+"/%")
+	}
+	if filter.SubjectKind != "" {
+		q = q.Where("subject_kind = ?", filter.SubjectKind)
+	}
+	if filter.SubjectID != "" {
+		q = q.Where("subject_id = ?", filter.SubjectID)
+	}
+	if filter.Action != "" {
+		q = q.Where("action = ?", filter.Action)
+	}
+	if filter.ResourceType != "" {
+		q = q.Where("resource_type = ?", filter.ResourceType)
+	}
+	if filter.ResourceID != "" {
+		q = q.Where("resource_id = ?", filter.ResourceID)
+	}
+	if filter.Decision != "" {
+		q = q.Where("decision = ?", filter.Decision)
+	}
+	if filter.After != nil {
+		q = q.Where("created_at >= ?", *filter.After)
+	}
+	if filter.Before != nil {
+		q = q.Where("created_at <= ?", *filter.Before)
+	}
+	if filter.Cached != nil {
+		if *filter.Cached {
+			q = q.Where("cached = TRUE")
+		} else {
+			q = q.Where("cached = FALSE")
+		}
+	}
+	return q
+}
+
 func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter) ([]*checklog.Entry, error) {
 	var models []checkLogModel
-	q := s.pgdb.NewSelect(&models).OrderExpr("created_at DESC")
+	q := whereCheckLogs(s.pgdb.NewSelect(&models).OrderExpr("created_at DESC, id DESC"), filter)
+	reqLimit, reqOffset := 0, 0
 	if filter != nil {
-		if filter.TenantID != "" {
-			q = q.Where("tenant_id = ?", filter.TenantID)
-		}
-		if filter.SubjectKind != "" {
-			q = q.Where("subject_kind = ?", filter.SubjectKind)
-		}
-		if filter.SubjectID != "" {
-			q = q.Where("subject_id = ?", filter.SubjectID)
-		}
-		if filter.Action != "" {
-			q = q.Where("action = ?", filter.Action)
-		}
-		if filter.ResourceType != "" {
-			q = q.Where("resource_type = ?", filter.ResourceType)
-		}
-		if filter.ResourceID != "" {
-			q = q.Where("resource_id = ?", filter.ResourceID)
-		}
-		if filter.Decision != "" {
-			q = q.Where("decision = ?", filter.Decision)
-		}
-		if filter.After != nil {
-			q = q.Where("created_at >= ?", *filter.After)
-		}
-		if filter.Before != nil {
-			q = q.Where("created_at <= ?", *filter.Before)
-		}
-		if filter.Limit > 0 {
-			q = q.Limit(filter.Limit)
-		}
-		if filter.Offset > 0 {
-			q = q.Offset(filter.Offset)
-		}
+		reqLimit, reqOffset = filter.Limit, filter.Offset
+	}
+	q = q.Limit(fanoutLimit(reqLimit))
+	if reqOffset > 0 {
+		q = q.Offset(reqOffset)
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("warden: list check logs: %w", err)
@@ -1308,36 +1855,7 @@ func (s *Store) ListCheckLogs(ctx context.Context, filter *checklog.QueryFilter)
 }
 
 func (s *Store) CountCheckLogs(ctx context.Context, filter *checklog.QueryFilter) (int64, error) {
-	q := s.pgdb.NewSelect((*checkLogModel)(nil))
-	if filter != nil {
-		if filter.TenantID != "" {
-			q = q.Where("tenant_id = ?", filter.TenantID)
-		}
-		if filter.SubjectKind != "" {
-			q = q.Where("subject_kind = ?", filter.SubjectKind)
-		}
-		if filter.SubjectID != "" {
-			q = q.Where("subject_id = ?", filter.SubjectID)
-		}
-		if filter.Action != "" {
-			q = q.Where("action = ?", filter.Action)
-		}
-		if filter.ResourceType != "" {
-			q = q.Where("resource_type = ?", filter.ResourceType)
-		}
-		if filter.ResourceID != "" {
-			q = q.Where("resource_id = ?", filter.ResourceID)
-		}
-		if filter.Decision != "" {
-			q = q.Where("decision = ?", filter.Decision)
-		}
-		if filter.After != nil {
-			q = q.Where("created_at >= ?", *filter.After)
-		}
-		if filter.Before != nil {
-			q = q.Where("created_at <= ?", *filter.Before)
-		}
-	}
+	q := whereCheckLogs(s.pgdb.NewSelect((*checkLogModel)(nil)), filter)
 	count, err := q.Count(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("warden: count check logs: %w", err)
@@ -1358,6 +1876,42 @@ func (s *Store) PurgeCheckLogs(ctx context.Context, before time.Time) (int64, er
 	return n, nil
 }
 
+// PurgeCheckLogsForTenant is a DELETE, which warden_check_logs allows: its
+// append-only trigger refuses UPDATE only.
+func (s *Store) PurgeCheckLogsForTenant(ctx context.Context, tenantID string, before time.Time) (int64, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("warden: purge check logs for tenant: %w", wardenerr.ErrTenantRequired)
+	}
+	res, err := s.pgdb.NewDelete((*checkLogModel)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("created_at < ?", before).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("warden: purge check logs for tenant: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("warden: purge check logs for tenant rows: %w", err)
+	}
+	return n, nil
+}
+
+func (s *Store) DeleteCheckLogsBySubject(ctx context.Context, tenantID, subjectKind, subjectID string) (int64, error) {
+	res, err := s.pgdb.NewDelete((*checkLogModel)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("subject_kind = ?", subjectKind).
+		Where("subject_id = ?", subjectID).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("warden: delete check logs by subject: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("warden: delete check logs by subject rows: %w", err)
+	}
+	return n, nil
+}
+
 func (s *Store) DeleteCheckLogsByTenant(ctx context.Context, tenantID string) error {
 	_, err := s.pgdb.NewDelete((*checkLogModel)(nil)).
 		Where("tenant_id = ?", tenantID).Exec(ctx)
@@ -1365,4 +1919,14 @@ func (s *Store) DeleteCheckLogsByTenant(ctx context.Context, tenantID string) er
 		return fmt.Errorf("warden: delete check logs by tenant: %w", err)
 	}
 	return nil
+}
+
+// roleIDStrings renders role IDs for the "= ANY" array binding. pgx encodes
+// a []string as text[], which is what the id columns are.
+func roleIDStrings(roleIDs []id.RoleID) []string {
+	out := make([]string, len(roleIDs))
+	for i, rid := range roleIDs {
+		out[i] = rid.String()
+	}
+	return out
 }

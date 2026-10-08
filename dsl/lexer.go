@@ -60,7 +60,7 @@ func (l *Lexer) Next() Token {
 	case isIdentStart(ch):
 		return l.readIdent(startPos)
 	case isDigit(ch):
-		return l.readInt(startPos)
+		return l.readNumber(startPos)
 	}
 
 	// Punctuation / operators.
@@ -239,11 +239,19 @@ func (l *Lexer) readIdent(startPos Pos) Token {
 	return Token{Kind: IDENT, Value: lex, Pos: startPos}
 }
 
-// readInt reads an unsigned integer literal.
-func (l *Lexer) readInt(startPos Pos) Token {
+// readNumber reads an unsigned integer literal, or a decimal one when a
+// `.` and a digit follow the integer part.
+func (l *Lexer) readNumber(startPos Pos) Token {
 	start := l.pos
 	for l.pos < len(l.src) && isDigit(l.src[l.pos]) {
 		l.advance()
+	}
+	if l.peek(0) == '.' && isDigit(l.peek(1)) {
+		l.advance() // consume `.`
+		for l.pos < len(l.src) && isDigit(l.src[l.pos]) {
+			l.advance()
+		}
+		return Token{Kind: FLOAT, Value: string(l.src[start:l.pos]), Pos: startPos}
 	}
 	return Token{Kind: INT, Value: string(l.src[start:l.pos]), Pos: startPos}
 }

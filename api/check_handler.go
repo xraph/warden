@@ -5,12 +5,27 @@ import (
 	"net/http"
 
 	"github.com/xraph/forge"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/xraph/warden"
 )
 
+// maxCheckBodyBytes caps the request body accepted on the check routes,
+// independent of the app-wide default, so a caller can't force the
+// server to buffer an arbitrarily large batch-check payload.
+const maxCheckBodyBytes = 256 << 10
+
+// defaultMaxBatchChecks is used when the engine's Config.MaxBatchChecks
+// is unset (zero), matching warden.DefaultConfig().
+const defaultMaxBatchChecks = 100
+
+// batchParallelism bounds how many checks in a batch run concurrently.
+const batchParallelism = 8
+
 func (a *API) registerCheckRoutes(router forge.Router) error {
 	g := router.Group("/v1/authz", forge.WithGroupTags("authorization"))
+
+	authz := a.authorize("check", "warden:authz")
 
 	if err := g.POST("/check", a.check,
 		forge.WithSummary("Authorization check"),
@@ -19,6 +34,8 @@ func (a *API) registerCheckRoutes(router forge.Router) error {
 		forge.WithRequestSchema(CheckRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Check result", CheckResponse{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(authz),
+		forge.WithMaxBodySize(maxCheckBodyBytes),
 	); err != nil {
 		return err
 	}
@@ -30,6 +47,8 @@ func (a *API) registerCheckRoutes(router forge.Router) error {
 		forge.WithRequestSchema(CheckRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Allowed", CheckResponse{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(authz),
+		forge.WithMaxBodySize(maxCheckBodyBytes),
 	); err != nil {
 		return err
 	}
@@ -41,6 +60,8 @@ func (a *API) registerCheckRoutes(router forge.Router) error {
 		forge.WithRequestSchema(BatchCheckRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Batch results", BatchCheckResponse{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(authz),
+		forge.WithMaxBodySize(maxCheckBodyBytes),
 	)
 }
 
@@ -54,8 +75,11 @@ func (a *API) check(ctx forge.Context, req *CheckRequest) (*CheckResponse, error
 		return nil, mapError(err)
 	}
 
+	// No explicit ctx.JSON: Forge auto-serializes a non-nil return value
+	// at 200, which is exactly what a plain "allowed or not" check
+	// response needs.
 	resp := toCheckResponse(result)
-	return resp, ctx.JSON(http.StatusOK, resp)
+	return resp, nil
 }
 
 func (a *API) enforce(ctx forge.Context, req *CheckRequest) (*CheckResponse, error) {
@@ -70,9 +94,18 @@ func (a *API) enforce(ctx forge.Context, req *CheckRequest) (*CheckResponse, err
 
 	resp := toCheckResponse(result)
 	if !result.Allowed {
-		return resp, ctx.JSON(http.StatusForbidden, resp)
+		// A non-200 status needs an explicit write; return nil so Forge's
+		// auto-serializer (always 200) doesn't also write the body.
+		return nil, ctx.JSON(http.StatusForbidden, resp)
 	}
-	return resp, ctx.JSON(http.StatusOK, resp)
+	return resp, nil
+}
+
+func (a *API) maxBatchChecks() int {
+	if n := a.eng.Config().MaxBatchChecks; n > 0 {
+		return n
+	}
+	return defaultMaxBatchChecks
 }
 
 func (a *API) batchCheck(ctx forge.Context, req *BatchCheckRequest) (*BatchCheckResponse, error) {
@@ -81,24 +114,34 @@ func (a *API) batchCheck(ctx forge.Context, req *BatchCheckRequest) (*BatchCheck
 		verr.AddWithCode("checks", "checks cannot be empty", "MIN_ITEMS", nil)
 		return nil, verr
 	}
-
-	for i := range req.Checks {
-		if err := validateCheckRequestAt(&req.Checks[i], fmt.Sprintf("checks[%d]", i)); err != nil {
-			return nil, err
-		}
+	if maxBatch := a.maxBatchChecks(); len(req.Checks) > maxBatch {
+		return nil, forge.NewHTTPError(http.StatusUnprocessableEntity,
+			fmt.Sprintf("checks exceeds the maximum batch size of %d", maxBatch))
 	}
 
 	results := make([]CheckResponse, len(req.Checks))
-	for i, c := range req.Checks {
-		result, err := a.eng.Check(ctx.Context(), toCheckRequest(&c))
-		if err != nil {
-			return nil, mapError(err)
-		}
-		results[i] = *toCheckResponse(result)
-	}
+	g, gctx := errgroup.WithContext(ctx.Context())
+	g.SetLimit(batchParallelism)
 
-	resp := &BatchCheckResponse{Results: results}
-	return resp, ctx.JSON(http.StatusOK, resp)
+	for i := range req.Checks {
+		i, c := i, req.Checks[i]
+		if err := validateCheckRequestAt(&c, fmt.Sprintf("checks[%d]", i)); err != nil {
+			results[i] = CheckResponse{Error: err.Error()}
+			continue
+		}
+		g.Go(func() error {
+			result, err := a.eng.Check(gctx, toCheckRequest(&c))
+			if err != nil {
+				results[i] = CheckResponse{Error: err.Error()}
+				return nil
+			}
+			results[i] = *toCheckResponse(result)
+			return nil
+		})
+	}
+	_ = g.Wait() //nolint:errcheck // per-item errors are captured in results; nothing to propagate
+
+	return &BatchCheckResponse{Results: results}, nil
 }
 
 func validateCheckRequest(req *CheckRequest) error {
@@ -115,6 +158,9 @@ func validateCheckRequestAt(req *CheckRequest, prefix string) error {
 	}
 	if req.SubjectID == "" {
 		verr.AddWithCode(fieldName("subject_id"), "subject_id is required", "REQUIRED", nil)
+	}
+	if req.SubjectKind != "" && !validSubjectKind(req.SubjectKind) {
+		verr.AddWithCode(fieldName("subject_kind"), "subject_kind must be one of user, api_key, service, service_acct", "ENUM", req.SubjectKind)
 	}
 	if req.Action == "" {
 		verr.AddWithCode(fieldName("action"), "action is required", "REQUIRED", nil)
@@ -134,7 +180,6 @@ func toCheckRequest(r *CheckRequest) *warden.CheckRequest {
 		Action:   warden.Action{Name: r.Action},
 		Resource: warden.Resource{Type: r.ResourceType, ID: r.ResourceID},
 		Context:  r.Context,
-		TenantID: r.TenantID,
 	}
 }
 
@@ -142,7 +187,7 @@ func toCheckResponse(r *warden.CheckResult) *CheckResponse {
 	resp := &CheckResponse{
 		Allowed:    r.Allowed,
 		Decision:   string(r.Decision),
-		Reason:     r.Reason,
+		Reason:     sanitizeReason(r.Reason),
 		EvalTimeNs: r.EvalTimeNs,
 	}
 	for _, m := range r.MatchedBy {

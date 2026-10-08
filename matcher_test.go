@@ -32,6 +32,12 @@ func TestMatchGlob(t *testing.T) {
 		{"trailing * matches prefix", "prefix*", "prefixsuffix", true},
 		{"trailing * rejects non-prefix", "prefix*", "other", false},
 
+		// Partial-segment wildcards no longer prefix-match: the segment
+		// after the colon must be exactly "*" to wildcard.
+		{"partial segment wildcard does not match", "document:1*", "document:1999", false},
+		{"partial segment wildcard does not match shorter id", "document:1*", "document:10", false},
+		{"partial segment wildcard still exact-matches itself", "document:1*", "document:1*", true},
+
 		// Exact match.
 		{"exact match", "settings:manage", "settings:manage", true},
 		{"exact mismatch", "settings:manage", "settings:read", false},

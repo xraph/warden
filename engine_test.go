@@ -42,7 +42,7 @@ func TestRBACFlow(t *testing.T) {
 
 	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "editor", Slug: "editor"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"})
-	_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: "document:read"})
+	_ = s.AttachPermission(ctx, "t1", roleID, permission.Ref{Name: "document:read"})
 
 	// Assign role to user.
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
@@ -94,7 +94,7 @@ func TestRBACRoleInheritance(t *testing.T) {
 	_ = s.CreateRole(ctx, &role.Role{ID: parentID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
 	_ = s.CreateRole(ctx, &role.Role{ID: childID, TenantID: "t1", Name: "editor", Slug: "editor", ParentSlug: "viewer"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "document:read", Resource: "document", Action: "read"})
-	_ = s.AttachPermission(ctx, parentID, permission.Ref{Name: "document:read"})
+	_ = s.AttachPermission(ctx, "t1", parentID, permission.Ref{Name: "document:read"})
 
 	// Assign child role to user.
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
@@ -137,9 +137,9 @@ func TestRBACRoleInheritance_MultiLevel(t *testing.T) {
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: writePerm, TenantID: "t1", Name: "doc:write", Resource: "doc", Action: "write"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: deletePerm, TenantID: "t1", Name: "doc:delete", Resource: "doc", Action: "delete"})
 
-	_ = s.AttachPermission(ctx, viewerID, permission.Ref{Name: "doc:read"})
-	_ = s.AttachPermission(ctx, editorID, permission.Ref{Name: "doc:write"})
-	_ = s.AttachPermission(ctx, adminID, permission.Ref{Name: "doc:delete"})
+	_ = s.AttachPermission(ctx, "t1", viewerID, permission.Ref{Name: "doc:read"})
+	_ = s.AttachPermission(ctx, "t1", editorID, permission.Ref{Name: "doc:write"})
+	_ = s.AttachPermission(ctx, "t1", adminID, permission.Ref{Name: "doc:delete"})
 
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
 		TenantID: "t1", RoleID: adminID, SubjectKind: "user", SubjectID: "u1",
@@ -175,7 +175,7 @@ func TestRBACRoleInheritance_CircularSlug(t *testing.T) {
 	_ = s.CreateRole(ctx, &role.Role{ID: aID, TenantID: "t1", Name: "A", Slug: "role-a", ParentSlug: "role-b"})
 	_ = s.CreateRole(ctx, &role.Role{ID: bID, TenantID: "t1", Name: "B", Slug: "role-b", ParentSlug: "role-a"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
-	_ = s.AttachPermission(ctx, bID, permission.Ref{Name: "doc:read"})
+	_ = s.AttachPermission(ctx, "t1", bID, permission.Ref{Name: "doc:read"})
 
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
 		TenantID: "t1", RoleID: aID, SubjectKind: "user", SubjectID: "u1",
@@ -218,7 +218,7 @@ func TestRBACRoleInheritance_DanglingParentSlug(t *testing.T) {
 
 	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "orphan", Slug: "orphan", ParentSlug: "ghost"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
-	_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: "doc:read"})
+	_ = s.AttachPermission(ctx, "t1", roleID, permission.Ref{Name: "doc:read"})
 
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
 		TenantID: "t1", RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
@@ -536,7 +536,7 @@ func TestResourceScopedRole(t *testing.T) {
 
 	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "doc-editor", Slug: "doc-editor"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t1", Name: "document:write", Resource: "document", Action: "write"})
-	_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: "document:write"})
+	_ = s.AttachPermission(ctx, "t1", roleID, permission.Ref{Name: "document:write"})
 
 	// Assign role scoped to a specific document.
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
@@ -598,7 +598,7 @@ func TestCheckWithTenantOverride(t *testing.T) {
 
 	_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t2", Name: "admin", Slug: "admin"})
 	_ = s.CreatePermission(ctx, &permission.Permission{ID: permID, TenantID: "t2", Name: "document:read", Resource: "document", Action: "read"})
-	_ = s.AttachPermission(ctx, roleID, permission.Ref{Name: "document:read"})
+	_ = s.AttachPermission(ctx, "t2", roleID, permission.Ref{Name: "document:read"})
 	_ = s.CreateAssignment(ctx, &assignment.Assignment{
 		TenantID: "t2",
 		RoleID:   roleID, SubjectKind: "user", SubjectID: "u1",

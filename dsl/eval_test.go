@@ -153,6 +153,71 @@ func TestEval_Cache(t *testing.T) {
 	}
 }
 
+// TestEval_CacheVersioned_RecompilesOnNewerUpdatedAt verifies M5: a cache
+// entry compiled with an older UpdatedAt is treated as stale (and
+// recompiled) once a call arrives with a newer one, as happens when a
+// resource type's permission expression is edited between two Checks.
+func TestEval_CacheVersioned_RecompilesOnNewerUpdatedAt(t *testing.T) {
+	s := memory.New()
+	ev := NewEvaluator(s)
+
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t1 := t0.Add(time.Hour)
+
+	exprA, diags := ev.CompileAndCacheVersioned("t1", "", "doc", "read", "viewer", t0)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	// Same UpdatedAt: must reuse the cached AST, not recompile.
+	exprSame, diags := ev.CompileAndCacheVersioned("t1", "", "doc", "read", "viewer", t0)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if exprA != exprSame {
+		t.Fatal("expected the same cached AST for an unchanged UpdatedAt")
+	}
+
+	// Newer UpdatedAt (the expression source also changed, as it would in
+	// practice): must recompile rather than serve the stale AST.
+	exprB, diags := ev.CompileAndCacheVersioned("t1", "", "doc", "read", "editor", t1)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if exprA == exprB {
+		t.Fatal("expected a fresh AST once UpdatedAt advanced")
+	}
+
+	// The now-cached entry (compiled at t1) must be served for a call at
+	// the same or an older UpdatedAt.
+	exprC, diags := ev.CompileAndCacheVersioned("t1", "", "doc", "read", "editor", t1)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if exprB != exprC {
+		t.Fatal("expected the freshly compiled AST to now be cached")
+	}
+}
+
+// TestEval_CompileAndCache_IgnoresVersioning verifies the plain
+// CompileAndCache path is unaffected by staleness tracking: it always
+// trusts whatever is cached, matching its pre-M5 behavior exactly.
+func TestEval_CompileAndCache_IgnoresVersioning(t *testing.T) {
+	s := memory.New()
+	ev := NewEvaluator(s)
+
+	t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Seed the cache via the versioned path with a real timestamp.
+	exprA, _ := ev.CompileAndCacheVersioned("t1", "", "doc", "read", "viewer", t1)
+
+	// The plain path (zero UpdatedAt) must still hit the cache rather than
+	// treating the entry as stale.
+	exprB, _ := ev.CompileAndCache("t1", "", "doc", "read", "viewer")
+	if exprA != exprB {
+		t.Fatal("expected CompileAndCache to reuse the versioned cache entry")
+	}
+}
+
 func TestEval_DepthBound(t *testing.T) {
 	s := memory.New()
 	ev := NewEvaluator(s)

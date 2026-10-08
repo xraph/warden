@@ -1,9 +1,11 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/xraph/forge"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/xraph/warden"
 )
@@ -71,6 +73,8 @@ type AuthZenEvaluationsResponse struct {
 func (a *API) registerAuthZenRoutes(router forge.Router) error {
 	g := router.Group("/access/v1", forge.WithGroupTags("authorization", "authzen"))
 
+	authz := a.authorize("check", "warden:authz")
+
 	if err := g.POST("/evaluation", a.authzenEvaluation,
 		forge.WithSummary("AuthZEN access evaluation"),
 		forge.WithDescription("OpenID AuthZEN Authorization API 1.0 single access evaluation."),
@@ -78,6 +82,8 @@ func (a *API) registerAuthZenRoutes(router forge.Router) error {
 		forge.WithRequestSchema(AuthZenEvaluationRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Decision", AuthZenEvaluationResponse{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(authz),
+		forge.WithMaxBodySize(maxCheckBodyBytes),
 	); err != nil {
 		return err
 	}
@@ -89,16 +95,21 @@ func (a *API) registerAuthZenRoutes(router forge.Router) error {
 		forge.WithRequestSchema(AuthZenEvaluationsRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Decisions", AuthZenEvaluationsResponse{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(authz),
+		forge.WithMaxBodySize(maxCheckBodyBytes),
 	)
 }
 
 func (a *API) authzenEvaluation(ctx forge.Context, req *AuthZenEvaluationRequest) (*AuthZenEvaluationResponse, error) {
-	result, err := a.eng.Check(ctx.Context(), authzenToCheckRequest(req))
+	cr, err := a.authzenCheckRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	result, err := a.eng.Check(ctx.Context(), cr)
 	if err != nil {
 		return nil, mapError(err)
 	}
-	resp := authzenToResponse(result)
-	return resp, ctx.JSON(http.StatusOK, resp)
+	return authzenToResponse(result), nil
 }
 
 func (a *API) authzenEvaluations(ctx forge.Context, req *AuthZenEvaluationsRequest) (*AuthZenEvaluationsResponse, error) {
@@ -107,19 +118,60 @@ func (a *API) authzenEvaluations(ctx forge.Context, req *AuthZenEvaluationsReque
 		verr.AddWithCode("evaluations", "evaluations cannot be empty", "MIN_ITEMS", nil)
 		return nil, verr
 	}
-
-	out := make([]AuthZenEvaluationResponse, len(req.Evaluations))
-	for i := range req.Evaluations {
-		item := resolveAuthZenDefaults(req, req.Evaluations[i])
-		result, err := a.eng.Check(ctx.Context(), authzenToCheckRequest(&item))
-		if err != nil {
-			return nil, mapError(err)
-		}
-		out[i] = *authzenToResponse(result)
+	if maxBatch := a.maxBatchChecks(); len(req.Evaluations) > maxBatch {
+		return nil, forge.NewHTTPError(http.StatusUnprocessableEntity,
+			fmt.Sprintf("evaluations exceeds the maximum batch size of %d", maxBatch))
 	}
 
-	resp := &AuthZenEvaluationsResponse{Evaluations: out}
-	return resp, ctx.JSON(http.StatusOK, resp)
+	out := make([]AuthZenEvaluationResponse, len(req.Evaluations))
+	g, gctx := errgroup.WithContext(ctx.Context())
+	g.SetLimit(batchParallelism)
+
+	for i := range req.Evaluations {
+		i := i
+		item := resolveAuthZenDefaults(req, req.Evaluations[i])
+		cr, err := a.authzenCheckRequest(ctx, &item)
+		if err != nil {
+			out[i] = AuthZenEvaluationResponse{Context: map[string]any{"error": err.Error()}}
+			continue
+		}
+		g.Go(func() error {
+			result, err := a.eng.Check(gctx, cr)
+			if err != nil {
+				out[i] = AuthZenEvaluationResponse{Context: map[string]any{"error": err.Error()}}
+				return nil
+			}
+			out[i] = *authzenToResponse(result)
+			return nil
+		})
+	}
+	_ = g.Wait() //nolint:errcheck // per-item errors are captured in out; nothing to propagate
+
+	return &AuthZenEvaluationsResponse{Evaluations: out}, nil
+}
+
+// authzenCheckRequest builds the engine CheckRequest for one AuthZEN
+// evaluation. AuthZEN carries no standard tenant field, so a caller may
+// pass a conventional tenant_id/namespace_path context key, but only as a
+// same-tenant assertion: it's honored when it matches the caller's own
+// resolved scope and rejected with 403 otherwise, so a caller can never
+// use it to reach into another tenant's catalog.
+func (a *API) authzenCheckRequest(ctx forge.Context, r *AuthZenEvaluationRequest) (*warden.CheckRequest, error) {
+	cr := authzenToCheckRequest(r)
+	_, scopeTenant := scopeFromForgeContext(ctx)
+	if cr.TenantID != "" && cr.TenantID != scopeTenant {
+		return nil, forge.Forbidden("warden: context tenant_id does not match the caller's scope")
+	}
+	scopeNS := warden.NamespaceFromContext(ctx.Context())
+	if cr.NamespacePath != "" && cr.NamespacePath != scopeNS {
+		return nil, forge.Forbidden("warden: context namespace_path does not match the caller's scope")
+	}
+	// Both fields are informational assertions, not overrides: once
+	// validated (or absent), the engine still resolves scope from the
+	// request context, same as every other route.
+	cr.TenantID = ""
+	cr.NamespacePath = ""
+	return cr, nil
 }
 
 // resolveAuthZenDefaults fills a batch item's omitted subject/action/resource
@@ -191,8 +243,8 @@ func authzenToResponse(r *warden.CheckResult) *AuthZenEvaluationResponse {
 		"decision":     string(r.Decision),
 		"eval_time_ns": r.EvalTimeNs,
 	}
-	if r.Reason != "" {
-		rctx["reason"] = r.Reason
+	if reason := sanitizeReason(r.Reason); reason != "" {
+		rctx["reason"] = reason
 	}
 	if len(r.Obligations) > 0 {
 		rctx["obligations"] = r.Obligations

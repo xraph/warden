@@ -7,12 +7,17 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/plugin"
 )
 
 func (a *API) registerAssignmentRoutes(router forge.Router) error {
 	g := router.Group("/v1", forge.WithGroupTags("assignments"))
+
+	manage := a.authorize("manage", "warden:assignment")
+	read := a.authorize("read", "warden:assignment")
 
 	if err := g.POST("/assignments", a.assignRole,
 		forge.WithSummary("Assign role"),
@@ -21,6 +26,7 @@ func (a *API) registerAssignmentRoutes(router forge.Router) error {
 		forge.WithRequestSchema(AssignRoleRequest{}),
 		forge.WithCreatedResponse(&assignment.Assignment{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -32,6 +38,7 @@ func (a *API) registerAssignmentRoutes(router forge.Router) error {
 		forge.WithRequestSchema(GetAssignmentRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -42,6 +49,7 @@ func (a *API) registerAssignmentRoutes(router forge.Router) error {
 		forge.WithRequestSchema(ListAssignmentsRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Assignment list", []*assignment.Assignment{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	); err != nil {
 		return err
 	}
@@ -53,6 +61,7 @@ func (a *API) registerAssignmentRoutes(router forge.Router) error {
 		forge.WithRequestSchema(ListSubjectRolesRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Role IDs", []string{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	)
 }
 
@@ -64,6 +73,8 @@ func (a *API) assignRole(ctx forge.Context, req *AssignRoleRequest) (*assignment
 		}
 		if req.SubjectKind == "" {
 			verr.AddWithCode("subject_kind", "subject_kind is required", "REQUIRED", nil)
+		} else if !validSubjectKind(req.SubjectKind) {
+			verr.AddWithCode("subject_kind", "subject_kind must be one of user, api_key, service, service_acct", "ENUM", req.SubjectKind)
 		}
 		if req.SubjectID == "" {
 			verr.AddWithCode("subject_id", "subject_id is required", "REQUIRED", nil)
@@ -79,6 +90,7 @@ func (a *API) assignRole(ctx forge.Context, req *AssignRoleRequest) (*assignment
 	}
 
 	appID, tenantID := scopeFromForgeContext(ctx)
+	actor, _ := warden.ActorFromContext(ctx.Context())
 	now := time.Now()
 	ass := &assignment.Assignment{
 		ID:           id.NewAssignmentID(),
@@ -89,6 +101,7 @@ func (a *API) assignRole(ctx forge.Context, req *AssignRoleRequest) (*assignment
 		SubjectID:    req.SubjectID,
 		ResourceType: req.ResourceType,
 		ResourceID:   req.ResourceID,
+		GrantedBy:    actor.ID,
 		CreatedAt:    now,
 	}
 
@@ -100,15 +113,38 @@ func (a *API) assignRole(ctx forge.Context, req *AssignRoleRequest) (*assignment
 		ass.ExpiresAt = &t
 	}
 
+	// The member cap, checked the way the dashboard's assignments.create
+	// checks it (assignment.CheckMemberCap): last, after every input check,
+	// so a malformed request against a full role reports what is wrong with
+	// it. A subject who already holds the role live is never refused. The
+	// check and the insert are not atomic, so two concurrent creates can
+	// take a role one past its cap.
+	r, err := a.eng.Store().GetRole(ctx.Context(), tenantID, roleID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := assignment.CheckMemberCap(ctx.Context(), a.eng.Store(), tenantID, r.ID, r.Name, r.MaxMembers,
+		req.SubjectKind, req.SubjectID, now); err != nil {
+		return nil, mapError(err)
+	}
+
 	if err := a.eng.Store().CreateAssignment(ctx.Context(), ass); err != nil {
 		return nil, mapError(err)
 	}
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitRoleAssigned(ctx.Context(), ass)
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: now, Action: "assignment.created",
+			TenantID: tenantID, EntityID: ass.ID.String(), Entity: ass,
+		})
 	}
 
-	return ass, ctx.JSON(http.StatusCreated, ass)
+	// Return nil as the value (not ass): Forge auto-serializes a non-nil
+	// return at 200, which would double-write the body after this
+	// explicit 201 write. See role_handler.go's createRole for the same
+	// pattern, used everywhere a handler needs a non-200 status.
+	return nil, ctx.JSON(http.StatusCreated, ass)
 }
 
 func (a *API) unassignRole(ctx forge.Context, _ *GetAssignmentRequest) (*struct{}, error) {
@@ -117,15 +153,26 @@ func (a *API) unassignRole(ctx forge.Context, _ *GetAssignmentRequest) (*struct{
 		return nil, forge.BadRequest(fmt.Sprintf("invalid assignment ID: %v", err))
 	}
 
-	// Get before delete for hook.
-	ass, getErr := a.eng.Store().GetAssignment(ctx.Context(), assID)
+	_, tenantID := scopeFromForgeContext(ctx)
 
-	if err := a.eng.Store().DeleteAssignment(ctx.Context(), assID); err != nil {
+	// Get before delete for hook.
+	ass, getErr := a.eng.Store().GetAssignment(ctx.Context(), tenantID, assID)
+
+	if err := a.eng.Store().DeleteAssignment(ctx.Context(), tenantID, assID); err != nil {
 		return nil, mapError(err)
 	}
 
-	if a.eng.Plugins() != nil && getErr == nil {
-		a.eng.Plugins().EmitRoleUnassigned(ctx.Context(), ass)
+	if a.eng.Plugins() != nil {
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		ev := plugin.Event{
+			Actor: actor, At: time.Now(), Action: "assignment.deleted",
+			TenantID: tenantID, EntityID: assID.String(),
+		}
+		if getErr == nil {
+			a.eng.Plugins().EmitRoleUnassigned(ctx.Context(), ass)
+			ev.Before = ass
+		}
+		a.eng.Plugins().EmitAudit(ctx.Context(), ev)
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)

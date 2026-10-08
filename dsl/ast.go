@@ -113,6 +113,28 @@ type RoleDecl struct {
 	MaxMembers    int
 	Grants        []string // permission names; possibly globs
 	GrantsAppend  bool     // true if `grants += [...]`
+
+	// QualifiedGrants are grants written as `{ namespace = "...", name =
+	// "..." }`: a permission named by namespace and name together. They
+	// reach a permission a bare name cannot, one in a namespace that is
+	// neither the role's own nor the root, or a root permission that a
+	// permission of the same name in the role's namespace shadows.
+	QualifiedGrants []*GrantRef
+
+	// GrantsSet is true when the role has a `grants` clause at all, even
+	// `grants = []`. A role with one owns its whole grant set, so an
+	// empty list revokes every grant. A role without one leaves the
+	// stored grants alone.
+	GrantsSet bool
+
+	Pos Pos
+}
+
+// GrantRef is one qualified grant: the permission's namespace path (empty
+// for the tenant root) and its name.
+type GrantRef struct {
+	NamespacePath string
+	Name          string
 	Pos           Pos
 }
 
@@ -133,10 +155,22 @@ type PolicyDecl struct {
 	NotBefore     *time.Time
 	NotAfter      *time.Time
 	Obligations   []string
+	Subjects      []*SubjectMatchDecl
 	Actions       []string
 	Resources     []string
 	Conditions    []*Condition
 	Pos           Pos
+}
+
+// SubjectMatchDecl is one matcher in a policy's `subjects` list, written
+// `{ kind = "user", id = "alice", role = "admin" }`. Every field is
+// optional and the fields present are AND-ed. `{}` is the empty matcher,
+// which matches every subject.
+type SubjectMatchDecl struct {
+	Kind string
+	ID   string
+	Role string
+	Pos  Pos
 }
 
 // Condition is a single ABAC predicate or boolean group.

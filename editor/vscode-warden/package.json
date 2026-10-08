@@ -1,16 +1,22 @@
 {
   "name": "vscode-warden",
   "displayName": "Warden",
-  "description": "Authorization DSL — syntax highlighting, completion, diagnostics, formatting, hover, and go-to-definition for .warden files.",
+  "description": "Authorization DSL: syntax highlighting, completion, diagnostics, formatting, hover, and go-to-definition for .warden files.",
   "version": "0.1.0",
   "publisher": "xraph",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/xraph/warden"
   },
   "engines": {
     "vscode": "^1.80.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "restrictedConfigurations": ["warden.lsp.command"]
+    }
   },
   "categories": [
     "Programming Languages",
@@ -87,16 +93,18 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.80.0",
-    "@vscode/vsce": "^3.0.0",
+    "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.25.0",
-    "ovsx": "^0.10.0",
+    "ovsx": "^1.2.0",
     "typescript": "^5.4.0"
   },
   "overrides": {
     "esbuild": "$esbuild",
+    "@vscode/vsce": "$@vscode/vsce",
     "fast-uri": ">=3.1.2",
     "tmp": ">=0.2.6",
-    "qs": ">=6.15.2"
+    "qs": ">=6.15.2",
+    "brace-expansion": ">=2.1.4"
   },
   "scripts": {
     "lint": "tsc --noEmit",

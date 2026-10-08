@@ -5,6 +5,19 @@ description: Complete reference for the Warden declarative DSL — every block, 
 
 This page is the canonical reference for the `.warden` declarative configuration language. For tooling (CLI, LSP, VS Code) see [DSL & Tooling](/docs/integration/dsl-tooling). For an introduction in context see [Authorization Models](/docs/concepts/authorization-models).
 
+## What changed
+
+- **`grants = []` now revokes every grant.** A role with a `grants` clause owns its whole grant set, so an empty list leaves it with none. Before, an empty list did nothing. If you leave the `grants` clause out entirely, the role keeps whatever grants it already has in the store. `warden export` writes `grants = []` for a role with no grants, so deleting a grant from exported source revokes it.
+- **Conditions the store can't hold are refused.** `negate`, an `any_of` with more than one condition, and an empty `any_of` are now diagnostics. Before, they were stored as something else without a word: `negate` was dropped (inverting the condition) and `any_of` kept only its first condition. See [`when` blocks](#when-blocks). A `DeclarativeOnStart` deployment whose files use `negate` or an `any_of` with more than one condition now fails at startup. With `DeclarativeStrict` set the extension won't start; without it you get a warning in the log, and nothing from those files is applied.
+- **A relation written twice is refused.** The store holds one row per tuple, so the second line never wrote anything, but a plan counted it as a write. It's now a diagnostic at the second line, and a `DeclarativeOnStart` deployment that repeats a tuple fails at startup the same way.
+- **A relation its resource type doesn't declare is refused.** When a resource type named after the tuple's object type governs the tuple's namespace (the nearest one up the namespace chain, the rule a check uses to find a resource type's permissions), it must declare the tuple's relation, and that relation must allow the subject: `user` allows `user:alice`, `group#member` allows `group:eng#member`, and neither allows the other. A relation that lists no subject types allows any subject, but it must still be declared. A tuple that breaks this is a diagnostic at its line, checked against the resource types as the apply will leave them, and `warden apply` writes nothing, dry run or not. An object type with no resource type anywhere up the chain isn't checked, and neither is a tuple already stored. The dashboard and the REST API refuse the same writes. A `DeclarativeOnStart` deployment whose files hold such a tuple: with `DeclarativeStrict` set the extension won't start; without it you get a warning in the log, and nothing from those files is applied.
+- **An apply can't lower `max_members` below the role's members.** If a role has 3 members and your file sets `max_members = 2`, the apply stops at that role with `"Small" has 3 members, so its cap cannot be lowered to 2`. Before, it lowered the cap and left all 3 members in place. `warden apply --dry-run` reports it and writes nothing. A real `warden apply` stops part way: the store isn't transactional, so whatever it wrote before reaching that role (resource types, permissions, the roles it got to first) stays written. A `DeclarativeOnStart` apply stops the same way. With `DeclarativeStrict` set the extension won't start; without it you get a warning in the log and the extension starts with what was written before the failure. Raise the cap in your file, or remove members, and apply again.
+- **A permission action with a `:` is refused.** The engine joins resource and action with `:` when it checks a grant, so `(warden, role:manage)` and `(warden:role, manage)` would be the same permission. A declaration that would create a permission with such an action, or change one's action to it, is a diagnostic at its line, and `warden apply` writes nothing, dry run or not. A permission already stored with that action, declared with the same resource and action, is left alone. `warden lint` and the language server report such an action as a warning, not an error, because only the store can say whether it is already there. A `DeclarativeOnStart` deployment whose files hold such a declaration: with `DeclarativeStrict` set the extension won't start; without it you get a warning in the log, and nothing from those files is applied. See [Permissions](#permissions).
+- **A permission written as its name alone splits at the last `:`.** `permission "warden:role:read"` is the resource `warden:role` and the action `read`. Before, it split at the first `:` and made the resource `warden` and the action `role:read`. So a bodiless `permission "a:b:c"` that an earlier apply stored as (`a`, `b:c`) now plans a one-time change to (`a:b`, `c`), shown as `~ permission//a:b:c (resource, action)`. Checks don't change: the engine joins resource and action into the same `a:b:c` either way. A block that sets only `resource` or only `action` takes the other from the name, and is a diagnostic when the name doesn't start with that resource or end with that action. A `DeclarativeOnStart` deployment whose files hold such a block: with `DeclarativeStrict` set the extension won't start; without it you get a warning in the log, and nothing from those files is applied.
+- **A role's parent must be in the role's own namespace.** The engine looks a parent's slug up in the role's own namespace only, so a parent the resolver found in an ancestor namespace, or through an absolute path to another namespace, gave the role nothing at check time. Such a parent is now a diagnostic and an apply writes nothing. A `DeclarativeOnStart` deployment whose files rely on it: with `DeclarativeStrict` set the extension won't start; without it you get a warning in the log, and nothing from those files is applied. Move the parent into the role's namespace, or grant the role what it needs directly.
+- **Names follow the store.** Any name the store accepts is valid, quoted when a bare identifier can't spell it. See [Identifier conventions](#identifier-conventions).
+- **Plan lines name the fields that changed**, for example `~ role//viewer (grants)`.
+
 ## File anatomy
 
 A `.warden` file has three layers:
@@ -139,11 +152,11 @@ resource document {
 }
 ```
 
-**`relation NAME : TYPES`** — `TYPES` is a `|`-separated list of allowed subject types. Each entry is either a bare resource type (`user`) or a [subject set](#subject-sets) (`group#member`).
+**`relation NAME : TYPES`**: `TYPES` is a `|`-separated list of allowed subject types. Each entry is either a bare resource type (`user`) or a [subject set](#subject-sets) (`group#member`). The list may be empty (`relation NAME:` with nothing after the colon), and an empty list puts no limit on the subject type.
 
-**`permission NAME = EXPR`** — `EXPR` is a [permission expression](#permission-expressions) over the resource's relations.
+**`permission NAME = EXPR`**: `EXPR` is a [permission expression](#permission-expressions) over the resource's relations.
 
-**`description = "..."`** — optional human-readable label.
+**`description = "..."`**: optional human-readable label.
 
 ### Subject sets
 
@@ -177,7 +190,7 @@ Cycles are bounded at runtime by the engine's `MaxGraphDepth` (default 10).
 
 The `permission` declaration registers a named permission in the catalog. Two forms:
 
-**Long form** (with metadata):
+**Long form** (with a description):
 
 ```warden
 permission "doc:read" {
@@ -196,7 +209,11 @@ permission "doc:write" (document : edit)
 
 The shorthand form binds the catalog entry to the `read` (or `edit`) permission expression declared in the `resource document { ... }` block.
 
-Names follow the format `<resource>:<action>`. Resources are snake_case identifiers; actions can include `*` for glob matching at check time.
+Names follow the format `<resource>:<action>`. A resource can be any name that isn't empty: a bare identifier such as `document`, or a quoted string, which is how you write one holding a `:` (`"warden:role"`). Actions can include `*` for glob matching at check time.
+
+**Name alone**: `permission "warden:role:read"` with no body takes the resource from before the last `:` and the action from after it, here `warden:role` and `read`. A block that sets only one of the two takes the other from the name: `permission "warden:role:read" { resource = "warden:role" }` has the action `read`, and `{ action = read }` has the resource `warden:role`. When the name doesn't start with the resource, or end with the action, the block is a diagnostic: set both.
+
+An action may not contain `:`, because the engine joins resource and action with `:` when it checks a grant. A resource may (`warden:role`). The apply refuses, before it writes anything, a declaration that would create a permission whose action has a `:` or change a permission's action to one. A permission already stored with such an action, declared with that same resource and action, is left alone, so `warden export` and an apply back still work. `warden lint` and the language server warn about a `:` in an action; the apply decides, because it reads the store.
 
 ## Roles
 
@@ -210,12 +227,11 @@ role viewer {
   is_default  = false
   max_members = 0
   grants      = ["doc:read", "folder:read"]
-  metadata    = {} // optional, free-form
 }
 
-role editor : viewer {       // inherits from viewer
+role editor : viewer {       // inherits viewer's grants at check time
   name   = "Editor"
-  grants += ["doc:write"]    // appends to viewer's grants
+  grants += ["doc:write"]    // same as `=`: editor's own grants
 }
 
 role admin : editor {
@@ -232,27 +248,27 @@ role admin : editor {
 | `description` | `STRING` | `""` | Free-form. |
 | `is_system` | `BOOL` | `false` | System-managed role; `--prune` will not delete it. |
 | `is_default` | `BOOL` | `false` | Marks the role as the default for new subjects. |
-| `max_members` | `INT` | `0` (no limit) | Soft limit enforced at assignment time. |
-| `grants` | `string_list` | `[]` | Permission names. Use `+=` to append to inherited grants. |
-| `metadata` | `map` | `{}` | Arbitrary key/value pairs. |
+| `max_members` | `INT` (may be negative) | `0` (no limit) | Caps the role's live members, the distinct subjects holding an unexpired assignment. `0` or a negative number means no limit. The dashboard and the REST API refuse to assign a new subject to a full role, and the dashboard, the REST API and an apply all refuse to lower a cap below the members the role has now. `BootstrapAdmin` skips the check on purpose, and so does any write that goes straight to the store instead of through warden's dashboard, REST API or DSL (authsome's role assignment is one). See [What changed](#what-changed) for what a refused cap does to an apply. |
+| `grants` | `grant_list` | unmanaged | Permission names, found in the role's namespace and then at the root. A permission anywhere else, or a root one shadowed by a same-named permission in the role's namespace, is written `{ namespace = "eng", name = "deploy:run" }`. A `grants` clause sets the role's whole grant set, so `grants = []` revokes every grant; a role with no `grants` clause keeps its stored grants. `grants += [...]` does exactly what `grants = [...]` does: it sets the role's own grants, and a parent's grants reach the role through inheritance at check time either way. Several `grants` clauses in one role block are combined into one list. `warden fmt` keeps whichever spelling you wrote. |
 
 ### Inheritance
 
-`role editor : viewer` makes `editor` a child of `viewer`. The slug after the colon resolves first in the local namespace, then walks up ancestors. To reach across the namespace tree explicitly, use a leading `/`:
+`role editor : viewer` makes `editor` a child of `viewer`. The parent has to be declared in the same namespace as the role. A role stores only its parent's slug, and the engine looks that slug up in the role's own namespace at check time, so a parent anywhere else would give the role nothing. The resolver refuses one with a diagnostic, whether it finds the parent in an ancestor namespace or through an absolute path to another namespace, and an apply writes nothing. An absolute path into the role's own namespace is accepted and means the same as the bare slug:
 
 ```warden
 namespace "engineering" {
-  role platform-admin : eng-viewer {           // local — eng-viewer in same ns
+  role eng-viewer {
   }
 
-  namespace "platform" {
-    role sre : /engineering/platform-admin {   // absolute path
-    }
+  role platform-admin : eng-viewer {             // eng-viewer in the same namespace
+  }
+
+  role lead : /engineering/platform-admin {      // absolute path, same namespace
   }
 }
 ```
 
-The resolver detects cycles in the parent graph and reports them as diagnostics. Inherited permissions cascade at evaluation time — see [authorization models](/docs/concepts/authorization-models).
+The resolver detects cycles in the parent graph and reports them as diagnostics. Inherited permissions cascade at evaluation time, see [authorization models](/docs/concepts/authorization-models).
 
 ### Slug rules
 
@@ -271,14 +287,13 @@ policy "business-hours-only" {
   not_before  = "2026-01-01T00:00:00Z"   // PBAC
   not_after   = "2026-12-31T23:59:59Z"   // PBAC
   obligations = ["audit-log"]            // PBAC
-  subjects    = []                       // empty = match any subject
+  subjects    = [{ kind = "user" }]      // none = match any subject
   actions     = ["write", "delete"]
   resources   = ["document"]
-  metadata    = {}
 
   when {
-    context.time time_after  "09:00:00Z"
-    context.time time_before "17:00:00Z"
+    context.hour >= 9                    // the caller sends the hour
+    context.hour < 17
     subject.attributes.department == "engineering"
   }
 }
@@ -295,56 +310,57 @@ policy "business-hours-only" {
 | `not_before` | `STRING` (RFC3339) | unset | PBAC: policy is inactive before this instant. |
 | `not_after` | `STRING` (RFC3339) | unset | PBAC: policy is inactive after this instant. |
 | `obligations` | `string_list` | `[]` | PBAC: named side-effect actions emitted on match. |
-| `subjects` | `string_list` | `[]` | Subject matchers (glob). Empty = any subject. |
+| `subjects` | `subject_list` | none | Subject matchers, each `{ kind = "...", id = "...", role = "..." }` with every field optional. The fields of one matcher are AND-ed; the policy applies when any matcher matches. `{}` matches every subject. No `subjects` clause = any subject. |
 | `actions` | `string_list` | `[]` | Action patterns (glob). |
 | `resources` | `string_list` | `[]` | Resource patterns (glob). |
-| `metadata` | `map` | `{}` | Arbitrary key/value pairs. |
 | `when { ... }` | block | empty | Conditions; see below. |
 
 ### `when` blocks
 
-The `when` block contains zero or more conditions. By default, conditions are AND-merged: all must hold for the policy to match. Use `all_of` / `any_of` to override:
+The `when` block contains zero or more conditions, and all of them must hold for the policy to match. That's also exactly what the store keeps: a flat list of predicates that must all hold, with no OR and no negation. So you can group conditions only in ways that flatten to that list without changing what they mean:
 
 ```warden
 when {
-  // AND: all three must hold
   context.ip ip_in_cidr "10.0.0.0/8"
-  context.time time_after "09:00:00Z"
-  subject.attributes.role == "admin"
-}
-
-when {
-  any_of {
-    subject.attributes.department == "engineering"
-    subject.attributes.department == "platform"
+  all_of {                               // an AND, at any depth
+    context.hour >= 9
+    subject.attributes.role == "admin"
   }
-  context.time time_after "09:00:00Z"   // AND-ed with the any_of above
+  any_of {                               // one condition: just that condition
+    subject.attributes.department == "engineering"
+  }
 }
 ```
+
+Anything else is a diagnostic at the condition, because it would be stored as something it isn't:
+
+| Refused | Why | Write instead |
+|---|---|---|
+| `... negate` | A stored condition has no negation, so it would mean the opposite. | The opposite operator: `!=`, `not in`, `not exists`. |
+| `any_of` with two or more conditions | The store has no OR; only one would be kept. | One policy per alternative. |
+| `any_of {}` | It can never hold, and an empty list always does. | Remove it. |
 
 Conditions are atomic predicates of the form:
 
 ```text
-FIELD_PATH OPERATOR LITERAL [negate]
+FIELD_PATH OPERATOR [VALUE]
 ```
+
+`VALUE` is a string, a number (`0.75`, `-3`), a boolean, or a flat list of those. `exists` and `not exists` take none. A field a bare path can't spell is written as a string: `"subject.attributes[\"team name\"]" == "core"`.
 
 `FIELD_PATH` is a dotted path with optional bracketed segments:
 
 - `subject.id`
 - `subject.attributes.department`
-- `subject.attributes["dept"]`     (bracketed for keys with non-identifier chars)
+- `subject.attributes.["dept"]`    (bracketed for keys with non-identifier chars; note the dot)
 - `resource.attributes.tier`
 - `context.ip`
 - `context.time`
 - `action.name`
 
-`negate` flips the condition's result, useful when an operator's negation isn't a separate keyword:
+Path segments may be keywords, so `resource.name` and `subject.role` are fine as written.
 
-```warden
-when {
-  context.ip ip_in_cidr "10.0.0.0/8" negate   // IP NOT in 10.0.0.0/8
-}
-```
+The grammar still parses `negate` after a condition, so an old file gets a diagnostic that points at it instead of a syntax error.
 
 ### Condition operators
 
@@ -362,8 +378,10 @@ when {
 | `exists` | presence | `subject.attributes.mfa_verified exists` |
 | `not exists` | absence | `subject.attributes.banned not exists` |
 | `ip_in_cidr` | network | `context.ip ip_in_cidr "10.0.0.0/8"` |
-| `time_after` | wall-clock comparison | `context.time time_after "09:00:00Z"` |
-| `time_before` | wall-clock comparison | `context.time time_before "17:00:00Z"` |
+| `time_after` | instant, RFC3339 only | `resource.published_at time_after "2026-06-01T09:00:00Z"` |
+| `time_before` | instant, RFC3339 only | `subject.password_changed_at time_before "2026-03-01T00:00:00Z"` |
+
+`time_after` and `time_before` compare absolute instants. The value has to be a full RFC3339 timestamp, so `"09:00"` or `"09:00:00Z"` is a diagnostic (`invalid RFC3339 time`), not a time of day. There is no time-of-day operator. For business hours, have the caller send the hour in its own time zone and compare it as a number: `context.hour >= 9` and `context.hour < 17`.
 
 ## Relations
 
@@ -379,7 +397,7 @@ Form: `relation OBJ_TYPE:OBJ_ID RELATION = SUBJ_TYPE:SUBJ_ID[#SUBJ_RELATION]`.
 
 The optional `#SUBJ_RELATION` suffix creates a [subject set](#subject-sets) — "every member of `group:eng` is a viewer of `document:welcome`".
 
-For runtime relation writes (the typical path), use the engine's `CreateRelation` API or a tuple-write plugin — `relation` declarations are appropriate for fixtures and bootstrap state, not for tracking high-volume tuples.
+For runtime relation writes (the typical path), use the store's `CreateRelation` (`eng.Store().CreateRelation`) or a tuple-write plugin. `relation` declarations are appropriate for fixtures and bootstrap state, not for tracking high-volume tuples. A store write skips the declaration check an apply makes (see [What changed](#what-changed)); call `resourcetype.CheckTupleDeclared` first to refuse the same tuples.
 
 ## Namespaces
 
@@ -405,19 +423,19 @@ namespace "engineering" {
   }
 
   namespace "platform" {
-    role platform-admin : eng-viewer {        // inherits from eng-viewer at /engineering
+    role platform-admin {                     // a parent must be in this namespace
       name    = "Platform Admin"
       grants += ["infra:*"]
     }
 
-    role sre : /engineering/platform-admin {  // absolute cross-block reference
+    role sre : /engineering/platform/platform-admin {  // absolute reference
       name    = "SRE"
       grants += ["pager:*"]
     }
   }
 
   namespace "frontend" {
-    role frontend-developer : eng-viewer {    // resolves to /engineering/eng-viewer
+    role frontend-developer {
       grants += ["ui:*"]
     }
   }
@@ -441,7 +459,7 @@ namespace "billing" {
 
 - **Segment**: matches `^[a-z][a-z0-9-]{0,62}$`.
 - **Path separator**: `/`. Storage canonicalizes paths without leading or trailing slashes (root is `""`).
-- **Leading `/`**: only valid in role-parent references — marks an absolute path from the tenant root. `role X : /eng/admin` jumps across the namespace tree.
+- **Leading `/`**: only valid in role-parent references, where it marks an absolute path from the tenant root. `role X : /eng/admin` is accepted only for a role declared in `eng`, since a parent must be in the role's own namespace.
 - **Reserved segments**: `system`, `admin`, `_root` are reserved.
 
 ### Resolution rules
@@ -449,14 +467,14 @@ namespace "billing" {
 | Lookup | Behavior |
 |---|---|
 | Role at namespace `N` (assignment) | Visible from `N` and all descendants. |
-| Role parent (bare slug) | Resolves at the role's own namespace, then walks ancestors. |
-| Role parent (absolute `/.../...`) | Resolves at the named namespace, no walk. |
-| Permission referenced from a role's `grants` | Resolves at the role's namespace, then walks ancestors. |
+| Role parent (bare slug) | Must be declared in the role's own namespace. One the resolver finds only in an ancestor is a diagnostic. |
+| Role parent (absolute `/.../...`) | Accepted only when the path names the role's own namespace. |
+| Permission referenced from a role's `grants` | Resolves at the role's namespace, then at the root. Nothing in between: use a qualified grant `{ namespace = "...", name = "..." }` for any other namespace. |
 | Resource type referenced from a permission shorthand | Resolves at the permission's namespace, then walks ancestors. |
 | Policy at namespace `N` | Applies to checks in `N` and all descendants. |
 | Relation tuples | Located at a namespace; do **not** cascade. |
 
-Sibling references must use absolute paths — a role declared in `billing` cannot be referenced as a bare slug from `engineering`.
+A role declared in `billing` cannot be named as a bare slug from `engineering`, and it cannot be a parent there by absolute path either.
 
 ## Imports
 
@@ -533,19 +551,17 @@ For multi-tenant repos, the recommended layout is **one directory per tenant** w
 
 ## Identifier conventions
 
-Validator-enforced (errors unless noted):
+A name is valid when the store and the dashboard would accept it, so anything a tenant holds can be exported and applied back.
 
 | Element | Rule |
 |---|---|
-| Role slug | `^[a-z][a-z0-9-]{0,62}$` (kebab-case, ≤63 chars) |
-| Permission name | `<resource>:<action>` — resource: `^[a-z][a-z0-9_-]*$`; action: `^[a-z0-9_*-]+$` |
-| Policy name | `^[a-z][a-z0-9-]{0,62}$` |
-| Resource type name | `^[a-z][a-z0-9_]{0,62}$` (snake_case) |
-| Resource-type relation name | `^[a-z][a-z0-9_]{0,32}$` |
-| Display `name = "..."` | non-empty, ≤64 chars |
-| Namespace segment | `^[a-z][a-z0-9-]{0,62}$` |
-| Reserved namespace segments | `system`, `admin`, `_root` |
-| `is_system = true` reserved on slugs containing `system` | warning otherwise |
+| Role slug | not empty |
+| Permission | a resource and an action, both not empty; the name is free text (`warden:role:read`, with resource `warden:role`, and `warden:*` are both valid) |
+| Policy name | not empty after trimming |
+| Resource type name | not empty |
+| Namespace path | `warden.ValidateNamespacePath`: lowercase segments, with `system`, `admin` and `_root` reserved |
+
+Wherever a name is expected, a string literal can stand in for an identifier. `warden fmt` and `warden export` quote a name when a bare identifier wouldn't read back as the same name: a keyword, a leading digit, a space, a colon, a glob or an empty name.
 
 ## Spec versioning
 
@@ -596,6 +612,7 @@ traverse      = IDENT { "->" IDENT }
 (* — Permission catalog — *)
 permission_decl = "permission" STRING "{" { kv } "}"
                 | "permission" STRING "(" IDENT ":" IDENT ")"
+                | "permission" STRING
 
 (* — Roles — *)
 role_decl     = "role" IDENT [ ":" parent_ref ] "{" { role_member } "}"
@@ -605,30 +622,45 @@ role_member   = "name"        "=" STRING
               | "description" "=" STRING
               | "is_system"   "=" BOOL
               | "is_default"  "=" BOOL
-              | "max_members" "=" INT
-              | "grants"      ("=" | "+=") string_list
-              | "metadata"    "=" map_lit
+              | "max_members" "=" [ "-" ] INT
+              | "grants"      ("=" | "+=") grant_list
 
 (* — Policies — *)
 policy_decl   = "policy" STRING "{" { policy_member } "}"
 policy_member = "description" "=" STRING
               | "effect"      "=" ("allow" | "deny")
-              | "priority"    "=" INT
+              | "priority"    "=" [ "-" ] INT
               | "active"      "=" BOOL
               | "not_before"  "=" STRING                    (* RFC3339 *)
               | "not_after"   "=" STRING
               | "obligations" "=" string_list
-              | "subjects"    "=" string_list
+              | "subjects"    "=" subject_list
               | "actions"     "=" string_list
               | "resources"   "=" string_list
-              | "metadata"    "=" map_lit
               | "when" "{" { condition } "}"
 
-condition     = field_path operator literal [ "negate" ]
+condition     = ( field_path | STRING ) operator [ value ] [ "negate" ]
               | "all_of" "{" { condition } "}"
               | "any_of" "{" { condition } "}"
+              (* value is optional only for exists / not exists, and is read
+                 only when it starts on the operator's line. The resolver
+                 refuses "negate", an any_of with two or more conditions,
+                 and an empty any_of: the store cannot hold them. *)
 
-field_path    = IDENT { ("." IDENT | "[" STRING "]") }
+field_path    = WORD { ("." WORD | "." "[" STRING "]") }   (* WORD: IDENT or a keyword *)
+value         = scalar | "[" [ scalar { "," scalar } [ "," ] ] "]"   (* lists do not nest *)
+scalar        = STRING | [ "-" ] ( INT | FLOAT ) | BOOL
+
+subject_list  = "[" [ matcher { "," matcher } [ "," ] ] "]"
+matcher       = "{" { ( "kind" | "id" | "role" ) "=" STRING [ "," ] } "}"
+grant_list    = "[" [ grant { "," grant } [ "," ] ] "]"
+grant         = STRING
+              | "{" { ( "namespace" | "name" ) "=" STRING [ "," ] } "}"
+
+(* Wherever a name is expected (tenant, app, resource type, relation,
+   subject type, resource permission, a permission's resource and action,
+   role slug and parent, each part of a relation tuple), a STRING may stand
+   in for an IDENT. warden fmt quotes a name a bare IDENT cannot spell. *)
 
 operator      = "==" | "!=" | "<" | ">" | "<=" | ">=" | "=~"
               | "in" | "not" "in"
@@ -648,7 +680,6 @@ STRING        = '"' ... '"'                                 (* with escapes *)
 INT           = /[0-9]+/
 BOOL          = "true" | "false"
 string_list   = "[" [ STRING { "," STRING } [ "," ] ] "]"
-map_lit       = "{" [ kv { "," kv } ] "}"
 kv            = IDENT "=" literal
 literal       = STRING | INT | BOOL | string_list
 ```

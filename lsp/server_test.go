@@ -262,6 +262,47 @@ role editor : ghost {
 	}
 }
 
+// A ':' in a permission action is published as a warning, with its whole
+// message: the name it quotes holds colons but is not a position label.
+func TestLSP_DidOpenWarnsOnAColonAction(t *testing.T) {
+	cli, cleanup := newTestPair(t)
+	defer cleanup()
+
+	cli.request("initialize", initializeParams{})
+	openParams := didOpenParams{}
+	openParams.TextDocument.URI = "file:///colon.warden"
+	openParams.TextDocument.Text = "warden config 1\npermission \"warden:role:manage\" (\"warden\" : \"role:manage\")\n"
+	cli.notify("textDocument/didOpen", openParams)
+
+	notif := cli.expectNotification()
+	var p publishDiagnosticsParams
+	if err := json.Unmarshal(notif.Params, &p); err != nil {
+		t.Fatal(err)
+	}
+	want := `permission "warden:role:manage" has action "role:manage", which contains ':'; the engine joins resource and action with ':', so apply refuses it unless the store already holds this permission with exactly this resource and action`
+	if len(p.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %v, want one warning", diagMessages(p.Diagnostics))
+	}
+	d := p.Diagnostics[0]
+	if d.Severity != diagWarning || d.Message != want {
+		t.Errorf("got severity %d message %q\nwant severity %d message %q", d.Severity, d.Message, diagWarning, want)
+	}
+}
+
+func TestFormatErrorMsgStripsOnlyAPositionLabel(t *testing.T) {
+	for in, want := range map[string]string{
+		"x.warden:3:1: unknown parent":            "unknown parent",
+		"file:///x.warden:3:1: unknown parent":    "unknown parent",
+		`permission "a:b:c": action "b:c" is bad`: `permission "a:b:c": action "b:c" is bad`,
+		"unknown parent":                          "unknown parent",
+		"a:b:c: not a position":                   "a:b:c: not a position",
+	} {
+		if got := formatErrorMsg(in); got != want {
+			t.Errorf("formatErrorMsg(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestLSP_FormattingReturnsCanonicalDocument(t *testing.T) {
 	cli, cleanup := newTestPair(t)
 	defer cleanup()

@@ -5,6 +5,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,10 @@ var (
 	_ resourcetype.Store = (*Store)(nil)
 	_ checklog.Store     = (*Store)(nil)
 )
+
+// nowFunc returns the current time. Tests override it to pin "now" when
+// asserting expiry behavior without sleeping.
+var nowFunc = time.Now
 
 // Store is a thread-safe in-memory store for all Warden entities.
 type Store struct {
@@ -102,14 +107,31 @@ func (s *Store) CreateRole(_ context.Context, r *role.Role) error {
 	return nil
 }
 
-func (s *Store) GetRole(_ context.Context, roleID id.RoleID) (*role.Role, error) {
+func (s *Store) GetRole(_ context.Context, tenantID string, roleID id.RoleID) (*role.Role, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	r, ok := s.roles[roleID.String()]
-	if !ok {
-		return nil, fmt.Errorf("role %s: %w", roleID, errNotFound)
+	if !ok || r.TenantID != tenantID {
+		return nil, fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
 	}
 	return copyRole(r), nil
+}
+
+func (s *Store) GetRoles(_ context.Context, tenantID string, roleIDs []id.RoleID) ([]*role.Role, error) {
+	if len(roleIDs) == 0 {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*role.Role, 0, len(roleIDs))
+	for _, rid := range roleIDs {
+		r, ok := s.roles[rid.String()]
+		if !ok || r.TenantID != tenantID {
+			continue
+		}
+		result = append(result, copyRole(r))
+	}
+	return result, nil
 }
 
 func (s *Store) GetRoleBySlug(_ context.Context, tenantID, namespacePath, slug string) (*role.Role, error) {
@@ -120,30 +142,46 @@ func (s *Store) GetRoleBySlug(_ context.Context, tenantID, namespacePath, slug s
 			return copyRole(r), nil
 		}
 	}
-	return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, errNotFound)
+	return nil, fmt.Errorf("role slug %q in ns %q: %w", slug, namespacePath, wardenerr.ErrRoleNotFound)
 }
 
 func (s *Store) UpdateRole(_ context.Context, r *role.Role) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.roles[r.ID.String()]; !ok {
-		return fmt.Errorf("role %s: %w", r.ID, errNotFound)
+	existing, ok := s.roles[r.ID.String()]
+	if !ok || existing.TenantID != r.TenantID {
+		return fmt.Errorf("role %s: %w", r.ID, wardenerr.ErrRoleNotFound)
 	}
-	s.roles[r.ID.String()] = copyRole(r)
+	// Copy every field except the ones an update may not move: the tenant,
+	// the identity and the creation time.
+	updated := copyRole(r)
+	updated.TenantID = existing.TenantID
+	updated.ID = existing.ID
+	updated.CreatedAt = existing.CreatedAt
+	updated.CreatedBy = existing.CreatedBy
+	s.roles[r.ID.String()] = updated
 	return nil
 }
 
-func (s *Store) DeleteRole(_ context.Context, roleID id.RoleID) error {
+func (s *Store) DeleteRole(_ context.Context, tenantID string, roleID id.RoleID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	r, ok := s.roles[roleID.String()]
+	if !ok || r.TenantID != tenantID {
+		return fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
+	}
 	delete(s.roles, roleID.String())
 	delete(s.rolePermissions, roleID.String())
+	// The SQL backends cascade assignments off the role's foreign key.
+	for k, a := range s.assignments {
+		if a.RoleID == roleID {
+			delete(s.assignments, k)
+		}
+	}
 	return nil
 }
 
-func (s *Store) ListRoles(_ context.Context, filter *role.ListFilter) ([]*role.Role, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterRoles(filter *role.ListFilter) []*role.Role {
 	result := make([]*role.Role, 0, len(s.roles))
 	for _, r := range s.roles {
 		if filter != nil {
@@ -171,15 +209,20 @@ func (s *Store) ListRoles(_ context.Context, filter *role.ListFilter) ([]*role.R
 		}
 		result = append(result, copyRole(r))
 	}
-	return applyPagination(result, paginationOpts(filter)), nil
+	sortByCreatedAt(result, func(r *role.Role) (time.Time, string) { return r.CreatedAt, r.ID.String() })
+	return result
 }
 
-func (s *Store) CountRoles(ctx context.Context, filter *role.ListFilter) (int64, error) {
-	list, err := s.ListRoles(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListRoles(_ context.Context, filter *role.ListFilter) ([]*role.Role, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPagination(s.filterRoles(filter), paginationOpts(filter)), nil
+}
+
+func (s *Store) CountRoles(_ context.Context, filter *role.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterRoles(filter))), nil
 }
 
 // permRefKey encodes a (namespace_path, name) pair as a single map key.
@@ -198,34 +241,88 @@ func decodePermRefKey(k string) permission.Ref {
 	return permission.Ref{Name: k}
 }
 
-func (s *Store) ListRolePermissions(_ context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	refs, ok := s.rolePermissions[roleID.String()]
-	if !ok {
-		return nil, nil
-	}
-	// Resolve role tenant for the JOIN.
-	r, ok := s.roles[roleID.String()]
-	if !ok {
-		return nil, nil
+// resolveGrants returns the full Permission records a role grants. The
+// caller holds at least a read lock and has already checked the role's
+// tenant.
+func (s *Store) resolveGrants(tenantID string, roleID id.RoleID) []*permission.Permission {
+	refs := s.rolePermissions[roleID.String()]
+	if len(refs) == 0 {
+		return nil
 	}
 	result := make([]*permission.Permission, 0, len(refs))
 	for k := range refs {
 		ref := decodePermRefKey(k)
 		for _, p := range s.permissions {
-			if p.TenantID == r.TenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
+			if p.TenantID == tenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
 				result = append(result, copyPermission(p))
 				break
 			}
 		}
 	}
+	return result
+}
+
+func (s *Store) ListRolePermissions(_ context.Context, tenantID string, roleID id.RoleID) ([]*permission.Permission, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.roles[roleID.String()]
+	if !ok || r.TenantID != tenantID {
+		return nil, nil
+	}
+	return s.resolveGrants(tenantID, roleID), nil
+}
+
+func (s *Store) ListRolePermissionsForRoles(_ context.Context, tenantID string, roleIDs []id.RoleID) (map[id.RoleID][]*permission.Permission, error) {
+	result := make(map[id.RoleID][]*permission.Permission, len(roleIDs))
+	if len(roleIDs) == 0 {
+		return result, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, rid := range roleIDs {
+		r, ok := s.roles[rid.String()]
+		if !ok || r.TenantID != tenantID {
+			continue
+		}
+		if grants := s.resolveGrants(tenantID, rid); len(grants) > 0 {
+			result[rid] = grants
+		}
+	}
 	return result, nil
 }
 
-func (s *Store) AttachPermission(_ context.Context, roleID id.RoleID, ref permission.Ref) error {
+// requireRole reports whether the role exists in the tenant. The caller
+// holds the write lock.
+func (s *Store) requireRole(tenantID string, roleID id.RoleID) error {
+	r, ok := s.roles[roleID.String()]
+	if !ok || r.TenantID != tenantID {
+		return fmt.Errorf("role %s: %w", roleID, wardenerr.ErrRoleNotFound)
+	}
+	return nil
+}
+
+// requirePermission reports whether a permission with the given natural key
+// exists in the tenant, so a grant can't be attached to a permission that
+// was never created (or was deleted and never recreated). The caller holds
+// the write lock.
+func (s *Store) requirePermission(tenantID string, ref permission.Ref) error {
+	for _, p := range s.permissions {
+		if p.TenantID == tenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
+			return nil
+		}
+	}
+	return fmt.Errorf("permission %q in ns %q: %w", ref.Name, ref.NamespacePath, wardenerr.ErrPermissionNotFound)
+}
+
+func (s *Store) AttachPermission(_ context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireRole(tenantID, roleID); err != nil {
+		return err
+	}
+	if err := s.requirePermission(tenantID, ref); err != nil {
+		return err
+	}
 	rk := roleID.String()
 	if s.rolePermissions[rk] == nil {
 		s.rolePermissions[rk] = make(map[string]struct{})
@@ -234,18 +331,24 @@ func (s *Store) AttachPermission(_ context.Context, roleID id.RoleID, ref permis
 	return nil
 }
 
-func (s *Store) DetachPermission(_ context.Context, roleID id.RoleID, ref permission.Ref) error {
+func (s *Store) DetachPermission(_ context.Context, tenantID string, roleID id.RoleID, ref permission.Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireRole(tenantID, roleID); err != nil {
+		return err
+	}
 	if refs, ok := s.rolePermissions[roleID.String()]; ok {
 		delete(refs, permRefKey(ref))
 	}
 	return nil
 }
 
-func (s *Store) SetRolePermissions(_ context.Context, roleID id.RoleID, refs []permission.Ref) error {
+func (s *Store) SetRolePermissions(_ context.Context, tenantID string, roleID id.RoleID, refs []permission.Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireRole(tenantID, roleID); err != nil {
+		return err
+	}
 	set := make(map[string]struct{}, len(refs))
 	for _, ref := range refs {
 		set[permRefKey(ref)] = struct{}{}
@@ -263,6 +366,7 @@ func (s *Store) ListChildRoles(_ context.Context, tenantID, parentSlug string) (
 			result = append(result, copyRole(r))
 		}
 	}
+	sortByCreatedAt(result, func(r *role.Role) (time.Time, string) { return r.CreatedAt, r.ID.String() })
 	return result, nil
 }
 
@@ -307,12 +411,12 @@ func (s *Store) CreatePermission(_ context.Context, p *permission.Permission) er
 	return nil
 }
 
-func (s *Store) GetPermission(_ context.Context, permID id.PermissionID) (*permission.Permission, error) {
+func (s *Store) GetPermission(_ context.Context, tenantID string, permID id.PermissionID) (*permission.Permission, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p, ok := s.permissions[permID.String()]
-	if !ok {
-		return nil, fmt.Errorf("permission %s: %w", permID, errNotFound)
+	if !ok || p.TenantID != tenantID {
+		return nil, fmt.Errorf("permission %s: %w", permID, wardenerr.ErrPermissionNotFound)
 	}
 	return copyPermission(p), nil
 }
@@ -325,38 +429,57 @@ func (s *Store) GetPermissionByName(_ context.Context, tenantID, namespacePath, 
 			return copyPermission(p), nil
 		}
 	}
-	return nil, fmt.Errorf("permission %q in ns %q: %w", name, namespacePath, errNotFound)
+	return nil, fmt.Errorf("permission %q in ns %q: %w", name, namespacePath, wardenerr.ErrPermissionNotFound)
 }
 
 func (s *Store) UpdatePermission(_ context.Context, p *permission.Permission) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.permissions[p.ID.String()]; !ok {
-		return fmt.Errorf("permission %s: %w", p.ID, errNotFound)
+	existing, ok := s.permissions[p.ID.String()]
+	if !ok || existing.TenantID != p.TenantID {
+		return fmt.Errorf("permission %s: %w", p.ID, wardenerr.ErrPermissionNotFound)
 	}
-	s.permissions[p.ID.String()] = copyPermission(p)
+	updated := copyPermission(p)
+	updated.TenantID = existing.TenantID
+	updated.ID = existing.ID
+	updated.CreatedAt = existing.CreatedAt
+	updated.CreatedBy = existing.CreatedBy
+	s.permissions[p.ID.String()] = updated
 	return nil
 }
 
-func (s *Store) DeletePermission(_ context.Context, permID id.PermissionID) error {
+func (s *Store) DeletePermission(_ context.Context, tenantID string, permID id.PermissionID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	p, ok := s.permissions[permID.String()]
+	if !ok || p.TenantID != tenantID {
+		return fmt.Errorf("permission %s: %w", permID, wardenerr.ErrPermissionNotFound)
+	}
 	delete(s.permissions, permID.String())
-	// Remove from role-permission mappings.
-	pk := permID.String()
-	for _, perms := range s.rolePermissions {
-		delete(perms, pk)
+	// Scrub the junction. Grants are keyed by the permission's natural key,
+	// so only roles in the same tenant can be holding this grant.
+	refKey := permRefKey(permission.Ref{NamespacePath: p.NamespacePath, Name: p.Name})
+	for rk, refs := range s.rolePermissions {
+		r, ok := s.roles[rk]
+		if !ok || r.TenantID != tenantID {
+			continue
+		}
+		delete(refs, refKey)
 	}
 	return nil
 }
 
-func (s *Store) ListPermissions(_ context.Context, filter *permission.ListFilter) ([]*permission.Permission, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterPermissions(filter *permission.ListFilter) []*permission.Permission {
 	result := make([]*permission.Permission, 0, len(s.permissions))
 	for _, p := range s.permissions {
 		if filter != nil {
 			if filter.TenantID != "" && p.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && p.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(p.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.Resource != "" && p.Resource != filter.Resource {
@@ -374,39 +497,24 @@ func (s *Store) ListPermissions(_ context.Context, filter *permission.ListFilter
 		}
 		result = append(result, copyPermission(p))
 	}
-	return applyPaginationPerm(result, paginationOptsPerm(filter)), nil
+	sortByCreatedAt(result, func(p *permission.Permission) (time.Time, string) { return p.CreatedAt, p.ID.String() })
+	return result
 }
 
-func (s *Store) CountPermissions(ctx context.Context, filter *permission.ListFilter) (int64, error) {
-	list, err := s.ListPermissions(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
-}
-
-func (s *Store) ListPermissionsByRole(_ context.Context, roleID id.RoleID) ([]*permission.Permission, error) {
+func (s *Store) ListPermissions(_ context.Context, filter *permission.ListFilter) ([]*permission.Permission, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	refs, ok := s.rolePermissions[roleID.String()]
-	if !ok {
-		return nil, nil
-	}
-	r, ok := s.roles[roleID.String()]
-	if !ok {
-		return nil, nil
-	}
-	var result []*permission.Permission
-	for k := range refs {
-		ref := decodePermRefKey(k)
-		for _, p := range s.permissions {
-			if p.TenantID == r.TenantID && p.NamespacePath == ref.NamespacePath && p.Name == ref.Name {
-				result = append(result, copyPermission(p))
-				break
-			}
-		}
-	}
-	return result, nil
+	return applyPaginationPerm(s.filterPermissions(filter), paginationOptsPerm(filter)), nil
+}
+
+func (s *Store) CountPermissions(_ context.Context, filter *permission.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterPermissions(filter))), nil
+}
+
+func (s *Store) ListPermissionsByRole(ctx context.Context, tenantID string, roleID id.RoleID) ([]*permission.Permission, error) {
+	return s.ListRolePermissions(ctx, tenantID, roleID)
 }
 
 func (s *Store) ListPermissionsBySubject(_ context.Context, tenantID, subjectKind, subjectID string) ([]*permission.Permission, error) {
@@ -493,30 +601,38 @@ func (s *Store) CreateAssignment(_ context.Context, a *assignment.Assignment) er
 	return nil
 }
 
-func (s *Store) GetAssignment(_ context.Context, assID id.AssignmentID) (*assignment.Assignment, error) {
+func (s *Store) GetAssignment(_ context.Context, tenantID string, assID id.AssignmentID) (*assignment.Assignment, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	a, ok := s.assignments[assID.String()]
-	if !ok {
-		return nil, fmt.Errorf("assignment %s: %w", assID, errNotFound)
+	if !ok || a.TenantID != tenantID {
+		return nil, fmt.Errorf("assignment %s: %w", assID, wardenerr.ErrAssignmentNotFound)
 	}
 	return copyAssignment(a), nil
 }
 
-func (s *Store) DeleteAssignment(_ context.Context, assID id.AssignmentID) error {
+func (s *Store) DeleteAssignment(_ context.Context, tenantID string, assID id.AssignmentID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	a, ok := s.assignments[assID.String()]
+	if !ok || a.TenantID != tenantID {
+		return fmt.Errorf("assignment %s: %w", assID, wardenerr.ErrAssignmentNotFound)
+	}
 	delete(s.assignments, assID.String())
 	return nil
 }
 
-func (s *Store) ListAssignments(_ context.Context, filter *assignment.ListFilter) ([]*assignment.Assignment, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterAssignments(filter *assignment.ListFilter) []*assignment.Assignment {
 	result := make([]*assignment.Assignment, 0, len(s.assignments))
 	for _, a := range s.assignments {
 		if filter != nil {
 			if filter.TenantID != "" && a.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && a.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(a.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.SubjectKind != "" && a.SubjectKind != filter.SubjectKind {
@@ -528,30 +644,45 @@ func (s *Store) ListAssignments(_ context.Context, filter *assignment.ListFilter
 			if filter.RoleID != nil && a.RoleID.String() != filter.RoleID.String() {
 				continue
 			}
+			if filter.ResourceType != "" && a.ResourceType != filter.ResourceType {
+				continue
+			}
+			if filter.ResourceID != "" && a.ResourceID != filter.ResourceID {
+				continue
+			}
 		}
 		result = append(result, copyAssignment(a))
 	}
-	return applyPaginationAssign(result, paginationOptsAssign(filter)), nil
+	sortByCreatedAt(result, func(a *assignment.Assignment) (time.Time, string) { return a.CreatedAt, a.ID.String() })
+	return result
 }
 
-func (s *Store) CountAssignments(ctx context.Context, filter *assignment.ListFilter) (int64, error) {
-	list, err := s.ListAssignments(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListAssignments(_ context.Context, filter *assignment.ListFilter) ([]*assignment.Assignment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationAssign(s.filterAssignments(filter), paginationOptsAssign(filter)), nil
+}
+
+func (s *Store) CountAssignments(_ context.Context, filter *assignment.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterAssignments(filter))), nil
 }
 
 func (s *Store) ListRolesForSubject(_ context.Context, tenantID string, namespacePaths []string, subjectKind, subjectID string) ([]id.RoleID, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	nsSet := namespacePathSet(namespacePaths)
+	now := nowFunc()
 	var result []id.RoleID
 	for _, a := range s.assignments {
 		if a.TenantID != tenantID || a.SubjectKind != subjectKind || a.SubjectID != subjectID || a.ResourceType != "" {
 			continue
 		}
 		if !nsSet.matches(a.NamespacePath) {
+			continue
+		}
+		if a.ExpiresAt != nil && !a.ExpiresAt.After(now) {
 			continue
 		}
 		result = append(result, a.RoleID)
@@ -563,6 +694,7 @@ func (s *Store) ListRolesForSubjectOnResource(_ context.Context, tenantID string
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	nsSet := namespacePathSet(namespacePaths)
+	now := nowFunc()
 	var result []id.RoleID
 	for _, a := range s.assignments {
 		if a.TenantID != tenantID || a.SubjectKind != subjectKind || a.SubjectID != subjectID {
@@ -574,20 +706,46 @@ func (s *Store) ListRolesForSubjectOnResource(_ context.Context, tenantID string
 		if !nsSet.matches(a.NamespacePath) {
 			continue
 		}
+		if a.ExpiresAt != nil && !a.ExpiresAt.After(now) {
+			continue
+		}
 		result = append(result, a.RoleID)
 	}
 	return result, nil
 }
 
-func (s *Store) ListSubjectsForRole(_ context.Context, roleID id.RoleID) ([]*assignment.Assignment, error) {
+func (s *Store) ListSubjectsForRole(_ context.Context, tenantID string, roleID id.RoleID) ([]*assignment.Assignment, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rid := roleID.String()
 	var result []*assignment.Assignment
 	for _, a := range s.assignments {
-		if a.RoleID.String() == rid {
+		if a.TenantID == tenantID && a.RoleID.String() == rid {
 			result = append(result, copyAssignment(a))
 		}
+	}
+	sortByCreatedAt(result, func(a *assignment.Assignment) (time.Time, string) { return a.CreatedAt, a.ID.String() })
+	return result, nil
+}
+
+func (s *Store) ListExpiringAssignments(_ context.Context, tenantID string, before time.Time, limit int) ([]*assignment.Assignment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*assignment.Assignment
+	for _, a := range s.assignments {
+		if a.TenantID != tenantID || a.ExpiresAt == nil || !a.ExpiresAt.Before(before) {
+			continue
+		}
+		result = append(result, copyAssignment(a))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].ExpiresAt.Equal(*result[j].ExpiresAt) {
+			return result[i].ExpiresAt.Before(*result[j].ExpiresAt)
+		}
+		return result[i].ID.String() < result[j].ID.String()
+	})
+	if n := fanoutLimit(limit); len(result) > n {
+		result = result[:n]
 	}
 	return result, nil
 }
@@ -598,6 +756,22 @@ func (s *Store) DeleteExpiredAssignments(_ context.Context, now time.Time) (int6
 	var count int64
 	for k, a := range s.assignments {
 		if a.ExpiresAt != nil && a.ExpiresAt.Before(now) {
+			delete(s.assignments, k)
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *Store) DeleteExpiredAssignmentsForTenant(_ context.Context, tenantID string, now time.Time) (int64, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("warden: delete expired assignments for tenant: %w", wardenerr.ErrTenantRequired)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int64
+	for k, a := range s.assignments {
+		if a.TenantID == tenantID && a.ExpiresAt != nil && a.ExpiresAt.Before(now) {
 			delete(s.assignments, k)
 			count++
 		}
@@ -616,12 +790,12 @@ func (s *Store) DeleteAssignmentsBySubject(_ context.Context, tenantID, subjectK
 	return nil
 }
 
-func (s *Store) DeleteAssignmentsByRole(_ context.Context, roleID id.RoleID) error {
+func (s *Store) DeleteAssignmentsByRole(_ context.Context, tenantID string, roleID id.RoleID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rid := roleID.String()
 	for k, a := range s.assignments {
-		if a.RoleID.String() == rid {
+		if a.TenantID == tenantID && a.RoleID.String() == rid {
 			delete(s.assignments, k)
 		}
 	}
@@ -652,36 +826,70 @@ func (s *Store) CreateRelation(_ context.Context, t *relation.Tuple) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.relations {
+		if existing.TenantID == t.TenantID &&
+			existing.NamespacePath == t.NamespacePath &&
+			existing.ObjectType == t.ObjectType &&
+			existing.ObjectID == t.ObjectID &&
+			existing.Relation == t.Relation &&
+			existing.SubjectType == t.SubjectType &&
+			existing.SubjectID == t.SubjectID &&
+			existing.SubjectRelation == t.SubjectRelation {
+			return fmt.Errorf("relation %s:%s#%s@%s:%s in tenant %q ns %q: %w",
+				t.ObjectType, t.ObjectID, t.Relation, t.SubjectType, t.SubjectID,
+				t.TenantID, t.NamespacePath, wardenerr.ErrDuplicateRelation)
+		}
+	}
 	s.relations[t.ID.String()] = copyTuple(t)
 	return nil
 }
 
-func (s *Store) DeleteRelation(_ context.Context, relID id.RelationID) error {
+func (s *Store) GetRelation(_ context.Context, tenantID string, relID id.RelationID) (*relation.Tuple, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.relations[relID.String()]
+	if !ok || t.TenantID != tenantID {
+		return nil, fmt.Errorf("relation %s: %w", relID, wardenerr.ErrRelationNotFound)
+	}
+	return copyTuple(t), nil
+}
+
+func (s *Store) DeleteRelation(_ context.Context, tenantID string, relID id.RelationID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	t, ok := s.relations[relID.String()]
+	if !ok || t.TenantID != tenantID {
+		return fmt.Errorf("relation %s: %w", relID, wardenerr.ErrRelationNotFound)
+	}
 	delete(s.relations, relID.String())
 	return nil
 }
 
-func (s *Store) DeleteRelationTuple(_ context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID string) error {
+func (s *Store) DeleteRelationTuple(_ context.Context, tenantID, namespacePath, objectType, objectID, rel, subjectType, subjectID, subjectRelation string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The key includes SubjectRelation exactly, so an empty one removes
+	// group:eng and leaves group:eng#member. Remove every match, as the sql
+	// and mongo stores do.
 	for k, t := range s.relations {
-		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel && t.SubjectType == subjectType && t.SubjectID == subjectID {
+		if t.TenantID == tenantID && t.NamespacePath == namespacePath && t.ObjectType == objectType && t.ObjectID == objectID && t.Relation == rel && t.SubjectType == subjectType && t.SubjectID == subjectID && t.SubjectRelation == subjectRelation {
 			delete(s.relations, k)
-			return nil
 		}
 	}
 	return nil
 }
 
-func (s *Store) ListRelations(_ context.Context, filter *relation.ListFilter) ([]*relation.Tuple, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterRelations(filter *relation.ListFilter) []*relation.Tuple {
 	result := make([]*relation.Tuple, 0, len(s.relations))
 	for _, t := range s.relations {
 		if filter != nil {
 			if filter.TenantID != "" && t.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && t.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(t.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.ObjectType != "" && t.ObjectType != filter.ObjectType {
@@ -699,21 +907,29 @@ func (s *Store) ListRelations(_ context.Context, filter *relation.ListFilter) ([
 			if filter.SubjectID != "" && t.SubjectID != filter.SubjectID {
 				continue
 			}
+			if filter.SubjectRelation != "" && t.SubjectRelation != filter.SubjectRelation {
+				continue
+			}
 		}
 		result = append(result, copyTuple(t))
 	}
-	return applyPaginationRel(result, paginationOptsRel(filter)), nil
+	sortByCreatedAt(result, func(t *relation.Tuple) (time.Time, string) { return t.CreatedAt, t.ID.String() })
+	return result
 }
 
-func (s *Store) CountRelations(ctx context.Context, filter *relation.ListFilter) (int64, error) {
-	list, err := s.ListRelations(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListRelations(_ context.Context, filter *relation.ListFilter) ([]*relation.Tuple, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationRel(s.filterRelations(filter), paginationOptsRel(filter)), nil
 }
 
-func (s *Store) ListRelationSubjects(_ context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) CountRelations(_ context.Context, filter *relation.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterRelations(filter))), nil
+}
+
+func (s *Store) ListRelationSubjects(_ context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel string, limit int) ([]*relation.Tuple, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	nsSet := namespacePathSet(namespacePaths)
@@ -723,10 +939,10 @@ func (s *Store) ListRelationSubjects(_ context.Context, tenantID string, namespa
 			result = append(result, copyTuple(t))
 		}
 	}
-	return result, nil
+	return capTuples(result, limit), nil
 }
 
-func (s *Store) ListRelationObjects(_ context.Context, tenantID, namespacePath, subjectType, subjectID, rel string) ([]*relation.Tuple, error) {
+func (s *Store) ListRelationObjects(_ context.Context, tenantID, namespacePath, subjectType, subjectID, rel string, limit int) ([]*relation.Tuple, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var result []*relation.Tuple
@@ -735,7 +951,7 @@ func (s *Store) ListRelationObjects(_ context.Context, tenantID, namespacePath, 
 			result = append(result, copyTuple(t))
 		}
 	}
-	return result, nil
+	return capTuples(result, limit), nil
 }
 
 func (s *Store) CheckDirectRelation(_ context.Context, tenantID string, namespacePaths []string, objectType, objectID, rel, subjectType, subjectID string) (bool, error) {
@@ -812,12 +1028,12 @@ func (s *Store) CreatePolicy(_ context.Context, p *policy.Policy) error {
 	return nil
 }
 
-func (s *Store) GetPolicy(_ context.Context, polID id.PolicyID) (*policy.Policy, error) {
+func (s *Store) GetPolicy(_ context.Context, tenantID string, polID id.PolicyID) (*policy.Policy, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p, ok := s.policies[polID.String()]
-	if !ok {
-		return nil, fmt.Errorf("policy %s: %w", polID, errNotFound)
+	if !ok || p.TenantID != tenantID {
+		return nil, fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
 	}
 	return copyPolicy(p), nil
 }
@@ -830,33 +1046,93 @@ func (s *Store) GetPolicyByName(_ context.Context, tenantID, namespacePath, name
 			return copyPolicy(p), nil
 		}
 	}
-	return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, errNotFound)
+	return nil, fmt.Errorf("policy %q in ns %q: %w", name, namespacePath, wardenerr.ErrPolicyNotFound)
+}
+
+// policyNameTakenLocked reports whether another policy in p's tenant and namespace
+// already carries p's name. The caller holds s.mu, so the check and the write
+// that follows it are one step.
+func (s *Store) policyNameTakenLocked(p *policy.Policy) bool {
+	for _, other := range s.policies {
+		if other.ID == p.ID {
+			continue
+		}
+		if other.TenantID == p.TenantID && other.NamespacePath == p.NamespacePath && other.Name == p.Name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) UpdatePolicy(_ context.Context, p *policy.Policy) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.policies[p.ID.String()]; !ok {
-		return fmt.Errorf("policy %s: %w", p.ID, errNotFound)
+	existing, ok := s.policies[p.ID.String()]
+	if !ok || existing.TenantID != p.TenantID {
+		return fmt.Errorf("policy %s: %w", p.ID, wardenerr.ErrPolicyNotFound)
 	}
-	s.policies[p.ID.String()] = copyPolicy(p)
+	if s.policyNameTakenLocked(p) {
+		return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+			p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+	}
+	updated := copyPolicy(p)
+	updated.TenantID = existing.TenantID
+	updated.ID = existing.ID
+	updated.CreatedAt = existing.CreatedAt
+	updated.CreatedBy = existing.CreatedBy
+	s.policies[p.ID.String()] = updated
 	return nil
 }
 
-func (s *Store) DeletePolicy(_ context.Context, polID id.PolicyID) error {
+// UpdatePolicyIfVersion writes p as UpdatePolicy does, only if the stored
+// policy is at version expected. The lookup, the comparison and the write all
+// happen under one hold of s.mu, so two callers holding the same version
+// cannot both win.
+func (s *Store) UpdatePolicyIfVersion(_ context.Context, p *policy.Policy, expected int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	existing, ok := s.policies[p.ID.String()]
+	if !ok || existing.TenantID != p.TenantID {
+		return fmt.Errorf("policy %s: %w", p.ID, wardenerr.ErrPolicyNotFound)
+	}
+	if existing.Version != expected {
+		return fmt.Errorf("policy %s, expected version %d: %w", p.ID, expected, wardenerr.ErrPolicyVersionConflict)
+	}
+	if s.policyNameTakenLocked(p) {
+		return fmt.Errorf("policy %q in tenant %q ns %q: %w",
+			p.Name, p.TenantID, p.NamespacePath, wardenerr.ErrDuplicatePolicy)
+	}
+	updated := copyPolicy(p)
+	updated.TenantID = existing.TenantID
+	updated.ID = existing.ID
+	updated.CreatedAt = existing.CreatedAt
+	updated.CreatedBy = existing.CreatedBy
+	s.policies[p.ID.String()] = updated
+	return nil
+}
+
+func (s *Store) DeletePolicy(_ context.Context, tenantID string, polID id.PolicyID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.policies[polID.String()]
+	if !ok || p.TenantID != tenantID {
+		return fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
+	}
 	delete(s.policies, polID.String())
 	return nil
 }
 
-func (s *Store) ListPolicies(_ context.Context, filter *policy.ListFilter) ([]*policy.Policy, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterPolicies(filter *policy.ListFilter) []*policy.Policy {
 	result := make([]*policy.Policy, 0, len(s.policies))
 	for _, p := range s.policies {
 		if filter != nil {
 			if filter.TenantID != "" && p.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && p.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(p.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.Effect != "" && p.Effect != filter.Effect {
@@ -871,15 +1147,22 @@ func (s *Store) ListPolicies(_ context.Context, filter *policy.ListFilter) ([]*p
 		}
 		result = append(result, copyPolicy(p))
 	}
-	return applyPaginationPol(result, paginationOptsPol(filter)), nil
+	// Priority first, like the SQL and mongo backends: ListPolicies is the
+	// evaluation order, not just a stable one.
+	sortActivePolicies(result)
+	return result
 }
 
-func (s *Store) CountPolicies(ctx context.Context, filter *policy.ListFilter) (int64, error) {
-	list, err := s.ListPolicies(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListPolicies(_ context.Context, filter *policy.ListFilter) ([]*policy.Policy, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationPol(s.filterPolicies(filter), paginationOptsPol(filter)), nil
+}
+
+func (s *Store) CountPolicies(_ context.Context, filter *policy.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterPolicies(filter))), nil
 }
 
 func (s *Store) ListActivePolicies(_ context.Context, tenantID string, namespacePaths []string) ([]*policy.Policy, error) {
@@ -896,15 +1179,16 @@ func (s *Store) ListActivePolicies(_ context.Context, tenantID string, namespace
 		}
 		result = append(result, copyPolicy(p))
 	}
+	sortActivePolicies(result)
 	return result, nil
 }
 
-func (s *Store) SetPolicyVersion(_ context.Context, polID id.PolicyID, version int) error {
+func (s *Store) SetPolicyVersion(_ context.Context, tenantID string, polID id.PolicyID, version int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, ok := s.policies[polID.String()]
-	if !ok {
-		return fmt.Errorf("policy %s: %w", polID, errNotFound)
+	if !ok || p.TenantID != tenantID {
+		return fmt.Errorf("policy %s: %w", polID, wardenerr.ErrPolicyNotFound)
 	}
 	p.Version = version
 	return nil
@@ -950,12 +1234,12 @@ func (s *Store) CreateResourceType(_ context.Context, rt *resourcetype.ResourceT
 	return nil
 }
 
-func (s *Store) GetResourceType(_ context.Context, rtID id.ResourceTypeID) (*resourcetype.ResourceType, error) {
+func (s *Store) GetResourceType(_ context.Context, tenantID string, rtID id.ResourceTypeID) (*resourcetype.ResourceType, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rt, ok := s.resourceTypes[rtID.String()]
-	if !ok {
-		return nil, fmt.Errorf("resource type %s: %w", rtID, errNotFound)
+	if !ok || rt.TenantID != tenantID {
+		return nil, fmt.Errorf("resource type %s: %w", rtID, wardenerr.ErrResourceTypeNotFound)
 	}
 	return copyResourceType(rt), nil
 }
@@ -968,33 +1252,47 @@ func (s *Store) GetResourceTypeByName(_ context.Context, tenantID, namespacePath
 			return copyResourceType(rt), nil
 		}
 	}
-	return nil, fmt.Errorf("resource type %q in ns %q: %w", name, namespacePath, errNotFound)
+	return nil, fmt.Errorf("resource type %q in ns %q: %w", name, namespacePath, wardenerr.ErrResourceTypeNotFound)
 }
 
 func (s *Store) UpdateResourceType(_ context.Context, rt *resourcetype.ResourceType) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.resourceTypes[rt.ID.String()]; !ok {
-		return fmt.Errorf("resource type %s: %w", rt.ID, errNotFound)
+	existing, ok := s.resourceTypes[rt.ID.String()]
+	if !ok || existing.TenantID != rt.TenantID {
+		return fmt.Errorf("resource type %s: %w", rt.ID, wardenerr.ErrResourceTypeNotFound)
 	}
-	s.resourceTypes[rt.ID.String()] = copyResourceType(rt)
+	updated := copyResourceType(rt)
+	updated.TenantID = existing.TenantID
+	updated.ID = existing.ID
+	updated.CreatedAt = existing.CreatedAt
+	updated.CreatedBy = existing.CreatedBy
+	s.resourceTypes[rt.ID.String()] = updated
 	return nil
 }
 
-func (s *Store) DeleteResourceType(_ context.Context, rtID id.ResourceTypeID) error {
+func (s *Store) DeleteResourceType(_ context.Context, tenantID string, rtID id.ResourceTypeID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	rt, ok := s.resourceTypes[rtID.String()]
+	if !ok || rt.TenantID != tenantID {
+		return fmt.Errorf("resource type %s: %w", rtID, wardenerr.ErrResourceTypeNotFound)
+	}
 	delete(s.resourceTypes, rtID.String())
 	return nil
 }
 
-func (s *Store) ListResourceTypes(_ context.Context, filter *resourcetype.ListFilter) ([]*resourcetype.ResourceType, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterResourceTypes(filter *resourcetype.ListFilter) []*resourcetype.ResourceType {
 	result := make([]*resourcetype.ResourceType, 0, len(s.resourceTypes))
 	for _, rt := range s.resourceTypes {
 		if filter != nil {
 			if filter.TenantID != "" && rt.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && rt.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(rt.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.Search != "" && !strings.Contains(strings.ToLower(rt.Name), strings.ToLower(filter.Search)) {
@@ -1003,15 +1301,20 @@ func (s *Store) ListResourceTypes(_ context.Context, filter *resourcetype.ListFi
 		}
 		result = append(result, copyResourceType(rt))
 	}
-	return applyPaginationRT(result, paginationOptsRT(filter)), nil
+	sortByCreatedAt(result, func(rt *resourcetype.ResourceType) (time.Time, string) { return rt.CreatedAt, rt.ID.String() })
+	return result
 }
 
-func (s *Store) CountResourceTypes(ctx context.Context, filter *resourcetype.ListFilter) (int64, error) {
-	list, err := s.ListResourceTypes(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListResourceTypes(_ context.Context, filter *resourcetype.ListFilter) ([]*resourcetype.ResourceType, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationRT(s.filterResourceTypes(filter), paginationOptsRT(filter)), nil
+}
+
+func (s *Store) CountResourceTypes(_ context.Context, filter *resourcetype.ListFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterResourceTypes(filter))), nil
 }
 
 func (s *Store) DeleteResourceTypesByTenant(_ context.Context, tenantID string) error {
@@ -1042,23 +1345,27 @@ func (s *Store) CreateCheckLog(_ context.Context, e *checklog.Entry) error {
 	return nil
 }
 
-func (s *Store) GetCheckLog(_ context.Context, logID id.CheckLogID) (*checklog.Entry, error) {
+func (s *Store) GetCheckLog(_ context.Context, tenantID string, logID id.CheckLogID) (*checklog.Entry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e, ok := s.checkLogs[logID.String()]
-	if !ok {
-		return nil, fmt.Errorf("check log %s: %w", logID, errNotFound)
+	if !ok || e.TenantID != tenantID {
+		return nil, fmt.Errorf("check log %s: %w", logID, wardenerr.ErrCheckLogNotFound)
 	}
 	return copyCheckLog(e), nil
 }
 
-func (s *Store) ListCheckLogs(_ context.Context, filter *checklog.QueryFilter) ([]*checklog.Entry, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) filterCheckLogs(filter *checklog.QueryFilter) []*checklog.Entry {
 	result := make([]*checklog.Entry, 0, len(s.checkLogs))
 	for _, e := range s.checkLogs {
 		if filter != nil {
 			if filter.TenantID != "" && e.TenantID != filter.TenantID {
+				continue
+			}
+			if filter.NamespacePath != nil && e.NamespacePath != *filter.NamespacePath {
+				continue
+			}
+			if filter.NamespacePrefix != "" && !nsHasPrefix(e.NamespacePath, filter.NamespacePrefix) {
 				continue
 			}
 			if filter.SubjectKind != "" && e.SubjectKind != filter.SubjectKind {
@@ -1073,7 +1380,13 @@ func (s *Store) ListCheckLogs(_ context.Context, filter *checklog.QueryFilter) (
 			if filter.ResourceType != "" && e.ResourceType != filter.ResourceType {
 				continue
 			}
+			if filter.ResourceID != "" && e.ResourceID != filter.ResourceID {
+				continue
+			}
 			if filter.Decision != "" && e.Decision != filter.Decision {
+				continue
+			}
+			if filter.Cached != nil && e.Cached != *filter.Cached {
 				continue
 			}
 			if filter.After != nil && e.CreatedAt.Before(*filter.After) {
@@ -1085,15 +1398,26 @@ func (s *Store) ListCheckLogs(_ context.Context, filter *checklog.QueryFilter) (
 		}
 		result = append(result, copyCheckLog(e))
 	}
-	return applyPaginationCL(result, paginationOptsCL(filter)), nil
+	// Newest first, matching the other backends' created_at DESC, id DESC.
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		}
+		return result[i].ID.String() > result[j].ID.String()
+	})
+	return result
 }
 
-func (s *Store) CountCheckLogs(ctx context.Context, filter *checklog.QueryFilter) (int64, error) {
-	list, err := s.ListCheckLogs(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(list)), nil
+func (s *Store) ListCheckLogs(_ context.Context, filter *checklog.QueryFilter) ([]*checklog.Entry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return applyPaginationCL(s.filterCheckLogs(filter), paginationOptsCL(filter)), nil
+}
+
+func (s *Store) CountCheckLogs(_ context.Context, filter *checklog.QueryFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.filterCheckLogs(filter))), nil
 }
 
 func (s *Store) PurgeCheckLogs(_ context.Context, before time.Time) (int64, error) {
@@ -1102,6 +1426,35 @@ func (s *Store) PurgeCheckLogs(_ context.Context, before time.Time) (int64, erro
 	var count int64
 	for k, e := range s.checkLogs {
 		if e.CreatedAt.Before(before) {
+			delete(s.checkLogs, k)
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *Store) PurgeCheckLogsForTenant(_ context.Context, tenantID string, before time.Time) (int64, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("warden: purge check logs for tenant: %w", wardenerr.ErrTenantRequired)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int64
+	for k, e := range s.checkLogs {
+		if e.TenantID == tenantID && e.CreatedAt.Before(before) {
+			delete(s.checkLogs, k)
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *Store) DeleteCheckLogsBySubject(_ context.Context, tenantID, subjectKind, subjectID string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int64
+	for k, e := range s.checkLogs {
+		if e.TenantID == tenantID && e.SubjectKind == subjectKind && e.SubjectID == subjectID {
 			delete(s.checkLogs, k)
 			count++
 		}
@@ -1124,7 +1477,19 @@ func (s *Store) DeleteCheckLogsByTenant(_ context.Context, tenantID string) erro
 // Helpers
 // ──────────────────────────────────────────────────
 
-var errNotFound = fmt.Errorf("not found")
+// defaultFanout caps a relation hop or an access-review page when the caller
+// passes 0. It matches the SQL backends so a caller sees the same truncation
+// regardless of which store is behind it.
+const defaultFanout = 1000
+
+// fanoutLimit resolves a caller-supplied limit: 0 (or negative) means the
+// default.
+func fanoutLimit(limit int) int {
+	if limit <= 0 {
+		return defaultFanout
+	}
+	return limit
+}
 
 // nsHasPrefix reports whether path is namespace prefix or one of its descendants.
 // "" matches anything; "eng" matches "eng" and "eng/...".
@@ -1232,7 +1597,73 @@ func copyResourceType(rt *resourcetype.ResourceType) *resourcetype.ResourceType 
 
 func copyCheckLog(e *checklog.Entry) *checklog.Entry {
 	c := *e
+	if e.MatchedBy != nil {
+		c.MatchedBy = make([]checklog.MatchRef, len(e.MatchedBy))
+		copy(c.MatchedBy, e.MatchedBy)
+	}
+	if e.Obligations != nil {
+		c.Obligations = make([]string, len(e.Obligations))
+		copy(c.Obligations, e.Obligations)
+	}
 	return &c
+}
+
+// sortByCreatedAt orders items by (CreatedAt, ID) ascending, using key to
+// pull the sort fields out of each item.
+//
+// Every List* method walks a Go map to build its result, and Go
+// deliberately randomizes map iteration order, so two calls with the same
+// filter could come back in a different row order. That's invisible to a
+// caller who reads a whole result set in one call, but it breaks
+// offset-based paging (dsl/paginate.go collectPages, and any caller doing
+// its own Offset/Limit sweep): a row can be skipped or repeated across
+// pages if it lands on either side of a page boundary differently call to
+// call. Sorting by creation time, with ID as a tiebreak for rows created in
+// the same instant, gives every List* call the same total order the SQL
+// backends already provide via ORDER BY created_at.
+func sortByCreatedAt[T any](items []*T, key func(*T) (time.Time, string)) {
+	sort.Slice(items, func(i, j int) bool {
+		ti, idi := key(items[i])
+		tj, idj := key(items[j])
+		if !ti.Equal(tj) {
+			return ti.Before(tj)
+		}
+		return idi < idj
+	})
+}
+
+// capTuples puts a relation fanout in (CreatedAt, ID) order and then
+// truncates it to the caller's limit.
+//
+// The obvious optimisation here is to stop walking as soon as the result
+// hits the cap, and that is what this used to do. It is wrong against a Go
+// map: the SQL backends stop early on rows an index already handed over in
+// created_at order, whereas a map hands them over shuffled, so breaking
+// early samples an arbitrary subset rather than truncating a defined one.
+// Two calls with identical arguments could return different tuples. Paying
+// for the full walk buys the caller the same rows every backend returns.
+func capTuples(result []*relation.Tuple, limit int) []*relation.Tuple {
+	sortByCreatedAt(result, func(t *relation.Tuple) (time.Time, string) { return t.CreatedAt, t.ID.String() })
+	if n := fanoutLimit(limit); len(result) > n {
+		result = result[:n]
+	}
+	return result
+}
+
+// sortActivePolicies matches the order the SQL backends evaluate policies
+// in: priority first, then creation time, then ID. Priority alone leaves
+// ties unordered, which meant two calls could disagree about which of two
+// equal-priority policies the engine saw first.
+func sortActivePolicies(result []*policy.Policy) {
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Priority != result[j].Priority {
+			return result[i].Priority < result[j].Priority
+		}
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID.String() < result[j].ID.String()
+	})
 }
 
 // Pagination helpers for each entity type.
@@ -1251,8 +1682,8 @@ func applyPagination[T any](items []*T, p pagOpts) []*T {
 	} else if p.offset >= len(items) {
 		return nil
 	}
-	if p.limit > 0 && p.limit < len(items) {
-		items = items[:p.limit]
+	if limit := fanoutLimit(p.limit); limit < len(items) {
+		items = items[:limit]
 	}
 	return items
 }

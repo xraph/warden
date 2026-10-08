@@ -12,8 +12,6 @@ concurrency:
 
 permissions:
   contents: read
-  # required by go-ci.yml's gosec SARIF upload
-  security-events: write
 
 jobs:
   # ─── Go Build & Test ────────────────────────────────────────────────
@@ -21,10 +19,45 @@ jobs:
   # probes for Makefile targets per step and falls back to the plain go
   # commands these jobs used to run inline.
   ci:
-    uses: xraph/workflows/.github/workflows/go-ci.yml@v1
+    uses: xraph/workflows/.github/workflows/go-ci.yml@1fb7007e92faefba7fa820084412d853d552aad6 # v1.18.0
+    permissions:
+      contents: read
+      # required by go-ci.yml's gosec SARIF upload
+      security-events: write
     with:
       go-versions: '["1.26"]'
       os: '["ubuntu-latest"]'
+
+  # ─── Coverage gate ──────────────────────────────────────────────────
+  # Runs after the shared workflow's test job, and fails the build below the
+  # thresholds in the Makefile. `make coverage-check` depends on the
+  # `test-coverage` Makefile target and runs it first, so this job invokes
+  # `make coverage-check` alone rather than both targets separately.
+  # test-coverage now runs with -tags=integration, so this job's postgres
+  # and mongo coverage comes from testcontainers-managed containers, not a
+  # service container: a plain ubuntu-latest runner already has Docker, so
+  # no `services:` block is needed here (contrast the `integration` job
+  # below, which uses a service container instead of testcontainers).
+  coverage-check:
+    name: Coverage check
+    runs-on: ubuntu-latest
+    needs: ci
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Run coverage check
+        run: make coverage-check
 
   # ─── Format Check ──────────────────────────────────────────────────
   format:
@@ -33,17 +66,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
           cache-dependency-path: go.sum
 
       - name: Install goimports
-        run: go install golang.org/x/tools/cmd/goimports@latest
+        run: go install golang.org/x/tools/cmd/goimports@v0.50.0
 
       - name: Check formatting (goimports)
         run: |
@@ -65,15 +99,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 10
 
@@ -82,7 +116,7 @@ jobs:
         run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
 
       - name: Cache pnpm
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.STORE_PATH }}
           key: ${{ runner.os }}-pnpm-${{ hashFiles('docs/pnpm-lock.yaml') }}
@@ -106,6 +140,8 @@ jobs:
     name: Integration (postgres)
     runs-on: ubuntu-latest
     needs: ci
+    permissions:
+      contents: read
 
     services:
       postgres:
@@ -124,12 +160,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
           cache-dependency-path: go.sum
 
@@ -138,7 +175,7 @@ jobs:
 
       - name: Run integration tests
         env:
-          # Bypass testcontainers — use the GitHub-managed service container
+          # Bypass testcontainers: use the GitHub-managed service container
           # directly. Faster, avoids Docker-in-Docker.
           WARDEN_TEST_DSN: "postgres://warden:warden@localhost:5432/warden_admin?sslmode=disable"
         run: make test-integration

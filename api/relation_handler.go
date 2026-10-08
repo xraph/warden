@@ -6,12 +6,18 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/warden"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/relation"
+	"github.com/xraph/warden/resourcetype"
 )
 
 func (a *API) registerRelationRoutes(router forge.Router) error {
 	g := router.Group("/v1", forge.WithGroupTags("relations"))
+
+	manage := a.authorize("manage", "warden:relation")
+	read := a.authorize("read", "warden:relation")
 
 	if err := g.POST("/relations", a.writeRelation,
 		forge.WithSummary("Write relation"),
@@ -20,17 +26,19 @@ func (a *API) registerRelationRoutes(router forge.Router) error {
 		forge.WithRequestSchema(WriteRelationRequest{}),
 		forge.WithCreatedResponse(&relation.Tuple{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
 
 	if err := g.POST("/relations/delete", a.deleteRelation,
 		forge.WithSummary("Delete relation"),
-		forge.WithDescription("Deletes a relation tuple by its fields."),
+		forge.WithDescription("Deletes the relation tuple with exactly these fields. An empty subject_relation names the direct tuple, not every subject relation."),
 		forge.WithOperationID("deleteRelation"),
 		forge.WithRequestSchema(DeleteRelationRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(manage),
 	); err != nil {
 		return err
 	}
@@ -41,6 +49,7 @@ func (a *API) registerRelationRoutes(router forge.Router) error {
 		forge.WithRequestSchema(ListRelationsRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Relation list", []*relation.Tuple{}),
 		forge.WithErrorResponses(),
+		forge.WithMiddleware(read),
 	)
 }
 
@@ -73,6 +82,7 @@ func (a *API) writeRelation(ctx forge.Context, req *WriteRelationRequest) (*rela
 	}
 
 	appID, tenantID := scopeFromForgeContext(ctx)
+	actor, _ := warden.ActorFromContext(ctx.Context())
 	now := time.Now()
 	t := &relation.Tuple{
 		ID:              id.NewRelationID(),
@@ -84,18 +94,31 @@ func (a *API) writeRelation(ctx forge.Context, req *WriteRelationRequest) (*rela
 		SubjectType:     req.SubjectType,
 		SubjectID:       req.SubjectID,
 		SubjectRelation: req.SubjectRelation,
+		CreatedBy:       actor.ID,
 		CreatedAt:       now,
 	}
 
+	// The resource type governing the object type, if there is one, must
+	// declare the relation and allow the subject (the dashboard's
+	// relations.create runs the same check). REST writes every tuple at the
+	// tenant root, so only a root declaration can govern it. The read and
+	// the write are not atomic.
+	if err := resourcetype.CheckTupleDeclared(ctx.Context(), a.eng.Store(), t); err != nil {
+		return nil, mapError(err)
+	}
 	if err := a.eng.Store().CreateRelation(ctx.Context(), t); err != nil {
 		return nil, mapError(err)
 	}
 
 	if a.eng.Plugins() != nil {
 		a.eng.Plugins().EmitRelationWritten(ctx.Context(), t)
+		a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+			Actor: actor, At: now, Action: "relation.written",
+			TenantID: tenantID, EntityID: t.ID.String(), Entity: t,
+		})
 	}
 
-	return t, ctx.JSON(http.StatusCreated, t)
+	return nil, ctx.JSON(http.StatusCreated, t)
 }
 
 func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*struct{}, error) {
@@ -104,11 +127,96 @@ func (a *API) deleteRelation(ctx forge.Context, req *DeleteRelationRequest) (*st
 	}
 
 	_, tenantID := scopeFromForgeContext(ctx)
-	if err := a.eng.Store().DeleteRelationTuple(ctx.Context(), tenantID, req.NamespacePath, req.ObjectType, req.ObjectID, req.Relation, req.SubjectType, req.SubjectID); err != nil {
+	// The key is exact, subject relation included: an empty
+	// subject_relation names the direct tuple (group:eng) and leaves the
+	// subject set (group:eng#member), and "member" names the subject set and
+	// leaves the direct tuple.
+	//
+	// Read the matching tuple first so it is audited by its own ID, the
+	// same shape the dashboard's relations.delete uses. The read must match
+	// the delete's key exactly, but a ListFilter with an empty
+	// SubjectRelation means any subject relation, so the rows it returns
+	// are narrowed to the requested subject relation here. Without that, a
+	// delete of group:eng would audit group:eng#member, which it leaves in
+	// place.
+	//
+	// The read and the delete are two calls, not one transaction: a tuple
+	// with this key written between them is removed without an audit event
+	// of its own. As with the policy, resource type and assignment deletes,
+	// a failed read does not stop the delete; the audit then falls back to
+	// one event naming the key. (The role and permission deletes do stop:
+	// their guards need the row they read.)
+	//
+	// The typed hook clears the check cache for each tuple the read named.
+	// DeleteRelationTuple does not say how many rows it removed, so when
+	// the read named none (it failed, or found nothing with this key) the
+	// handler clears this tenant's cached decisions itself after a
+	// successful delete. A spurious clear costs a few cache misses in one
+	// tenant; a missed one leaves a revoked subject allowed until the entry
+	// expires.
+	ns := req.NamespacePath
+	listed, listErr := a.eng.Store().ListRelations(ctx.Context(), &relation.ListFilter{
+		TenantID:        tenantID,
+		NamespacePath:   &ns,
+		ObjectType:      req.ObjectType,
+		ObjectID:        req.ObjectID,
+		Relation:        req.Relation,
+		SubjectType:     req.SubjectType,
+		SubjectID:       req.SubjectID,
+		SubjectRelation: req.SubjectRelation,
+	})
+	var matched []*relation.Tuple
+	for _, t := range listed {
+		if t.SubjectRelation == req.SubjectRelation {
+			matched = append(matched, t)
+		}
+	}
+
+	if err := a.eng.Store().DeleteRelationTuple(ctx.Context(), tenantID, req.NamespacePath, req.ObjectType, req.ObjectID, req.Relation, req.SubjectType, req.SubjectID, req.SubjectRelation); err != nil {
 		return nil, mapError(err)
+	}
+	if len(matched) == 0 {
+		a.eng.InvalidateTenant(ctx.Context(), tenantID)
+	}
+
+	if a.eng.Plugins() != nil {
+		actor, _ := warden.ActorFromContext(ctx.Context())
+		now := time.Now()
+		for _, t := range matched {
+			a.eng.Plugins().EmitRelationDeleted(ctx.Context(), t.ID)
+		}
+		if listErr != nil {
+			a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+				Actor: actor, At: now, Action: "relation.deleted",
+				TenantID: tenantID, EntityID: relationDeleteKey(req),
+			})
+		}
+		for _, t := range matched {
+			a.eng.Plugins().EmitAudit(ctx.Context(), plugin.Event{
+				Actor: actor, At: now, Action: "relation.deleted",
+				TenantID: tenantID, EntityID: t.ID.String(), Before: t,
+			})
+		}
 	}
 
 	return nil, ctx.NoContent(http.StatusNoContent)
+}
+
+// relationDeleteKey names the one tuple a REST delete covers, for the
+// audit event of a delete whose read failed: the namespace, the object,
+// relation and subject, and the subject relation, which is part of the key.
+// group:eng#member names the subject set; group:eng (no subject relation)
+// names the direct tuple only.
+func relationDeleteKey(req *DeleteRelationRequest) string {
+	where := "tenant root"
+	if req.NamespacePath != "" {
+		where = "namespace " + req.NamespacePath
+	}
+	subject := req.SubjectType + ":" + req.SubjectID + " (no subject relation)"
+	if req.SubjectRelation != "" {
+		subject = req.SubjectType + ":" + req.SubjectID + "#" + req.SubjectRelation
+	}
+	return where + ": " + req.ObjectType + ":" + req.ObjectID + "#" + req.Relation + "@" + subject
 }
 
 func (a *API) listRelations(ctx forge.Context, req *ListRelationsRequest) (*RelationListResponse, error) {

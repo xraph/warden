@@ -1,0 +1,71 @@
+---
+title: Monitoring
+description: Every metric Warden emits, the check-log columns, startup logging, and health checks.
+---
+
+## Metrics
+
+Warden's engine takes a `warden.Metrics` implementation via `warden.WithMetrics`; the default is `warden.NoopMetrics{}`, so nothing is recorded unless you wire one in. The Forge extension wires one automatically from `Extension.Metrics()` (a `forge.Metrics`-backed adapter in `extension/metrics.go`), so if you're running as a Forge extension you get all of these for free.
+
+| Metric | Type | Labels | Emitted when |
+|---|---|---|---|
+| `warden_checks_total` | Counter | `decision`, `source`, `cached` | Every `Check()` call, cache hit or not |
+| `warden_check_duration_seconds` | Histogram | -- | Every `Check()` call |
+| `warden_store_errors_total` | Counter | `op` | A store call returns an error during evaluation |
+| `warden_checklog_dropped_total` | Counter | -- | The check-log writer's queue is full and an entry is dropped |
+| `warden_hook_errors_total` | Counter | `hook`, `plugin` | A plugin hook panics or returns an error |
+| `warden_graph_nodes_visited` | Histogram | -- | A ReBAC graph walk completes, with the node count visited |
+| `warden_graph_budget_exceeded_total` | Counter | -- | A ReBAC graph walk aborts past `max_graph_visited`/`max_graph_fanout` |
+| `warden_assignments_purged_total` | Counter | -- | A maintenance run purges expired role assignments (value = rows removed) |
+| `warden_checklogs_purged_total` | Counter | -- | A maintenance run purges old check-log rows (value = rows removed) |
+| `warden_cache_invalidations_total` | Counter | `scope` (`tenant` or `subject`) | The check cache is invalidated |
+
+Two things worth calling out:
+
+- `decision` on `warden_checks_total` is one of the `warden.Decision` values (`allow`, `deny_explicit`, `deny_default`, `deny_no_roles`, `deny_no_perms`, `deny_condition`, `deny_relation`, `deny`). `source` names which evaluator produced it. `cached` is `"true"`/`"false"`.
+- `Metrics.CheckLogWritten(n int)` exists on the interface (fired after a batch of check-log entries flushes to the store) but has no dedicated named metric in the Forge extension's adapter. `warden_checklog_dropped_total` is the signal that tells you the check-log writer is falling behind, which is the operationally relevant half of that story.
+
+If you're not running the Forge extension, implement `warden.Metrics` yourself and pass it to `warden.WithMetrics` to get these into your own backend (Prometheus, OpenTelemetry, statsd, whatever you use).
+
+## Check-log columns
+
+Every row in `warden_check_logs` (`checklog.Entry`) is built so an auditor can reconstruct a decision without replaying the check:
+
+| Column | Meaning |
+|---|---|
+| `id` | `id.CheckLogID` (`chklog_...`) |
+| `tenant_id` | Tenant the check ran against |
+| `namespace_path` | Namespace scope, if any |
+| `app_id` | Application ID |
+| `subject_kind`, `subject_id` | Who asked |
+| `action` | What they asked to do |
+| `resource_type`, `resource_id` | What they asked about |
+| `decision` | The `warden.Decision` value |
+| `reason` | Human-readable explanation |
+| `matched_by` | `[]MatchRef{Source, RuleID, Detail}`, every rule that contributed |
+| `obligations` | `[]string`, PBAC side-effect signals emitted |
+| `eval_time_ns` | Evaluation latency |
+| `request_ip` | Caller's IP, PII (see [Retention](/docs/operations/retention)) |
+| `request_id`, `trace_id` | Correlation IDs |
+| `cached` | Whether this result came from the check cache |
+| `error` | Set if evaluation itself errored |
+| `metadata` | Free-form extra data |
+| `created_at` | When the row was written |
+
+Query them with `checklog.QueryFilter` (tenant, namespace, subject, action, resource, decision, time range) through the `/v1/check-logs` endpoint (permission: `read_audit` on `warden:check_log`) or `store.ListCheckLogs`/`CountCheckLogs` directly.
+
+## Startup logging
+
+`Engine.Start` logs one `Info` line, `warden: engine starting`, with:
+
+- `check_log_enabled` (bool)
+- `check_log_retention` (duration string)
+- `check_log_queue_size` (int)
+- `cache_enabled` (bool)
+- `maintenance_interval` (duration string)
+
+If you're running the Forge extension, `loadConfiguration` also logs a `Debug` line, `warden: configuration loaded`, with `disable_routes`, `disable_migrate`, `base_path`, `grove_database`, `max_graph_depth`, `auth_require_identity`, `auth_allow_anonymous_checks`, and `auth_audit_log`. Useful for confirming what actually got loaded from YAML versus programmatic defaults, at whatever log level your deployment has `Debug` turned on.
+
+## Health and readiness
+
+`Extension.Health(ctx) error` is the one check the extension exposes: it pings the underlying store (`store.Ping`) and returns an error if the engine isn't initialized or has no store configured. There's no separate readiness probe distinct from this. Wire it into whatever health-check mechanism your Forge app already uses, and treat a failing `Health` call as "the store is unreachable," not "the engine has a logic bug." A slow or failing store also shows up as `warden_store_errors_total{op}` incrementing on the check path, which is usually the earlier signal.

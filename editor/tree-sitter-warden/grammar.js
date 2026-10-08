@@ -28,8 +28,8 @@ module.exports = grammar({
       'warden',
       'config',
       $.int_literal,
-      optional(seq('tenant', $.identifier)),
-      optional(seq('app', $.identifier)),
+      optional(seq('tenant', $._name)),
+      optional(seq('app', $._name)),
     ),
 
     _stmt: $ => choice(
@@ -52,7 +52,7 @@ module.exports = grammar({
 
     resource_decl: $ => seq(
       'resource',
-      field('name', $.identifier),
+      field('name', $._name),
       '{',
       repeat($._resource_member),
       '}',
@@ -64,11 +64,13 @@ module.exports = grammar({
       $.description_assign,
     ),
 
+    // A relation may list no subject types: `relation x:` with nothing after
+    // the colon. An empty list puts no limit on the subject type.
     relation_def: $ => seq(
       'relation',
-      field('name', $.identifier),
+      field('name', $._name),
       ':',
-      $._subject_types,
+      optional($._subject_types),
     ),
 
     _subject_types: $ => seq(
@@ -77,13 +79,13 @@ module.exports = grammar({
     ),
 
     _subject_type: $ => seq(
-      $.identifier,
-      optional(seq('#', $.identifier)),
+      $._name,
+      optional(seq('#', $._name)),
     ),
 
     resource_permission_decl: $ => seq(
       'permission',
-      field('name', $.identifier),
+      field('name', $._name),
       '=',
       field('expr', $._expr),
     ),
@@ -92,14 +94,19 @@ module.exports = grammar({
       'permission',
       field('name', $.string_literal),
       optional(choice(
-        seq('(', $.identifier, ':', $.identifier, ')'),
-        seq('{', repeat($._kv), '}'),
+        seq('(', $._name, ':', $._name, ')'),
+        seq('{', repeat($._permission_member), '}'),
       )),
+    ),
+
+    _permission_member: $ => choice(
+      seq('resource', '=', $._name),
+      $._kv,
     ),
 
     role_decl: $ => seq(
       'role',
-      field('slug', $.identifier),
+      field('slug', $._name),
       optional(seq(':', field('parent', $._role_parent))),
       '{',
       repeat($._role_member),
@@ -107,7 +114,7 @@ module.exports = grammar({
     ),
 
     _role_parent: $ => choice(
-      $.identifier,
+      $._name,
       seq('/', $.identifier, repeat(seq('/', $.identifier))),
     ),
 
@@ -116,10 +123,31 @@ module.exports = grammar({
       $.grants_assign,
     ),
 
+    // `grants = [...]`: permission names, and qualified grants
+    // `{ namespace = "eng", name = "deploy:run" }` for a permission a name
+    // alone cannot reach. `grants = []` revokes every grant.
     grants_assign: $ => seq(
       'grants',
       choice('=', '+='),
-      $.string_list,
+      $.grant_list,
+    ),
+
+    grant_list: $ => seq(
+      '[',
+      optional(seq(
+        $._grant,
+        repeat(seq(',', $._grant)),
+        optional(','),
+      )),
+      ']',
+    ),
+
+    _grant: $ => choice($.string_literal, $.qualified_grant),
+
+    qualified_grant: $ => seq(
+      '{',
+      repeat(seq(field('key', choice('namespace', 'name')), '=', $.string_literal, optional(','))),
+      '}',
     ),
 
     policy_decl: $ => seq(
@@ -133,7 +161,29 @@ module.exports = grammar({
     _policy_member: $ => choice(
       $.field_assign,
       $.string_list_assign,
+      $.subjects_assign,
       $.when_block,
+    ),
+
+    // `subjects = [{ kind = "user" }, { id = "alice" }, { role = "admin" },
+    // { kind = "user", id = "bob", role = "temp" }, {}]`. The fields of one
+    // matcher are AND-ed; `{}` matches every subject.
+    subjects_assign: $ => seq('subjects', '=', $.subject_list),
+
+    subject_list: $ => seq(
+      '[',
+      optional(seq(
+        $.subject_matcher,
+        repeat(seq(',', $.subject_matcher)),
+        optional(','),
+      )),
+      ']',
+    ),
+
+    subject_matcher: $ => seq(
+      '{',
+      repeat(seq(field('key', choice('kind', 'id', 'role')), '=', $.string_literal, optional(','))),
+      '}',
     ),
 
     when_block: $ => seq('when', '{', repeat($._condition), '}'),
@@ -143,10 +193,13 @@ module.exports = grammar({
       $.condition_group,
     ),
 
+    // A field a bare path cannot spell is a string literal. The value is
+    // optional for exists / not exists (the Go parser reads one only on the
+    // operator's own line, which this grammar does not model).
     condition_atom: $ => seq(
-      $._field_path,
+      choice($._field_path, $.string_literal),
       $._operator,
-      $._literal,
+      optional($._value),
       optional('negate'),
     ),
 
@@ -157,12 +210,30 @@ module.exports = grammar({
       '}',
     ),
 
+    // A path segment may be a keyword: resource.name, subject.role.
     _field_path: $ => seq(
-      $.identifier,
+      $._field_segment,
       repeat(choice(
-        seq('.', $.identifier),
-        seq('[', $.string_literal, ']'),
+        seq('.', $._field_segment),
+        seq('.', '[', $.string_literal, ']'),
       )),
+    ),
+
+    // Every keyword the Go lexer knows (dsl/token.go), as dsl.isWord
+    // accepts them. Keep this list in step with that table. A leading
+    // all_of / any_of opens a group instead (the Go parser checks that first).
+    _field_segment: $ => choice(
+      $.identifier,
+      alias(choice(
+        'warden', 'config', 'tenant', 'app', 'namespace', 'import', 'resource',
+        'relation', 'permission', 'role', 'policy', 'effect', 'allow', 'deny',
+        'actions', 'resources', 'subjects', 'when', 'negate', 'grants', 'name',
+        'description', 'priority', 'active', 'is_system', 'is_default',
+        'max_members', 'metadata', 'or', 'and', 'not', 'in', 'contains',
+        'starts_with', 'ends_with', 'exists', 'ip_in_cidr', 'time_after',
+        'time_before', 'all_of', 'any_of', 'not_before', 'not_after',
+        'obligations', 'true', 'false',
+      ), $.identifier),
     ),
 
     _operator: $ => choice(
@@ -175,11 +246,11 @@ module.exports = grammar({
 
     relation_decl: $ => seq(
       'relation',
-      $.identifier, ':', $.identifier,
-      $.identifier,
+      $._name, ':', $._name,
+      $._name,
       '=',
-      $.identifier, ':', $.identifier,
-      optional(seq('#', $.identifier)),
+      $._name, ':', $._name,
+      optional(seq('#', $._name)),
     ),
 
     import_stmt: $ => seq('import', $.string_literal),
@@ -216,11 +287,23 @@ module.exports = grammar({
     traverse_expr: $ => prec(4, seq($.identifier, repeat1(seq('->', $.identifier)))),
 
     // Lexical primitives.
-    identifier: $ => /[a-z_][a-zA-Z0-9_-]*/,
+    //
+    // A name is a bare identifier, or a string literal for a name a bare
+    // identifier cannot spell (a keyword, a leading digit, a space, a colon
+    // such as warden:role, a glob such as *).
+    _name: $ => choice($.identifier, $.string_literal),
+    identifier: $ => /[a-zA-Z_][a-zA-Z0-9_-]*/,
     int_literal: $ => /\d+/,
+    float_literal: $ => /\d+\.\d+/,
+    number_literal: $ => seq(optional('-'), choice($.float_literal, $.int_literal)),
     string_literal: $ => /"([^"\\]|\\.)*"/,
     string_list: $ => seq('[', optional(seq($.string_literal, repeat(seq(',', $.string_literal)), optional(','))), ']'),
     _literal: $ => choice($.string_literal, $.int_literal, $.bool_literal, $.string_list),
+    // A condition value: a string, a number (a decimal, a sign), a bool, or
+    // a list mixing them.
+    _value: $ => choice($.string_literal, $.number_literal, $.bool_literal, $.value_list),
+    value_list: $ => seq('[', optional(seq($._value_item, repeat(seq(',', $._value_item)), optional(','))), ']'),
+    _value_item: $ => choice($.string_literal, $.number_literal, $.bool_literal),
     bool_literal: $ => choice('true', 'false'),
 
     line_comment: $ => token(seq('//', /[^\n]*/)),

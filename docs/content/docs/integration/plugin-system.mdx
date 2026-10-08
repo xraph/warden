@@ -19,17 +19,17 @@ type Plugin interface {
 
 ## Lifecycle Hooks
 
-Plugins opt into hooks by implementing additional interfaces:
+Plugins opt into hooks by implementing additional interfaces. Every hook method returns an `error`; a returned error is logged as a warning and never blocks the mutation that triggered it (see [Error handling](#error-handling) below). Where a request or result type is `*warden.CheckRequest` or `*warden.CheckResult`, the hook interface takes it as `any` instead, because `plugin` cannot import the root `warden` package without creating an import cycle.
 
-### Authorization Hooks
+### Check Hooks
 
 ```go
 type BeforeCheck interface {
-    BeforeCheck(ctx context.Context, req *warden.CheckRequest)
+    OnBeforeCheck(ctx context.Context, req any) error // req is *warden.CheckRequest
 }
 
 type AfterCheck interface {
-    AfterCheck(ctx context.Context, req *warden.CheckRequest, result *warden.CheckResult)
+    OnAfterCheck(ctx context.Context, req, result any) error // *warden.CheckRequest, *warden.CheckResult
 }
 ```
 
@@ -37,13 +37,13 @@ type AfterCheck interface {
 
 ```go
 type RoleCreated interface {
-    OnRoleCreated(ctx context.Context, r *role.Role)
+    OnRoleCreated(ctx context.Context, r *role.Role) error
 }
 type RoleUpdated interface {
-    OnRoleUpdated(ctx context.Context, r *role.Role)
+    OnRoleUpdated(ctx context.Context, r *role.Role) error
 }
 type RoleDeleted interface {
-    OnRoleDeleted(ctx context.Context, roleID id.RoleID)
+    OnRoleDeleted(ctx context.Context, roleID id.RoleID) error
 }
 ```
 
@@ -51,16 +51,16 @@ type RoleDeleted interface {
 
 ```go
 type PermissionCreated interface {
-    OnPermissionCreated(ctx context.Context, p *permission.Permission)
+    OnPermissionCreated(ctx context.Context, p *permission.Permission) error
 }
 type PermissionDeleted interface {
-    OnPermissionDeleted(ctx context.Context, permID id.PermissionID)
+    OnPermissionDeleted(ctx context.Context, permID id.PermissionID) error
 }
 type PermissionAttached interface {
-    OnPermissionAttached(ctx context.Context, roleID id.RoleID, permID id.PermissionID)
+    OnPermissionAttached(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error
 }
 type PermissionDetached interface {
-    OnPermissionDetached(ctx context.Context, roleID id.RoleID, permID id.PermissionID)
+    OnPermissionDetached(ctx context.Context, roleID id.RoleID, permID id.PermissionID) error
 }
 ```
 
@@ -68,10 +68,10 @@ type PermissionDetached interface {
 
 ```go
 type RoleAssigned interface {
-    OnRoleAssigned(ctx context.Context, a *assignment.Assignment)
+    OnRoleAssigned(ctx context.Context, a *assignment.Assignment) error
 }
 type RoleUnassigned interface {
-    OnRoleUnassigned(ctx context.Context, a *assignment.Assignment)
+    OnRoleUnassigned(ctx context.Context, a *assignment.Assignment) error
 }
 ```
 
@@ -79,10 +79,10 @@ type RoleUnassigned interface {
 
 ```go
 type RelationWritten interface {
-    OnRelationWritten(ctx context.Context, t *relation.Tuple)
+    OnRelationWritten(ctx context.Context, t *relation.Tuple) error
 }
 type RelationDeleted interface {
-    OnRelationDeleted(ctx context.Context, objectType, objectID, rel, subjectType, subjectID string)
+    OnRelationDeleted(ctx context.Context, relID id.RelationID) error
 }
 ```
 
@@ -90,13 +90,43 @@ type RelationDeleted interface {
 
 ```go
 type PolicyCreated interface {
-    OnPolicyCreated(ctx context.Context, p *policy.Policy)
+    OnPolicyCreated(ctx context.Context, p *policy.Policy) error
 }
 type PolicyUpdated interface {
-    OnPolicyUpdated(ctx context.Context, p *policy.Policy)
+    OnPolicyUpdated(ctx context.Context, p *policy.Policy) error
 }
 type PolicyDeleted interface {
-    OnPolicyDeleted(ctx context.Context, policyID id.PolicyID)
+    OnPolicyDeleted(ctx context.Context, polID id.PolicyID) error
+}
+```
+
+`PolicyObligationFired` fires once per `(policy, obligation)` pair after the engine has merged the RBAC/ReBAC/ABAC decision, so a plugin that reacts to obligations (`audit-log`, `require-mfa`, `notify-security`, ...) doesn't have to re-scan `CheckResult.Obligations` itself:
+
+```go
+type PolicyObligationFired interface {
+    OnPolicyObligationFired(ctx context.Context, polID id.PolicyID, obligation string, req, result any) error
+}
+```
+
+### Audit Hook
+
+`Audit` fires for every mutation, in addition to whichever typed hook above also fires for it. Implement just this one interface if you want a single, complete audit stream without wiring up every typed hook individually:
+
+```go
+type Event struct {
+    Actor     any // warden.Actor: Kind, ID, Via
+    RequestID string
+    TraceID   string
+    At        time.Time
+    Action    string // "role.created", "permission.attached", "maintenance.run", "declarative.applied", ...
+    TenantID  string
+    EntityID  string
+    Entity    any // the entity after the change, nil on delete
+    Before    any // the entity before an update, nil otherwise
+}
+
+type Audit interface {
+    OnAudit(ctx context.Context, ev Event) error
 }
 ```
 
@@ -107,6 +137,8 @@ type Shutdown interface {
     OnShutdown(ctx context.Context) error
 }
 ```
+
+`Engine.Stop` calls `OnShutdown` on every plugin that implements it, after cancelling the maintenance loop and draining the check-log writer.
 
 ## Registering Plugins
 
@@ -127,51 +159,35 @@ type MyPlugin struct{}
 
 func (p *MyPlugin) Name() string { return "my-plugin" }
 
-// Only implement AfterCheck — other hooks are ignored
-func (p *MyPlugin) AfterCheck(ctx context.Context, req *warden.CheckRequest, result *warden.CheckResult) {
-    log.Printf("check: %s %s %s → %v", req.Subject.ID, req.Action, req.ResourceType, result.Allowed)
+// Only implement OnAfterCheck: other hooks are ignored.
+func (p *MyPlugin) OnAfterCheck(ctx context.Context, req, result any) error {
+    res, _ := result.(*warden.CheckResult)
+    log.Printf("check completed: allowed=%v", res.Allowed)
+    return nil
 }
 ```
 
+If a plugin implements none of the known hook interfaces, `Registry.Register` logs a warning. That's almost always a wiring mistake, such as a wrong signature or a typo'd method name. `Registry.Validate(p)` returns the list of hook names a plugin implements, so you can assert on it in a test.
+
+## Error handling
+
+Every hook call is wrapped in a `recover()` and a nil-error check. A plugin that panics, or returns a non-nil error, is logged (`plugin hook panicked` or `plugin hook error`) and counted against the `warden_hook_errors_total{hook,plugin}` metric, but the mutation or check that triggered it always completes: one misbehaving plugin can neither crash the engine nor block the rest of the dispatch loop for that event.
+
 ## Built-in Plugins
 
-### Chronicle Audit Plugin
+### Audit log plugin (`plugin/auditlog`)
 
-Emits authorization events to [Chronicle](https://github.com/xraph/chronicle):
+`plugin/auditlog` is Warden's in-tree `Audit` sink. It writes one structured `Info` line per audit event through a `go-utils/log.Logger` (which `forge.Logger` satisfies directly):
 
 ```go
-import "github.com/xraph/warden/audit_hook"
+import "github.com/xraph/warden/plugin/auditlog"
 
-auditPlugin := audit_hook.New(chronicleClient)
 eng, _ := warden.NewEngine(
     warden.WithStore(store),
-    warden.WithPlugin(auditPlugin),
+    warden.WithPlugin(auditlog.New(logger)),
 )
 ```
 
-Events emitted:
-- `warden.check.allowed` / `warden.check.denied`
-- `warden.role.created` / `warden.role.updated` / `warden.role.deleted`
-- `warden.permission.created` / `warden.permission.deleted`
-- `warden.assignment.created` / `warden.assignment.deleted`
-- `warden.relation.written` / `warden.relation.deleted`
-- `warden.policy.created` / `warden.policy.updated` / `warden.policy.deleted`
+The Forge extension registers this plugin automatically. It's what `auth.audit_log: true` (the default) turns on. See [Forge Extension](/docs/integration/forge-extension) and [Monitoring](/docs/operations/monitoring) for the fields on each log line.
 
-### Prometheus Metrics Plugin
-
-Exports authorization metrics:
-
-```go
-import "github.com/xraph/warden/observability"
-
-metricsPlugin := observability.New()
-eng, _ := warden.NewEngine(
-    warden.WithStore(store),
-    warden.WithPlugin(metricsPlugin),
-)
-```
-
-Counters:
-- `warden_checks_total` — Total authorization checks by result
-- `warden_check_duration_seconds` — Check latency histogram
-- `warden_mutations_total` — Entity mutations by type and operation
+There's no separate `audit_hook`/Chronicle package and no `observability`/Prometheus plugin package. Metrics are wired through `warden.WithMetrics` (or, under the Forge extension, automatically from `Extension.Metrics()`), not through a plugin. See [Monitoring](/docs/operations/monitoring) for the full metric list.

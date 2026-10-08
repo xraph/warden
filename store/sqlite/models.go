@@ -35,6 +35,8 @@ type roleModel struct {
 	ParentSlug      *string    `grove:"parent_slug"`
 	MaxMembers      int        `grove:"max_members,notnull"`
 	Metadata        string     `grove:"metadata"` // JSON text
+	CreatedBy       string     `grove:"created_by,notnull"`
+	UpdatedBy       string     `grove:"updated_by,notnull"`
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
@@ -56,6 +58,8 @@ func roleToModel(r *role.Role) (*roleModel, error) {
 		IsDefault:     r.IsDefault,
 		MaxMembers:    r.MaxMembers,
 		Metadata:      string(metadata),
+		CreatedBy:     r.CreatedBy,
+		UpdatedBy:     r.UpdatedBy,
 		CreatedAt:     sqliteTime(r.CreatedAt),
 		UpdatedAt:     sqliteTime(r.UpdatedAt),
 	}
@@ -86,6 +90,8 @@ func roleFromModel(m *roleModel) (*role.Role, error) {
 		IsDefault:     m.IsDefault,
 		MaxMembers:    m.MaxMembers,
 		Metadata:      metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     time.Time(m.CreatedAt),
 		UpdatedAt:     time.Time(m.UpdatedAt),
 	}
@@ -111,6 +117,8 @@ type permissionModel struct {
 	Action          string     `grove:"action,notnull"`
 	IsSystem        bool       `grove:"is_system,notnull"`
 	Metadata        string     `grove:"metadata"` // JSON text
+	CreatedBy       string     `grove:"created_by,notnull"`
+	UpdatedBy       string     `grove:"updated_by,notnull"`
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
@@ -131,6 +139,8 @@ func permissionToModel(p *permission.Permission) (*permissionModel, error) {
 		Action:        p.Action,
 		IsSystem:      p.IsSystem,
 		Metadata:      string(metadata),
+		CreatedBy:     p.CreatedBy,
+		UpdatedBy:     p.UpdatedBy,
 		CreatedAt:     sqliteTime(p.CreatedAt),
 		UpdatedAt:     sqliteTime(p.UpdatedAt),
 	}, nil
@@ -155,6 +165,8 @@ func permissionFromModel(m *permissionModel) (*permission.Permission, error) {
 		Action:        m.Action,
 		IsSystem:      m.IsSystem,
 		Metadata:      metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     time.Time(m.CreatedAt),
 		UpdatedAt:     time.Time(m.UpdatedAt),
 	}, nil
@@ -164,11 +176,56 @@ func permissionFromModel(m *permissionModel) (*permission.Permission, error) {
 // Role-Permission junction model
 // ──────────────────────────────────────────────────
 
+// rolePermissionRow is the projection ListRolePermissionsForRoles scans: a
+// full permission record plus the role that grants it. The columns are spelled
+// out rather than embedded, because grove skips embedded fields whose type is
+// unexported. The table tag is only there to satisfy grove's model resolver;
+// the query is raw SQL and never uses the name.
+type rolePermissionRow struct {
+	grove.BaseModel `grove:"table:warden_role_permission_grants"`
+	RoleID          string     `grove:"role_id"`
+	ID              string     `grove:"id"`
+	TenantID        string     `grove:"tenant_id"`
+	NamespacePath   string     `grove:"namespace_path"`
+	AppID           string     `grove:"app_id"`
+	Name            string     `grove:"name"`
+	Description     string     `grove:"description"`
+	Resource        string     `grove:"resource"`
+	Action          string     `grove:"action"`
+	IsSystem        bool       `grove:"is_system"`
+	Metadata        string     `grove:"metadata"` // JSON text
+	CreatedAt       sqliteTime `grove:"created_at"`
+	UpdatedAt       sqliteTime `grove:"updated_at"`
+}
+
+func (r *rolePermissionRow) permission() *permissionModel {
+	return &permissionModel{
+		ID:            r.ID,
+		TenantID:      r.TenantID,
+		NamespacePath: r.NamespacePath,
+		AppID:         r.AppID,
+		Name:          r.Name,
+		Description:   r.Description,
+		Resource:      r.Resource,
+		Action:        r.Action,
+		IsSystem:      r.IsSystem,
+		Metadata:      r.Metadata,
+		CreatedAt:     r.CreatedAt,
+		UpdatedAt:     r.UpdatedAt,
+	}
+}
+
 type rolePermissionModel struct {
 	grove.BaseModel   `grove:"table:warden_role_permissions"`
 	RoleID            string `grove:"role_id,pk"`
 	PermNamespacePath string `grove:"perm_namespace_path,pk"`
 	PermName          string `grove:"perm_name,pk"`
+	// TenantID denormalizes the granting role's tenant onto the junction
+	// row. It's redundant with the warden_roles join every read already
+	// does, but it lets an audit query or a future scoped read filter the
+	// junction directly without that join, and migration
+	// 20260922000002_role_permissions_tenant indexes on it.
+	TenantID string `grove:"tenant_id"`
 }
 
 // ──────────────────────────────────────────────────
@@ -265,6 +322,7 @@ type relationModel struct {
 	SubjectID       string     `grove:"subject_id,notnull"`
 	SubjectRelation string     `grove:"subject_relation"`
 	Metadata        string     `grove:"metadata"` // JSON text
+	CreatedBy       string     `grove:"created_by,notnull"`
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 }
 
@@ -285,6 +343,7 @@ func relationToModel(t *relation.Tuple) (*relationModel, error) {
 		SubjectID:       t.SubjectID,
 		SubjectRelation: t.SubjectRelation,
 		Metadata:        string(metadata),
+		CreatedBy:       t.CreatedBy,
 		CreatedAt:       sqliteTime(t.CreatedAt),
 	}, nil
 }
@@ -309,6 +368,7 @@ func relationFromModel(m *relationModel) (*relation.Tuple, error) {
 		SubjectID:       m.SubjectID,
 		SubjectRelation: m.SubjectRelation,
 		Metadata:        metadata,
+		CreatedBy:       m.CreatedBy,
 		CreatedAt:       time.Time(m.CreatedAt),
 	}, nil
 }
@@ -337,6 +397,8 @@ type policyModel struct {
 	Resources       string      `grove:"resources"`  // JSON text
 	Conditions      string      `grove:"conditions"` // JSON text
 	Metadata        string      `grove:"metadata"`   // JSON text
+	CreatedBy       string      `grove:"created_by,notnull"`
+	UpdatedBy       string      `grove:"updated_by,notnull"`
 	CreatedAt       sqliteTime  `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime  `grove:"updated_at,notnull"`
 }
@@ -383,6 +445,8 @@ func policyToModel(p *policy.Policy) (*policyModel, error) {
 		Resources:     string(resources),
 		Conditions:    string(conditions),
 		Metadata:      string(metadata),
+		CreatedBy:     p.CreatedBy,
+		UpdatedBy:     p.UpdatedBy,
 		CreatedAt:     sqliteTime(p.CreatedAt),
 		UpdatedAt:     sqliteTime(p.UpdatedAt),
 	}
@@ -453,6 +517,8 @@ func policyFromModel(m *policyModel) (*policy.Policy, error) {
 		Resources:     resources,
 		Conditions:    conditions,
 		Metadata:      metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     time.Time(m.CreatedAt),
 		UpdatedAt:     time.Time(m.UpdatedAt),
 	}
@@ -492,6 +558,8 @@ type resourceTypeModel struct {
 	Relations       string     `grove:"relations"`   // JSON text
 	Permissions     string     `grove:"permissions"` // JSON text
 	Metadata        string     `grove:"metadata"`    // JSON text
+	CreatedBy       string     `grove:"created_by,notnull"`
+	UpdatedBy       string     `grove:"updated_by,notnull"`
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 	UpdatedAt       sqliteTime `grove:"updated_at,notnull"`
 }
@@ -519,6 +587,8 @@ func resourceTypeToModel(rt *resourcetype.ResourceType) (*resourceTypeModel, err
 		Relations:     string(relations),
 		Permissions:   string(permissions),
 		Metadata:      string(metadata),
+		CreatedBy:     rt.CreatedBy,
+		UpdatedBy:     rt.UpdatedBy,
 		CreatedAt:     sqliteTime(rt.CreatedAt),
 		UpdatedAt:     sqliteTime(rt.UpdatedAt),
 	}, nil
@@ -555,6 +625,8 @@ func resourceTypeFromModel(m *resourceTypeModel) (*resourcetype.ResourceType, er
 		Relations:     relations,
 		Permissions:   permissions,
 		Metadata:      metadata,
+		CreatedBy:     m.CreatedBy,
+		UpdatedBy:     m.UpdatedBy,
 		CreatedAt:     time.Time(m.CreatedAt),
 		UpdatedAt:     time.Time(m.UpdatedAt),
 	}, nil
@@ -577,8 +649,14 @@ type checkLogModel struct {
 	ResourceID      string     `grove:"resource_id,notnull"`
 	Decision        string     `grove:"decision,notnull"`
 	Reason          string     `grove:"reason"`
+	MatchedBy       string     `grove:"matched_by"`  // JSON text
+	Obligations     string     `grove:"obligations"` // JSON text
 	EvalTimeNs      int64      `grove:"eval_time_ns,notnull"`
 	RequestIP       string     `grove:"request_ip"`
+	RequestID       string     `grove:"request_id"`
+	TraceID         string     `grove:"trace_id"`
+	Cached          bool       `grove:"cached,notnull"`
+	Error           string     `grove:"error"`
 	Metadata        string     `grove:"metadata"` // JSON text
 	CreatedAt       sqliteTime `grove:"created_at,notnull"`
 }
@@ -587,6 +665,14 @@ func checkLogToModel(e *checklog.Entry) (*checkLogModel, error) {
 	metadata, err := json.Marshal(e.Metadata)
 	if err != nil {
 		return nil, fmt.Errorf("marshal check log metadata: %w", err)
+	}
+	matchedBy, err := json.Marshal(e.MatchedBy)
+	if err != nil {
+		return nil, fmt.Errorf("marshal check log matched_by: %w", err)
+	}
+	obligations, err := json.Marshal(e.Obligations)
+	if err != nil {
+		return nil, fmt.Errorf("marshal check log obligations: %w", err)
 	}
 	return &checkLogModel{
 		ID:            e.ID.String(),
@@ -600,8 +686,14 @@ func checkLogToModel(e *checklog.Entry) (*checkLogModel, error) {
 		ResourceID:    e.ResourceID,
 		Decision:      e.Decision,
 		Reason:        e.Reason,
+		MatchedBy:     string(matchedBy),
+		Obligations:   string(obligations),
 		EvalTimeNs:    e.EvalTimeNs,
 		RequestIP:     e.RequestIP,
+		RequestID:     e.RequestID,
+		TraceID:       e.TraceID,
+		Cached:        e.Cached,
+		Error:         e.Error,
 		Metadata:      string(metadata),
 		CreatedAt:     sqliteTime(e.CreatedAt),
 	}, nil
@@ -613,6 +705,18 @@ func checkLogFromModel(m *checkLogModel) (*checklog.Entry, error) {
 	if m.Metadata != "" {
 		if err := json.Unmarshal([]byte(m.Metadata), &metadata); err != nil {
 			return nil, fmt.Errorf("unmarshal check log metadata: %w", err)
+		}
+	}
+	var matchedBy []checklog.MatchRef
+	if m.MatchedBy != "" {
+		if err := json.Unmarshal([]byte(m.MatchedBy), &matchedBy); err != nil {
+			return nil, fmt.Errorf("unmarshal check log matched_by: %w", err)
+		}
+	}
+	var obligations []string
+	if m.Obligations != "" {
+		if err := json.Unmarshal([]byte(m.Obligations), &obligations); err != nil {
+			return nil, fmt.Errorf("unmarshal check log obligations: %w", err)
 		}
 	}
 	return &checklog.Entry{
@@ -627,8 +731,14 @@ func checkLogFromModel(m *checkLogModel) (*checklog.Entry, error) {
 		ResourceID:    m.ResourceID,
 		Decision:      m.Decision,
 		Reason:        m.Reason,
+		MatchedBy:     matchedBy,
+		Obligations:   obligations,
 		EvalTimeNs:    m.EvalTimeNs,
 		RequestIP:     m.RequestIP,
+		RequestID:     m.RequestID,
+		TraceID:       m.TraceID,
+		Cached:        m.Cached,
+		Error:         m.Error,
 		Metadata:      metadata,
 		CreatedAt:     time.Time(m.CreatedAt),
 	}, nil
