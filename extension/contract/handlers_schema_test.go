@@ -631,7 +631,8 @@ func TestPlanDigestCoversTheSource(t *testing.T) {
 	if a == b {
 		t.Error("two sources with the same diff lines share a digest")
 	}
-	if planDigest(false, "x", r) != planDigest(false, "x", r) {
+	first, second := planDigest(false, "x", r), planDigest(false, "x", r)
+	if first != second {
 		t.Error("the same source does not give the same digest")
 	}
 	// The source hash is a fixed-width field, so text cannot slide into the

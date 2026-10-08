@@ -304,7 +304,7 @@ func TestAssignmentsExpiringListsWhatIsAboutToLapse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assignments.expiring: %v", err)
 	}
-	var subjects []string
+	subjects := make([]string, 0, len(got.Items))
 	for _, a := range got.Items {
 		subjects = append(subjects, a.SubjectID)
 	}
@@ -414,7 +414,7 @@ func TestAssignmentsWritesEmitAuditAndTheTypedHooks(t *testing.T) {
 		t.Errorf("grantedBy = %q, want tester", stored.GrantedBy)
 	}
 
-	if _, err := assignmentsDeleteHandler(deps)(ctx, AssignmentDeleteInput{ID: ack.ID}, principalFor("t1")); err != nil {
+	if _, err := assignmentsDeleteHandler(deps)(ctx, AssignmentDeleteInput(ack), principalFor("t1")); err != nil {
 		t.Fatalf("assignments.delete: %v", err)
 	}
 	del := probe.event(t, "assignment.deleted")

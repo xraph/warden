@@ -539,7 +539,7 @@ func policiesUpdateHandler(deps Deps) func(context.Context, PolicyUpdateInput, d
 			switch {
 			case err == nil:
 				return AckResponse{}, mapWardenError(fmt.Errorf("policy %q in ns %q: %w", pol.Name, before.NamespacePath, warden.ErrDuplicatePolicy))
-			case err != nil && !errors.Is(err, warden.ErrPolicyNotFound):
+			case !errors.Is(err, warden.ErrPolicyNotFound):
 				return AckResponse{}, mapWardenError(err)
 			}
 		}

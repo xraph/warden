@@ -68,9 +68,9 @@ func newCheckLogFixture(t *testing.T) checkLogFixture {
 
 func ptr[T any](v T) *T { return &v }
 
-func listCheckLogs(t *testing.T, eng *warden.Engine, tenant string, in CheckLogsListInput) (CheckLogsListResponse, error) {
+func listCheckLogs(t *testing.T, eng *warden.Engine, in CheckLogsListInput) (CheckLogsListResponse, error) {
 	t.Helper()
-	return checkLogsListHandler(Deps{Engine: eng})(context.Background(), in, principalFor(tenant))
+	return checkLogsListHandler(Deps{Engine: eng})(context.Background(), in, principalFor("t1"))
 }
 
 func idsOf(items []CheckLogSummary) []string {
@@ -121,7 +121,7 @@ func TestCheckLogsListFiltersOneAtATime(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := listCheckLogs(t, f.eng, "t1", tc.in)
+			got, err := listCheckLogs(t, f.eng, tc.in)
 			if err != nil {
 				t.Fatalf("checkLogs.list: %v", err)
 			}
@@ -142,7 +142,7 @@ func TestCheckLogsListDecisionErrorIsAKnownDecision(t *testing.T) {
 	e := seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", Decision: "error", Error: "boom", CreatedAt: checkLogT0})
 	seedCheckLog(t, eng, &checklog.Entry{TenantID: "t1", Decision: "allow", CreatedAt: checkLogT0})
 
-	got, err := listCheckLogs(t, eng, "t1", CheckLogsListInput{Decision: "error"})
+	got, err := listCheckLogs(t, eng, CheckLogsListInput{Decision: "error"})
 	if err != nil {
 		t.Fatalf("checkLogs.list: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestCheckLogsListPagesNewestFirst(t *testing.T) {
 		ids = append(ids, e.ID.String())
 	}
 
-	got, err := listCheckLogs(t, eng, "t1", CheckLogsListInput{PageRequest: PageRequest{Limit: 10, Offset: 20}})
+	got, err := listCheckLogs(t, eng, CheckLogsListInput{PageRequest: PageRequest{Limit: 10, Offset: 20}})
 	if err != nil {
 		t.Fatalf("checkLogs.list: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestCheckLogsListPagesNewestFirst(t *testing.T) {
 
 func TestCheckLogsListEmptyPageIsAnEmptyArray(t *testing.T) {
 	eng := testEngine(t, warden.Config{})
-	got, err := listCheckLogs(t, eng, "t1", CheckLogsListInput{})
+	got, err := listCheckLogs(t, eng, CheckLogsListInput{})
 	if err != nil {
 		t.Fatalf("checkLogs.list: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestCheckLogsListRefusals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := listCheckLogs(t, eng, "t1", tc.in)
+			_, err := listCheckLogs(t, eng, tc.in)
 			var ce *dashcontract.Error
 			if !errorsAs(err, &ce) || ce.Code != dashcontract.CodeBadRequest {
 				t.Fatalf("want BAD_REQUEST, got %v", err)
@@ -223,7 +223,7 @@ func TestCheckLogsListRefusals(t *testing.T) {
 func TestCheckLogsTenantIsolation(t *testing.T) {
 	f := newCheckLogFixture(t)
 
-	got, err := listCheckLogs(t, f.eng, "t1", CheckLogsListInput{})
+	got, err := listCheckLogs(t, f.eng, CheckLogsListInput{})
 	if err != nil {
 		t.Fatalf("checkLogs.list: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestCheckLogsDetailRefusals(t *testing.T) {
 
 func TestCheckLogsListReportsWhatWasNotRecorded(t *testing.T) {
 	eng := testEngine(t, warden.Config{})
-	got, err := listCheckLogs(t, eng, "t1", CheckLogsListInput{})
+	got, err := listCheckLogs(t, eng, CheckLogsListInput{})
 	if err != nil {
 		t.Fatalf("checkLogs.list: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestCheckLogsListReportsWhatWasNotRecorded(t *testing.T) {
 func TestCheckLogsListOmitsNotRecordedWhenLoggingIsOff(t *testing.T) {
 	off := false
 	eng := testEngine(t, warden.Config{EnableCheckLog: &off})
-	got, err := listCheckLogs(t, eng, "t1", CheckLogsListInput{})
+	got, err := listCheckLogs(t, eng, CheckLogsListInput{})
 	if err != nil {
 		t.Fatalf("checkLogs.list: %v", err)
 	}

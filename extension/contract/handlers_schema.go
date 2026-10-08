@@ -390,7 +390,7 @@ func schemaDiagnostics(in []*dsl.Diagnostic) []SchemaDiagnostic {
 // Order: syntax, then the things the dashboard refuses outright (imports,
 // another tenant, an app), then the resolver. A parse failure stops there,
 // because the program is partial and the later checks would report noise.
-func checkSource(src string, tenantID string) (*dsl.Program, []SchemaDiagnostic) {
+func checkSource(src, tenantID string) (*dsl.Program, []SchemaDiagnostic) {
 	prog, errs := dsl.Parse(schemaFile, []byte(src))
 	if len(errs) > 0 {
 		return nil, schemaDiagnostics(errs)
@@ -482,6 +482,11 @@ func planDigest(prune bool, source string, r *dsl.ApplyResult) string {
 			h.Write([]byte(line))
 		}
 	}
-	putUint(uint64(r.NoOps))
+	// A count is never negative; the clamp keeps the conversion exact.
+	noOps := r.NoOps
+	if noOps < 0 {
+		noOps = 0
+	}
+	putUint(uint64(noOps))
 	return hex.EncodeToString(h.Sum(nil))
 }

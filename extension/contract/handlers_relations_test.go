@@ -268,7 +268,7 @@ func TestRelationsWritesEmitAuditAndTheTypedHooks(t *testing.T) {
 		t.Errorf("createdBy = %q, want tester", rows[0].CreatedBy)
 	}
 
-	if _, err := relationsDeleteHandler(deps)(ctx, RelationDeleteInput{ID: ack.ID}, principalFor("t1")); err != nil {
+	if _, err := relationsDeleteHandler(deps)(ctx, RelationDeleteInput(ack), principalFor("t1")); err != nil {
 		t.Fatalf("relations.delete: %v", err)
 	}
 	del := probe.event(t, "relation.deleted")

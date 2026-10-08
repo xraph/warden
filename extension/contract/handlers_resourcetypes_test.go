@@ -413,7 +413,7 @@ func TestResourceTypesCreateReportsEveryProblemAtOnce(t *testing.T) {
 	}, principalFor("t1"))
 	ce := refusal(t, err, dashcontract.CodeBadRequest)
 	diags := diagnosticsOf(t, ce)
-	var order []string
+	order := make([]string, 0, len(diags))
 	for _, d := range diags {
 		order = append(order, d.Permission)
 	}
@@ -1162,7 +1162,7 @@ func TestResourceTypeCommandsEmitAudit(t *testing.T) {
 		t.Errorf("update event = %+v", up)
 	}
 
-	if _, err := resourceTypesDeleteHandler(deps)(ctx, ResourceTypeDeleteInput{ID: ack.ID}, principalFor("t1")); err != nil {
+	if _, err := resourceTypesDeleteHandler(deps)(ctx, ResourceTypeDeleteInput(ack), principalFor("t1")); err != nil {
 		t.Fatalf("resourceTypes.delete: %v", err)
 	}
 	del := probe.event(t, "resourcetype.deleted")

@@ -178,7 +178,7 @@ func TestCollectPolicyIssues_ReportsEveryBadRowInOnePass(t *testing.T) {
 	}
 	d.Name = "" // field issues arrive in the same pass as row issues
 	issues := collectPolicyIssues(d, allParts)
-	var got []int
+	got := make([]int, 0, len(issues.Conditions))
 	for _, ci := range issues.Conditions {
 		got = append(got, ci.Index)
 	}

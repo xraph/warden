@@ -55,12 +55,12 @@ func cut(t *testing.T, src, head string) string {
 	return src[:start] + src[end:]
 }
 
-func swap(t *testing.T, src, old, new string) string {
+func swap(t *testing.T, src, old, repl string) string {
 	t.Helper()
 	if n := strings.Count(src, old); n != 1 {
 		t.Fatalf("%q occurs %d times in:\n%s", old, n, src)
 	}
-	return strings.Replace(src, old, new, 1)
+	return strings.Replace(src, old, repl, 1)
 }
 
 func firstLineWith(t *testing.T, src, prefix string) int {
@@ -121,12 +121,12 @@ func TestSchemaRefusesEveryChangeToASystemEntity(t *testing.T) {
 		},
 		{
 			name: "creating a system role",
-			edit: func(t *testing.T, src string) string { return src + "\nrole root {\n    is_system = true\n}\n" },
+			edit: func(_ *testing.T, src string) string { return src + "\nrole root {\n    is_system = true\n}\n" },
 			at:   "role root", want: `"root" cannot be created as a system role`,
 		},
 		{
 			name: "creating a system permission",
-			edit: func(t *testing.T, src string) string {
+			edit: func(_ *testing.T, src string) string {
 				return src + "\npermission \"sys:write\" {\n    resource = sys\n    action = write\n    is_system = true\n}\n"
 			},
 			at: `permission "sys:write"`, want: `"sys:write" cannot be created as a system permission`,

@@ -15,12 +15,12 @@ import (
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
 
-// seedDocumentType declares `document` at ns for t1: owner takes a user,
+// seedDocumentType declares `document` at eng for t1: owner takes a user,
 // viewer a user or a group's members.
-func seedDocumentType(t *testing.T, s *memory.Store, ns string) {
+func seedDocumentType(t *testing.T, s *memory.Store) {
 	t.Helper()
 	err := s.CreateResourceType(context.Background(), &resourcetype.ResourceType{
-		TenantID: "t1", NamespacePath: ns, Name: "document",
+		TenantID: "t1", NamespacePath: "eng", Name: "document",
 		Relations: []resourcetype.RelationDef{
 			{Name: "owner", AllowedSubjects: []string{"user"}},
 			{Name: "viewer", AllowedSubjects: []string{"user", "group#member"}},
@@ -33,7 +33,7 @@ func seedDocumentType(t *testing.T, s *memory.Store, ns string) {
 
 func TestRelationsCreateObeysTheGoverningResourceType(t *testing.T) {
 	s := memory.New()
-	seedDocumentType(t, s, "eng")
+	seedDocumentType(t, s)
 	h := relationsCreateHandler(Deps{Engine: engineOver(t, s)})
 	ctx := context.Background()
 
@@ -138,7 +138,7 @@ func seedMarkedTuples(t *testing.T, s *memory.Store) {
 
 func TestRelationsListMarksTuplesThatBreakTheirResourceType(t *testing.T) {
 	s := memory.New()
-	seedDocumentType(t, s, "eng")
+	seedDocumentType(t, s)
 	ctx := context.Background()
 	// The list must judge what is stored, not trust it.
 	seedMarkedTuples(t, s)
@@ -204,7 +204,7 @@ func TestRelationsListWithholdsMarksFromACallerWhoCannotReadResourceTypes(t *tes
 	// relation reader alone gets the rows, no reasons, and a flag that
 	// says the rows were not checked, so no mark cannot read as "conforms".
 	s := memory.New()
-	seedDocumentType(t, s, "eng")
+	seedDocumentType(t, s)
 	seedMarkedTuples(t, s)
 	grantUser(t, s, "tester", "warden:relation:read")
 	h := relationsListHandler(Deps{Engine: engineOver(t, s)})
@@ -248,7 +248,7 @@ func TestRelationsListFailsWhenTheSchemaCannotBeRead(t *testing.T) {
 	// An unmarked row would claim a check that never ran, so a schema read
 	// error fails the list rather than returning rows without marks.
 	s := memory.New()
-	seedDocumentType(t, s, "eng")
+	seedDocumentType(t, s)
 	seedMarkedTuples(t, s)
 	grantUser(t, s, "tester", "warden:relation:read", "warden:resourcetype:read")
 	eng, err := warden.NewEngine(warden.WithStore(brokenTypes{s}))

@@ -102,12 +102,12 @@ func lineOf(t *testing.T, src, prefix string) int {
 }
 
 // replaceOnce edits src and fails when old is not in it exactly once.
-func replaceOnce(t *testing.T, src, old, new string) string {
+func replaceOnce(t *testing.T, src, old, repl string) string {
 	t.Helper()
 	if n := strings.Count(src, old); n != 1 {
 		t.Fatalf("%q occurs %d times in:\n%s", old, n, src)
 	}
-	return strings.Replace(src, old, new, 1)
+	return strings.Replace(src, old, repl, 1)
 }
 
 func TestApply_ProtectSystemRefusesEveryChangeToASystemEntity(t *testing.T) {
@@ -178,7 +178,7 @@ func TestApply_ProtectSystemRefusesEveryChangeToASystemEntity(t *testing.T) {
 		},
 		{
 			name: "creating a system role",
-			edit: func(t *testing.T, src string) string {
+			edit: func(_ *testing.T, src string) string {
 				return src + "\nrole root {\n    is_system = true\n}\n"
 			},
 			at:   "role root",
@@ -186,7 +186,7 @@ func TestApply_ProtectSystemRefusesEveryChangeToASystemEntity(t *testing.T) {
 		},
 		{
 			name: "creating a system permission",
-			edit: func(t *testing.T, src string) string {
+			edit: func(_ *testing.T, src string) string {
 				return src + "\npermission \"sys:write\" {\n    resource = sys\n    action = write\n    is_system = true\n}\n"
 			},
 			at:   `permission "sys:write"`,
@@ -210,7 +210,7 @@ func TestApply_ProtectSystemRefusesEveryChangeToASystemEntity(t *testing.T) {
 		},
 		{
 			name: "pruning a system role",
-			edit: func(t *testing.T, src string) string {
+			edit: func(_ *testing.T, src string) string {
 				start := strings.Index(src, "role admin {")
 				end := start + strings.Index(src[start:], "}\n") + 2
 				return src[:start] + src[end:]

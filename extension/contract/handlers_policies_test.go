@@ -72,7 +72,7 @@ func TestPoliciesListPagesThroughEveryRow(t *testing.T) {
 	}
 	h := policiesListHandler(Deps{Engine: engineOver(t, s)})
 
-	var seen []string
+	seen := make([]string, 0, 5)
 	for _, tc := range []struct {
 		offset int
 		want   []string
@@ -804,9 +804,9 @@ func storedPolicy(t *testing.T, s *memory.Store, pid string) *policy.Policy {
 	return got
 }
 
-func policyCount(t *testing.T, s *memory.Store, tenant string) int {
+func policyCount(t *testing.T, s *memory.Store) int {
 	t.Helper()
-	rows, err := s.ListPolicies(context.Background(), &policy.ListFilter{TenantID: tenant})
+	rows, err := s.ListPolicies(context.Background(), &policy.ListFilter{TenantID: "t1"})
 	if err != nil {
 		t.Fatalf("list policies: %v", err)
 	}
@@ -1008,7 +1008,7 @@ func TestPoliciesCreateRefusesEachDraftIssueAndStoresNothing(t *testing.T) {
 			if _, ok := ce.Details["conditions"]; !ok {
 				t.Error("details carries no conditions key")
 			}
-			if n := policyCount(t, s, "t1"); n != 0 {
+			if n := policyCount(t, s); n != 0 {
 				t.Errorf("a refused create stored %d policies", n)
 			}
 			if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
@@ -1036,7 +1036,7 @@ func TestPoliciesCreateNamesTheBadConditionByIndex(t *testing.T) {
 	if conds[0].Index != 2 || conds[0].Message == "" {
 		t.Errorf("condition issue = %+v, want index 2 with a message", conds[0])
 	}
-	if n := policyCount(t, s, "t1"); n != 0 {
+	if n := policyCount(t, s); n != 0 {
 		t.Errorf("a refused create stored %d policies", n)
 	}
 	if ev, ty := probe.emitted(); ev != 0 || ty != 0 {
@@ -1064,7 +1064,7 @@ func TestPoliciesCreateRefusesADuplicateNameInTheSameNamespaceOnly(t *testing.T)
 	if err := mk("ops"); err != nil {
 		t.Errorf("the same name in another namespace must succeed: %v", err)
 	}
-	if n := policyCount(t, s, "t1"); n != 2 {
+	if n := policyCount(t, s); n != 2 {
 		t.Errorf("stored %d policies, want 2", n)
 	}
 }
@@ -1076,7 +1076,7 @@ func TestPoliciesCreateRefusesAnInvalidNamespace(t *testing.T) {
 		_, err := h(context.Background(), PolicyCreateInput{PolicyDraft: cleanDraft(), NamespacePath: ns}, principalFor("t1"))
 		wantCode(t, err, dashcontract.CodeBadRequest)
 	}
-	if n := policyCount(t, s, "t1"); n != 0 {
+	if n := policyCount(t, s); n != 0 {
 		t.Errorf("a refused create stored %d policies", n)
 	}
 }
@@ -1562,7 +1562,7 @@ func TestPoliciesWritesEmitAuditAndTheTypedHooks(t *testing.T) {
 	}
 
 	beforeDelete := storedPolicy(t, s, ack.ID)
-	if _, err := policiesDeleteHandler(deps)(ctx, PolicyDeleteInput{ID: ack.ID}, p); err != nil {
+	if _, err := policiesDeleteHandler(deps)(ctx, PolicyDeleteInput(ack), p); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	del := probe.event(t, "policy.deleted")

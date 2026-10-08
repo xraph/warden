@@ -67,12 +67,13 @@ func requests() []*warden.CheckRequest {
 }
 
 func TestClassifyConditionMatchesTheEvaluator(t *testing.T) {
-	cases := []struct {
+	type conditionCase struct {
 		name    string
 		c       policy.Condition
 		problem ConditionProblem
 		reason  ConditionReason
-	}{
+	}
+	base := []conditionCase{
 		{"unknown operator throws", policy.Condition{Field: "context.ip", Operator: "approximately", Value: "x"}, ProblemThrows, ReasonUnknownOperator},
 		{"uncompilable regex throws", policy.Condition{Field: "subject.id", Operator: policy.OpRegex, Value: "(unclosed"}, ProblemThrows, ReasonInvalidRegex},
 		{"uncompilable regex throws even on an unresolvable field", policy.Condition{Field: "action.verb", Operator: policy.OpRegex, Value: "(unclosed"}, ProblemThrows, ReasonInvalidRegex},
@@ -142,13 +143,11 @@ func TestClassifyConditionMatchesTheEvaluator(t *testing.T) {
 	alwaysPresent := map[string]string{
 		"subject.kind": "user", "subject.id": "u1", "resource.type": "document", "resource.id": "d1", "action.name": "read",
 	}
-	for _, field := range []string{"subject.kind", "subject.id", "resource.type", "resource.id", "action.name"} {
-		cases = append(cases, []struct {
-			name    string
-			c       policy.Condition
-			problem ConditionProblem
-			reason  ConditionReason
-		}{
+	fields := []string{"subject.kind", "subject.id", "resource.type", "resource.id", "action.name"}
+	cases := make([]conditionCase, 0, len(base)+3*len(fields))
+	cases = append(cases, base...)
+	for _, field := range fields {
+		cases = append(cases, []conditionCase{
 			{"exists on " + field + " is always true", policy.Condition{Field: field, Operator: policy.OpExists}, ProblemAlwaysTrue, ReasonAlwaysPresent},
 			{"not_exists on " + field + " is always false", policy.Condition{Field: field, Operator: policy.OpNotExists}, ProblemAlwaysFalse, ReasonAlwaysPresent},
 			{"eq on " + field + " still depends on the check", policy.Condition{Field: field, Operator: policy.OpEquals, Value: alwaysPresent[field]}, ProblemNone, ReasonNone},
@@ -433,7 +432,9 @@ var regexCorpus = []string{"", "a\nb", "\n", "a", "u1", "line1\nline2", "  ", "!
 // analysis must NOT recognise, and requires each to fail on some value in the
 // corpus, so the corpus can tell the two apart.
 func TestEveryRegexRecognisedAsMatchingEverythingDoes(t *testing.T) {
-	recognised := []string{"", ".*", "a*", "x?", "(?s).*", "(.*)", ".*?", "(a|)", "a*b*", "[0-9]*", "(?i)a*", "x{0}"}
+	literals := []string{"", ".*", "a*", "x?", "(?s).*", "(.*)", ".*?", "(a|)", "a*b*", "[0-9]*", "(?i)a*", "x{0}"}
+	recognised := make([]string, 0, len(literals)+len(matchEveryRegex))
+	recognised = append(recognised, literals...)
 	for p := range matchEveryRegex {
 		recognised = append(recognised, p)
 	}

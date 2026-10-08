@@ -288,7 +288,7 @@ func TestPermissionsDetailGrantedByCoversEveryPageAndIsSorted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("permissions.detail: %v", err)
 	}
-	var slugs []string
+	slugs := make([]string, 0, len(got.GrantedBy))
 	for _, r := range got.GrantedBy {
 		slugs = append(slugs, r.Slug)
 	}
@@ -316,7 +316,7 @@ func TestPermissionsListIsScopedToItsOwnTenant(t *testing.T) {
 	}
 	// Identity, not count: a count assertion passes when the wrong rows
 	// arrive in the right quantity.
-	var names []string
+	names := make([]string, 0, len(got.Items))
 	for _, it := range got.Items {
 		names = append(names, it.Name)
 	}
@@ -357,7 +357,7 @@ func TestPermissionsDetailGrantedByExcludesAnotherTenantsRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("permissions.detail: %v", err)
 	}
-	var slugs []string
+	slugs := make([]string, 0, len(got.GrantedBy))
 	for _, r := range got.GrantedBy {
 		slugs = append(slugs, r.Slug)
 	}

@@ -21,8 +21,8 @@ import (
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 )
 
-// seedReader lets user:subject read document in tenant.
-func seedReader(t *testing.T, s *memory.Store, tenant, subject string) *role.Role {
+// seedReader lets user:alice read document in tenant.
+func seedReader(t *testing.T, s *memory.Store, tenant string) *role.Role {
 	t.Helper()
 	ctx := context.Background()
 	r := &role.Role{TenantID: tenant, Name: "Reader", Slug: "reader"}
@@ -37,7 +37,7 @@ func seedReader(t *testing.T, s *memory.Store, tenant, subject string) *role.Rol
 		t.Fatalf("attach: %v", err)
 	}
 	if err := s.CreateAssignment(ctx, &assignment.Assignment{
-		TenantID: tenant, RoleID: r.ID, SubjectKind: "user", SubjectID: subject,
+		TenantID: tenant, RoleID: r.ID, SubjectKind: "user", SubjectID: "alice",
 	}); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestPlaygroundExplainInputHasNoTenantField(t *testing.T) {
 
 func TestPlaygroundExplainIsScopedToTheCallersTenant(t *testing.T) {
 	s := memory.New()
-	seedReader(t, s, "t2", "alice") // only t2 grants alice
+	seedReader(t, s, "t2") // only t2 grants alice
 	deps := Deps{Engine: engineOver(t, s)}
 
 	got := runExplain(t, deps, aliceReads())
@@ -174,7 +174,7 @@ func TestPlaygroundExplainIsScopedToTheCallersTenant(t *testing.T) {
 
 	// The same grant in t1 does allow, so the noMatch above is the tenant
 	// scope and not a broken seed.
-	seedReader(t, s, "t1", "alice")
+	seedReader(t, s, "t1")
 	got = runExplain(t, deps, aliceReads())
 	if !got.Allowed {
 		t.Fatalf("t1 grant did not allow: %+v", got)
@@ -192,7 +192,7 @@ func TestPlaygroundExplainRefusesWithoutATenant(t *testing.T) {
 
 func TestPlaygroundExplainProjectsAnRBACAllow(t *testing.T) {
 	s := memory.New()
-	reader := seedReader(t, s, "t1", "alice")
+	reader := seedReader(t, s, "t1")
 	got := runExplain(t, Deps{Engine: engineOver(t, s)}, aliceReads())
 
 	if !got.Allowed || got.Decision != string(warden.DecisionAllow) {
@@ -243,7 +243,7 @@ func TestPlaygroundExplainProjectsAnRBACAllow(t *testing.T) {
 
 func TestPlaygroundExplainProjectsAnExplicitDenyOverAnRBACAllow(t *testing.T) {
 	s := memory.New()
-	seedReader(t, s, "t1", "alice")
+	seedReader(t, s, "t1")
 	deny := seedPolicy(t, s, "", "no-reads", func(p *policy.Policy) {
 		p.Effect = policy.EffectDeny
 		p.Actions = []string{"read"}
@@ -361,7 +361,7 @@ func TestPlaygroundExplainWritesNoCheckLog(t *testing.T) {
 	}
 
 	s := memory.New()
-	seedReader(t, s, "t1", "alice")
+	seedReader(t, s, "t1")
 	eng := engineOver(t, s)
 	runExplain(t, Deps{Engine: eng}, aliceReads())
 	// Stopping flushes the writer, so a row that was queued has landed.
@@ -375,7 +375,7 @@ func TestPlaygroundExplainWritesNoCheckLog(t *testing.T) {
 	// The same request through Check does log, so the zero above is not a
 	// writer that never writes.
 	cs := memory.New()
-	seedReader(t, cs, "t1", "alice")
+	seedReader(t, cs, "t1")
 	ceng := engineOver(t, cs)
 	if _, err := ceng.Check(ctx, &warden.CheckRequest{
 		Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "alice"},
@@ -402,7 +402,7 @@ func (failingPermsStore) ListRolePermissionsForRoles(context.Context, string, []
 
 func TestPlaygroundExplainReportsAFailedModel(t *testing.T) {
 	s := memory.New()
-	seedReader(t, s, "t1", "alice")
+	seedReader(t, s, "t1")
 	eng, err := warden.NewEngine(warden.WithStore(failingPermsStore{s}))
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
@@ -535,7 +535,7 @@ func TestPlaygroundBatchAcceptsExactlyTheConfiguredCap(t *testing.T) {
 func TestPlaygroundBatchResultsMatchADryRunCheckInOrder(t *testing.T) {
 	ctx := context.Background()
 	s := memory.New()
-	seedReader(t, s, "t1", "alice")
+	seedReader(t, s, "t1")
 	eng := batchEngine(t, s, 10)
 	items := []PlaygroundBatchItem{
 		{SubjectKind: "user", SubjectID: "alice", Action: "read", ResourceType: "document", ResourceID: "doc1"},
@@ -624,7 +624,7 @@ func (b brokenRoleStore) ListRolePermissionsForRoles(ctx context.Context, tenant
 func TestPlaygroundBatchOneFailedItemDoesNotStopTheRest(t *testing.T) {
 	ctx := context.Background()
 	s := memory.New()
-	seedReader(t, s, "t1", "alice")
+	seedReader(t, s, "t1")
 	broken := &role.Role{TenantID: "t1", Name: "Broken", Slug: "broken"}
 	if err := s.CreateRole(ctx, broken); err != nil {
 		t.Fatalf("create role: %v", err)
@@ -713,7 +713,7 @@ func TestPlaygroundBatchLeavesNoCheckLogAndNoCacheEntry(t *testing.T) {
 	}
 
 	s := memory.New()
-	seedReader(t, s, "t1", "alice")
+	seedReader(t, s, "t1")
 	eng, cache := newEngine(s)
 	got := runBatch(t, Deps{Engine: eng}, PlaygroundBatchInput{Items: items})
 	if len(got.Results) != 2 {
@@ -738,7 +738,7 @@ func TestPlaygroundBatchLeavesNoCheckLogAndNoCacheEntry(t *testing.T) {
 	// The same requests through Check do log and cache, so the zeros above
 	// are not a writer and a cache that never write.
 	cs := memory.New()
-	seedReader(t, cs, "t1", "alice")
+	seedReader(t, cs, "t1")
 	ceng, ccache := newEngine(cs)
 	for i, it := range items {
 		r := req(it)
@@ -760,7 +760,7 @@ func TestPlaygroundBatchLeavesNoCheckLogAndNoCacheEntry(t *testing.T) {
 
 func TestPlaygroundBatchIsScopedToTheCallersTenant(t *testing.T) {
 	s := memory.New()
-	seedReader(t, s, "t2", "alice") // only t2 grants alice
+	seedReader(t, s, "t2") // only t2 grants alice
 	deps := Deps{Engine: batchEngine(t, s, 10)}
 
 	got := runBatch(t, deps, PlaygroundBatchInput{Items: batchOf(1)})
@@ -769,7 +769,7 @@ func TestPlaygroundBatchIsScopedToTheCallersTenant(t *testing.T) {
 	}
 	// The same grant in t1 does allow, so the deny above is the tenant
 	// scope and not a broken seed.
-	seedReader(t, s, "t1", "alice")
+	seedReader(t, s, "t1")
 	got = runBatch(t, deps, PlaygroundBatchInput{Items: batchOf(1)})
 	if !got.Results[0].Allowed {
 		t.Fatalf("t1 grant did not allow: %+v", got.Results[0])

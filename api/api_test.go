@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -27,7 +28,7 @@ func TestAPIHandler_CalledTwiceRegistersOnce(t *testing.T) {
 		t.Fatal("second Handler call built a new handler; want the first one back")
 	}
 	rec := httptest.NewRecorder()
-	second.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/roles", nil))
+	second.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/roles", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("GET /v1/roles: status = %d, want 401", rec.Code)
 	}
@@ -56,7 +57,7 @@ func TestAPIHandler_FailedRegistrationFailsTheSameEveryCall(t *testing.T) {
 	router := forge.NewRouter()
 	// The last route RegisterRoutes adds, taken already, so every route
 	// before it is registered when it fails.
-	if err := router.GET("/v1/check-logs", func(ctx forge.Context) error { return nil }); err != nil {
+	if err := router.GET("/v1/check-logs", func(_ forge.Context) error { return nil }); err != nil {
 		t.Fatalf("pre-register: %v", err)
 	}
 	a := New(eng, router)

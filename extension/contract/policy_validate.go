@@ -353,7 +353,7 @@ type PolicyValidateResponse struct {
 }
 
 func policiesValidateHandler(deps Deps) func(ctx context.Context, in PolicyDraft, p dashcontract.Principal) (PolicyValidateResponse, error) {
-	return func(ctx context.Context, in PolicyDraft, p dashcontract.Principal) (PolicyValidateResponse, error) {
+	return func(_ context.Context, in PolicyDraft, p dashcontract.Principal) (PolicyValidateResponse, error) {
 		if err := requireEngine(deps); err != nil {
 			return PolicyValidateResponse{}, err
 		}

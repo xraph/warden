@@ -274,8 +274,8 @@ func groupChain(n int) []expandSeed {
 	return append(seeds, expandSeed{objType: "group", objID: strconv.Itoa(n), rel: "member", subType: "user", subID: "bob"})
 }
 
-func expandIn(typ, id, rel string) RelationExpandInput {
-	return RelationExpandInput{ObjectType: typ, ObjectID: id, Relation: rel}
+func expandIn() RelationExpandInput {
+	return RelationExpandInput{ObjectType: "document", ObjectID: "1", Relation: "viewer"}
 }
 
 func expandWith(t *testing.T, s *memory.Store, cfg warden.Config, in RelationExpandInput) RelationExpandResponse {
@@ -309,7 +309,7 @@ func TestRelationsExpandProjectsNodesAndEdgesWithKeys(t *testing.T) {
 		{objType: "document", objID: "1", rel: "viewer", subType: "user", subID: "carol"},
 		{ns: "acme", objType: "group", objID: "eng", rel: "member", subType: "user", subID: "alice"},
 	})
-	in := expandIn("document", "1", "viewer")
+	in := expandIn()
 	in.NamespacePath = "acme"
 	got := expandWith(t, s, warden.Config{}, in)
 
@@ -349,7 +349,7 @@ func TestRelationsExpandProjectsNodesAndEdgesWithKeys(t *testing.T) {
 }
 
 func TestRelationsExpandSlicesAreNeverNull(t *testing.T) {
-	got := expandWith(t, memory.New(), warden.Config{}, expandIn("document", "1", "viewer"))
+	got := expandWith(t, memory.New(), warden.Config{}, expandIn())
 	raw, err := json.Marshal(got)
 	if err != nil {
 		t.Fatal(err)
@@ -365,7 +365,7 @@ func TestRelationsExpandSaysEveryStopReasonWithTheConfiguredLimit(t *testing.T) 
 	t.Run("depth", func(t *testing.T) {
 		s := memory.New()
 		seedExpand(t, s, groupChain(6))
-		got := expandWith(t, s, warden.Config{MaxGraphDepth: 2}, expandIn("document", "1", "viewer"))
+		got := expandWith(t, s, warden.Config{MaxGraphDepth: 2}, expandIn())
 		if got.Stop != "depth" || got.Limit != 2 {
 			t.Fatalf("stop=%q limit=%d, want depth 2", got.Stop, got.Limit)
 		}
@@ -380,7 +380,7 @@ func TestRelationsExpandSaysEveryStopReasonWithTheConfiguredLimit(t *testing.T) 
 	t.Run("visited", func(t *testing.T) {
 		s := memory.New()
 		seedExpand(t, s, groupChain(10))
-		got := expandWith(t, s, warden.Config{MaxGraphDepth: 50, MaxGraphVisited: 3}, expandIn("document", "1", "viewer"))
+		got := expandWith(t, s, warden.Config{MaxGraphDepth: 50, MaxGraphVisited: 3}, expandIn())
 		if got.Stop != "visited" || got.Limit != 3 {
 			t.Fatalf("stop=%q limit=%d, want visited 3", got.Stop, got.Limit)
 		}
@@ -395,7 +395,7 @@ func TestRelationsExpandSaysEveryStopReasonWithTheConfiguredLimit(t *testing.T) 
 			seeds = append(seeds, expandSeed{objType: "document", objID: "1", rel: "viewer", subType: "user", subID: "u" + strconv.Itoa(i)})
 		}
 		seedExpand(t, s, seeds)
-		got := expandWith(t, s, warden.Config{MaxGraphFanout: 3}, expandIn("document", "1", "viewer"))
+		got := expandWith(t, s, warden.Config{MaxGraphFanout: 3}, expandIn())
 		if got.Stop != "fanout" || got.Limit != 3 {
 			t.Fatalf("stop=%q limit=%d, want fanout 3", got.Stop, got.Limit)
 		}
@@ -407,7 +407,7 @@ func TestRelationsExpandSaysEveryStopReasonWithTheConfiguredLimit(t *testing.T) 
 	t.Run("complete", func(t *testing.T) {
 		s := memory.New()
 		seedExpand(t, s, groupChain(2))
-		got := expandWith(t, s, warden.Config{}, expandIn("document", "1", "viewer"))
+		got := expandWith(t, s, warden.Config{}, expandIn())
 		if got.Stop != "complete" || got.Limit != 0 {
 			t.Fatalf("stop=%q limit=%d, want complete 0", got.Stop, got.Limit)
 		}
@@ -428,7 +428,7 @@ func TestRelationsExpandPathMatchesTheEnginesPathTo(t *testing.T) {
 	}
 
 	// A single subject: every key is the engine's own label.
-	in := expandIn("document", "1", "viewer")
+	in := expandIn()
 	in.PathToType, in.PathToID = "user", "bob"
 	got, err := h(context.Background(), in, principalFor("t1"))
 	if err != nil {
@@ -494,7 +494,7 @@ func TestRelationsExpandCapsNodesButKeepsTheRootAndThePath(t *testing.T) {
 	seedExpand(t, s, seeds)
 	cfg := warden.Config{MaxGraphFanout: 100000}
 
-	got := expandWith(t, s, cfg, expandIn("document", "1", "viewer"))
+	got := expandWith(t, s, cfg, expandIn())
 	if got.Stop != "complete" {
 		t.Fatalf("stop = %q, want complete", got.Stop)
 	}
@@ -522,7 +522,7 @@ func TestRelationsExpandCapsNodesButKeepsTheRootAndThePath(t *testing.T) {
 
 	// A node on the requested path stays even past the cap, with the edge
 	// that reaches it.
-	in := expandIn("document", "1", "viewer")
+	in := expandIn()
 	in.PathToType, in.PathToID = "user", "u2004"
 	got = expandWith(t, s, cfg, in)
 	if len(got.Nodes) != 2001 || got.TruncatedNodes != 5 {
@@ -539,7 +539,7 @@ func TestRelationsExpandCapsNodesButKeepsTheRootAndThePath(t *testing.T) {
 	// Under the cap nothing is left out.
 	small := memory.New()
 	seedExpand(t, small, groupChain(2))
-	if r := expandWith(t, small, warden.Config{}, expandIn("document", "1", "viewer")); r.TruncatedNodes != 0 {
+	if r := expandWith(t, small, warden.Config{}, expandIn()); r.TruncatedNodes != 0 {
 		t.Errorf("truncatedNodes = %d under the cap, want 0", r.TruncatedNodes)
 	}
 }
@@ -552,7 +552,7 @@ func TestRelationsExpandCascadesFromAncestorNamespaces(t *testing.T) {
 		{ns: "acme/eng", objType: "document", objID: "1", rel: "viewer", subType: "user", subID: "eng"},
 		{ns: "acme/ops", objType: "document", objID: "1", rel: "viewer", subType: "user", subID: "ops"},
 	})
-	in := expandIn("document", "1", "viewer")
+	in := expandIn()
 	in.NamespacePath = "acme/eng"
 	got := expandWith(t, s, warden.Config{}, in)
 
@@ -598,7 +598,7 @@ func TestRelationsExpandIsScopedToItsOwnTenant(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create other tenant's tuple: %v", err)
 	}
-	got := expandWith(t, s, warden.Config{}, expandIn("document", "1", "viewer"))
+	got := expandWith(t, s, warden.Config{}, expandIn())
 	for _, n := range got.Nodes {
 		if n.ID == "theirs" {
 			t.Fatal("t1 can see t2's tuple: tenant scoping is not applied")
@@ -616,7 +616,7 @@ func TestRelationsExpandNotWalkedByACustomWalkerIsReported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := relationsExpandHandler(Deps{Engine: eng})(context.Background(), expandIn("document", "1", "viewer"), principalFor("t1"))
+	got, err := relationsExpandHandler(Deps{Engine: eng})(context.Background(), expandIn(), principalFor("t1"))
 	if err != nil {
 		t.Fatalf("relations.expand: %v", err)
 	}
@@ -729,7 +729,7 @@ func TestRelationsExpandNodeWithADroppedEdgeIsNotWalked(t *testing.T) {
 	}
 	seedExpand(t, s, seeds)
 
-	got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000}, expandIn("document", "1", "viewer"))
+	got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000}, expandIn())
 	if len(got.Nodes) != 2000 || got.TruncatedNodes != 7 {
 		t.Fatalf("got %d nodes, truncatedNodes %d, want 2000 and 7", len(got.Nodes), got.TruncatedNodes)
 	}
@@ -759,7 +759,7 @@ func TestRelationsExpandAMultiHopPathThroughDroppedNodesIsKeptWhole(t *testing.T
 		expandSeed{objType: "team", objID: "deep", rel: "member", subType: "user", subID: "target"},
 	)
 	seedExpand(t, s, seeds)
-	in := expandIn("document", "1", "viewer")
+	in := expandIn()
 	in.PathToType, in.PathToID = "user", "target"
 
 	got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000, MaxGraphVisited: 100000}, in)
@@ -820,7 +820,7 @@ func TestRelationsExpandCappedSaysWhyASetIsNotWalked(t *testing.T) {
 		}
 		seedExpand(t, s, seeds)
 
-		got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000}, expandIn("document", "1", "viewer"))
+		got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000}, expandIn())
 		if len(got.Nodes) != 2000 || got.TruncatedNodes != 3 {
 			t.Fatalf("got %d nodes, truncatedNodes %d, want 2000 and 3", len(got.Nodes), got.TruncatedNodes)
 		}
@@ -844,7 +844,7 @@ func TestRelationsExpandCappedSaysWhyASetIsNotWalked(t *testing.T) {
 	t.Run("a frontier set was never walked, and the cap did not touch it", func(t *testing.T) {
 		s := memory.New()
 		seedExpand(t, s, groupChain(6))
-		got := expandWith(t, s, warden.Config{MaxGraphDepth: 2}, expandIn("document", "1", "viewer"))
+		got := expandWith(t, s, warden.Config{MaxGraphDepth: 2}, expandIn())
 		if n := nodeByKey(t, got, "group:2#member"); n.Walked || n.Capped {
 			t.Errorf("group:2 = %+v, want walked false and capped false", n)
 		}
@@ -859,7 +859,7 @@ func TestRelationsExpandCappedSaysWhyASetIsNotWalked(t *testing.T) {
 			seeds = append(seeds, expandSeed{objType: "group", objID: "mid", rel: "member", subType: "user", subID: "u" + strconv.Itoa(i)})
 		}
 		seedExpand(t, s, seeds)
-		got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000}, expandIn("document", "1", "viewer"))
+		got := expandWith(t, s, warden.Config{MaxGraphFanout: 100000}, expandIn())
 		if n := nodeByKey(t, got, "group:mid#member"); n.Walked || !n.Capped {
 			t.Errorf("mid = %+v, want walked false and capped true", n)
 		}
@@ -867,7 +867,7 @@ func TestRelationsExpandCappedSaysWhyASetIsNotWalked(t *testing.T) {
 	t.Run("the wire carries capped on every node", func(t *testing.T) {
 		s := memory.New()
 		seedExpand(t, s, groupChain(1))
-		got := expandWith(t, s, warden.Config{}, expandIn("document", "1", "viewer"))
+		got := expandWith(t, s, warden.Config{}, expandIn())
 		raw, err := json.Marshal(got.Nodes[0])
 		if err != nil {
 			t.Fatal(err)
