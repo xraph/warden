@@ -232,3 +232,124 @@ resource document {
 		t.Errorf("expected expression operator 'or', got %v", got)
 	}
 }
+
+// The resolver refuses a role parent outside the role's own namespace,
+// so parent completion offers only roles in that namespace: the bare slug,
+// plus the absolute path into the namespace when it is not the root. The
+// role being declared is never offered as its own parent.
+func TestCompletion_RoleParentOnlyFromOwnNamespace(t *testing.T) {
+	roles := `warden config 1
+tenant t1
+
+role viewer {
+    name = "Root Viewer"
+    grants = ["doc:read"]
+}
+
+namespace eng {
+    role viewer {
+        name = "Eng Viewer"
+        grants = ["doc:read"]
+    }
+    role lead {
+        name = "Eng Lead"
+        grants = ["doc:read"]
+    }
+    namespace backend {
+        role oncall {
+            name = "Backend Oncall"
+            grants = ["doc:read"]
+        }
+    }
+}
+
+namespace ops {
+    role viewer {
+        name = "Ops Viewer"
+        grants = ["doc:read"]
+    }
+}
+`
+	cases := []struct {
+		name    string
+		src     string
+		want    map[string]string // label -> role name its Detail starts with
+		notWant []string
+	}{
+		{
+			name: "root",
+			src: `warden config 1
+tenant t1
+
+role admin : `,
+			want:    map[string]string{"viewer": "Root Viewer"},
+			notWant: []string{"admin", "/viewer", "lead", "/eng/viewer", "/eng/lead", "/eng/backend/oncall", "oncall", "/ops/viewer"},
+		},
+		{
+			name: "namespace",
+			src: `warden config 1
+tenant t1
+
+namespace eng {
+    role admin : `,
+			want:    map[string]string{"viewer": "Eng Viewer", "/eng/viewer": "Eng Viewer", "lead": "Eng Lead", "/eng/lead": "Eng Lead"},
+			notWant: []string{"admin", "/eng/admin", "/eng/backend/oncall", "oncall", "/ops/viewer"},
+		},
+		{
+			name: "nested namespace",
+			src: `warden config 1
+tenant t1
+
+namespace "eng" {
+    role other {
+        name = "Other"
+    }
+    namespace backend {
+        role admin : `,
+			want:    map[string]string{"oncall": "Backend Oncall", "/eng/backend/oncall": "Backend Oncall"},
+			notWant: []string{"admin", "/eng/backend/admin", "other", "viewer", "lead", "/eng/viewer", "/eng/lead", "/ops/viewer"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cli, cleanup := newTestPair(t)
+			defer cleanup()
+			cli.request("initialize", initializeParams{})
+
+			open := didOpenParams{}
+			open.TextDocument.URI = "file:///roles.warden"
+			open.TextDocument.LanguageID = "warden"
+			open.TextDocument.Version = 1
+			open.TextDocument.Text = roles
+			cli.notify("textDocument/didOpen", open)
+			cli.expectNotification()
+
+			lines := strings.Split(tc.src, "\n")
+			last := len(lines) - 1
+			items := completionAt(t, cli, "file:///admin.warden", tc.src, last, len(lines[last]))
+
+			byLabel := map[string][]completionItem{}
+			for _, it := range items {
+				byLabel[it.Label] = append(byLabel[it.Label], it)
+			}
+			for label, roleName := range tc.want {
+				got := byLabel[label]
+				if len(got) != 1 {
+					t.Errorf("label %q offered %d times, want once; all labels %v", label, len(got), labels(items))
+					continue
+				}
+				if !strings.HasPrefix(got[0].Detail, roleName) {
+					t.Errorf("label %q detail = %q, want the role %q", label, got[0].Detail, roleName)
+				}
+			}
+			for _, label := range tc.notWant {
+				if _, ok := byLabel[label]; ok {
+					t.Errorf("label %q offered, but it is outside the role's namespace; all labels %v", label, labels(items))
+				}
+			}
+			if len(items) != len(tc.want) {
+				t.Errorf("got %d items %v, want exactly %d", len(items), labels(items), len(tc.want))
+			}
+		})
+	}
+}
