@@ -93,12 +93,19 @@ signs:
   # single verification covers every archive it lists. The CI job
   # installs cosign before this step runs; there's nothing to configure
   # locally unless you also want to sign snapshot builds.
+  #
+  # cosign v3 (what cosign-installer v4 ships) writes a single Sigstore
+  # bundle holding the signature and certificate, and refuses to sign-blob
+  # without --bundle. Verify a release with:
+  #   cosign verify-blob --bundle checksums.txt.sigstore.json \
+  #     --certificate-identity-regexp 'https://github.com/xraph/warden/' \
+  #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  #     checksums.txt
   - cmd: cosign
-    certificate: '${artifact}.pem'
+    signature: '${artifact}.sigstore.json'
     args:
       - sign-blob
-      - '--output-signature=${signature}'
-      - '--output-certificate=${certificate}'
+      - '--bundle=${signature}'
       - '${artifact}'
       - '--yes'
     artifacts: checksum
