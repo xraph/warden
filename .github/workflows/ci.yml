@@ -19,7 +19,7 @@ jobs:
   # probes for Makefile targets per step and falls back to the plain go
   # commands these jobs used to run inline.
   ci:
-    uses: xraph/workflows/.github/workflows/go-ci.yml@1fb7007e92faefba7fa820084412d853d552aad6 # v1.18.0
+    uses: xraph/workflows/.github/workflows/go-ci.yml@adbc00609c913abaabd7b38d11533e0a44b92432 # v1.19.0
     permissions:
       contents: read
       # required by go-ci.yml's gosec SARIF upload
