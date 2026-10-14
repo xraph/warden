@@ -7,14 +7,14 @@ import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 
 Warden supports four authorization models that can be used independently or combined in a single `Check()` call:
 
-- **RBAC** — Role-Based Access Control (roles + permissions + assignments)
-- **ABAC** — Attribute-Based Access Control (policies with conditional matchers)
-- **ReBAC** — Relationship-Based Access Control (Zanzibar-style relation tuples)
-- **PBAC** — Policy-Based Access Control (ABAC plus time-bound windows and obligations)
+- RBAC: Role-Based Access Control (roles + permissions + assignments)
+- ABAC: Attribute-Based Access Control (policies with conditional matchers)
+- ReBAC: Relationship-Based Access Control (Zanzibar-style relation tuples)
+- PBAC: Policy-Based Access Control (ABAC plus time-bound windows and obligations)
 
 Every config example on this page comes in two flavours: **Go** (call the store directly) and **DSL** (write `.warden` source and apply via [`warden apply`](/docs/integration/dsl-tooling#cli) or [`dsl.ApplyFS`](/docs/integration/dsl-tooling#programmatic-apply)). They produce identical state.
 
-## RBAC — Role-Based Access Control
+## RBAC: Role-Based Access Control
 
 RBAC is the most common authorization model. Users are assigned roles, and roles have permissions.
 
@@ -24,9 +24,9 @@ User → Role → Permission → (Resource, Action)
 
 **Entities:**
 
-- **Role** — A named group of permissions (e.g., "admin", "editor", "viewer")
-- **Permission** — A (resource, action) pair (e.g., "document:read", "user:delete")
-- **Assignment** — Links a subject to a role, optionally scoped to a resource
+- Role: A named group of permissions (e.g., "admin", "editor", "viewer")
+- Permission: A (resource, action) pair (e.g., "document:read", "user:delete")
+- Assignment: Links a subject to a role, optionally scoped to a resource
 
 **When to use:** When you have well-defined roles with predictable permission sets. Most applications start here.
 
@@ -37,11 +37,11 @@ User → Role → Permission → (Resource, Action)
 // Create role with permissions. IDs are auto-assigned by the store
 // on Create; the in-place mutation means role.ID is populated when
 // the call returns, ready for downstream uses.
-r := &role.Role{Name: "Editor", Slug: "editor"}
-p := &permission.Permission{Name: "document:write", Resource: "document", Action: "write"}
+r := &role.Role{TenantID: "acme", Name: "Editor", Slug: "editor"}
+p := &permission.Permission{TenantID: "acme", Name: "document:write", Resource: "document", Action: "write"}
 store.CreateRole(ctx, r)
 store.CreatePermission(ctx, p)
-store.AttachPermission(ctx, r.ID, permission.Ref{Name: "document:write"})
+store.AttachPermission(ctx, "acme", r.ID, permission.Ref{Name: "document:write"})
 
 // Assign role to user (assignments are runtime-only; not in the DSL).
 store.CreateAssignment(ctx, &assignment.Assignment{
@@ -69,7 +69,7 @@ role editor {
 }
 ```
 
-> Assignments aren't expressible in the DSL — they describe runtime data (who has which role), not configuration. Apply the DSL once for setup, then create assignments via `store.CreateAssignment` whenever subjects are provisioned.
+> Assignments aren't expressible in the DSL: they describe runtime data (who has which role), not configuration. Apply the DSL once for setup, then create assignments via `store.CreateAssignment` whenever subjects are provisioned.
 
 </Tab>
 </Tabs>
@@ -110,7 +110,7 @@ role viewer : editor  { name = "Viewer" }
 
 ### Resource-Scoped Assignments
 
-Assignments can be scoped to specific resources (runtime-only — no DSL form):
+Assignments can be scoped to specific resources (runtime-only: no DSL form):
 
 ```go
 // User is editor ONLY for project-123
@@ -123,7 +123,7 @@ store.CreateAssignment(ctx, &assignment.Assignment{
 })
 ```
 
-## ABAC — Attribute-Based Access Control
+## ABAC: Attribute-Based Access Control
 
 ABAC evaluates policies with conditions based on attributes of the request context.
 
@@ -133,8 +133,8 @@ Policy + Conditions → (subjects, actions, resources) → allow/deny
 
 **Entities:**
 
-- **Policy** — A rule with effect (allow/deny), subject/action/resource matchers, and conditions
-- **Condition** — A field/operator/value comparison (e.g., `ip_address ip_in_cidr 10.0.0.0/8`)
+- Policy: A rule with effect (allow/deny), subject/action/resource matchers, and conditions
+- Condition: A field/operator/value comparison (e.g., `ip_address ip_in_cidr 10.0.0.0/8`)
 
 **When to use:** When authorization depends on dynamic attributes like time of day, IP address, department, or custom metadata.
 
@@ -196,7 +196,7 @@ policy "deny-outside-office-hours" {
 
 The Go side uses `policy.Op*` constants; the DSL spells them as keywords. See [Policies & Conditions](/docs/authorization/policies-conditions#operators-reference) for the full table.
 
-## ReBAC — Relationship-Based Access Control
+## ReBAC: Relationship-Based Access Control
 
 ReBAC (inspired by Google Zanzibar) models authorization as a graph of relationships between objects.
 
@@ -206,8 +206,8 @@ subject#relation@object → transitive graph traversal
 
 **Entities:**
 
-- **Resource Type** — Defines valid relations and permissions for an object type
-- **Relation Tuple** — A (object_type, object_id, relation, subject_type, subject_id) record
+- Resource Type: Defines valid relations and permissions for an object type
+- Relation Tuple: A (object_type, object_id, relation, subject_type, subject_id) record
 
 **When to use:** When authorization depends on relationships between objects (document sharing, org membership, folder hierarchy).
 
@@ -251,7 +251,7 @@ resource project {
   permission write = editor
 }
 
-// Initial tuples — usually high-volume tuples are written at runtime
+// Initial tuples: usually high-volume tuples are written at runtime
 // via store.CreateRelation, not in source.
 relation document:doc-123      viewer = user:user-42
 relation project:project-alpha editor = team:team-eng#member
@@ -270,12 +270,12 @@ user:42 ──member──▶ team:eng ──editor──▶ project:alpha
 
 A check for "can user:42 edit project:alpha?" traverses the graph and finds the path through team:eng.
 
-## PBAC — Policy-Based Access Control
+## PBAC: Policy-Based Access Control
 
-PBAC builds on ABAC. Policies use the same `policy.Policy` type, evaluator, and storage shape — PBAC adds two orthogonal capabilities:
+PBAC builds on ABAC. Policies use the same `policy.Policy` type, evaluator, and storage shape: PBAC adds two orthogonal capabilities:
 
 1. **Time-bound policies** via `NotBefore` / `NotAfter`. Outside the window the policy is treated as `IsActive=false`. Either bound is optional.
-2. **Obligations** — named side-effect actions emitted in `CheckResult.Obligations` whenever the policy matches. Common values: `audit-log`, `require-mfa`, `notify-security`.
+2. Obligations: named side-effect actions emitted in `CheckResult.Obligations` whenever the policy matches. Common values: `audit-log`, `require-mfa`, `notify-security`.
 
 **When to use:** when policies need to activate for a scheduled window (incident freezes, Q2 access grants) or when matching needs to trigger downstream actions without changing the allow/deny outcome.
 
@@ -333,13 +333,13 @@ Warden evaluates all enabled models on every `Check()` call and merges results:
 3. No match                      → DENIED (default deny)
 ```
 
-ABAC/PBAC deny policies act as guardrails on top of RBAC and ReBAC grants. Obligations from every matched policy flow through to the final result regardless of which decision wins — they're side-effect signals, not part of the merge calculus.
+ABAC/PBAC deny policies act as guardrails on top of RBAC and ReBAC grants. Obligations from every matched policy flow through to the final result regardless of which decision wins: they're side-effect signals, not part of the merge calculus.
 
 ## Scoping the Models
 
 Every model evaluation is scoped by `(tenant_id, namespace_path)`:
 
-- **Tenant** — a hard wall. No model ever crosses tenants. See [Multi-Tenancy](/docs/concepts/multi-tenancy).
-- **Namespace** — a hierarchy *inside* a tenant. Roles, permissions, policies, and resource types declared at namespace `N` are visible from `N` and every descendant. Relation tuples don't cascade — they sit at exactly one namespace. See [Namespaces](/docs/concepts/namespaces).
+- Tenant: a hard wall. No model ever crosses tenants. See [Multi-Tenancy](/docs/concepts/multi-tenancy).
+- Namespace: a hierarchy *inside* a tenant. Roles, permissions, policies, and resource types declared at namespace `N` are visible from `N` and every descendant. Relation tuples don't cascade: they sit at exactly one namespace. See [Namespaces](/docs/concepts/namespaces).
 
-Single-team deployments can ignore both — entities at empty `tenant_id` and empty `namespace_path` are the natural default.
+Single-team deployments can ignore both: entities at empty `tenant_id` and empty `namespace_path` are the natural default.

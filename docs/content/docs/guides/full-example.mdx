@@ -3,9 +3,9 @@ title: Full Example
 description: A complete example combining RBAC, ABAC, and ReBAC in a single application.
 ---
 
-This example demonstrates all three authorization models working together.
+This example runs all three authorization models over one in-memory store and one tenant. It's a single program: copy it into `main.go` and run it with `go run .`.
 
-## Setup
+## The program
 
 ```go
 package main
@@ -14,149 +14,159 @@ import (
     "context"
     "fmt"
     "log"
-    "time"
 
     "github.com/xraph/warden"
     "github.com/xraph/warden/assignment"
-    "github.com/xraph/warden/id"
+    "github.com/xraph/warden/dsl"
     "github.com/xraph/warden/permission"
     "github.com/xraph/warden/policy"
     "github.com/xraph/warden/relation"
+    "github.com/xraph/warden/resourcetype"
     "github.com/xraph/warden/role"
     "github.com/xraph/warden/store/memory"
 )
 
 func main() {
-    ctx := context.Background()
+    ctx := warden.WithTenant(context.Background(), "docs-app", "acme")
     st := memory.New()
 
-    eng, err := warden.NewEngine(warden.WithStore(st))
+    eng, err := warden.NewEngine(
+        warden.WithStore(st),
+        // Evaluates resource-type permission expressions such as
+        // "read = viewer". The Forge extension wires this for you.
+        warden.WithExpressionEvaluator(dsl.NewEngineEvaluator(st)),
+    )
     if err != nil {
         log.Fatal(err)
     }
-```
 
-## Step 1: RBAC — Roles and Permissions
-
-```go
-    // IDs and CreatedAt/UpdatedAt timestamps are auto-assigned by the
-    // store on Create — no boilerplate. The pointer is mutated in
-    // place, so role.ID is populated by the time the call returns.
-
-    // Create permissions
-    readPerm := &permission.Permission{
-        Name: "doc:read", Resource: "document", Action: "read",
+    must := func(err error) {
+        if err != nil {
+            log.Fatal(err)
+        }
     }
-    writePerm := &permission.Permission{
-        Name: "doc:write", Resource: "document", Action: "write",
-    }
-    _ = st.CreatePermission(ctx, readPerm)
-    _ = st.CreatePermission(ctx, writePerm)
 
-    // Create roles
-    viewerRole := &role.Role{Name: "Viewer", Slug: "viewer"}
-    editorRole := &role.Role{Name: "Editor", Slug: "editor"}
-    _ = st.CreateRole(ctx, viewerRole)
-    _ = st.CreateRole(ctx, editorRole)
+    // ── Step 1: RBAC ──
+    // IDs and CreatedAt/UpdatedAt timestamps are assigned by the store
+    // on Create. The pointer is mutated in place, so role.ID is set by
+    // the time the call returns.
+    must(st.CreatePermission(ctx, &permission.Permission{
+        TenantID: "acme", Name: "document:read", Resource: "document", Action: "read",
+    }))
+    must(st.CreatePermission(ctx, &permission.Permission{
+        TenantID: "acme", Name: "document:write", Resource: "document", Action: "write",
+    }))
+
+    viewerRole := &role.Role{TenantID: "acme", Name: "Viewer", Slug: "viewer"}
+    editorRole := &role.Role{TenantID: "acme", Name: "Editor", Slug: "editor"}
+    must(st.CreateRole(ctx, viewerRole))
+    must(st.CreateRole(ctx, editorRole))
 
     // Attach permissions by name (not typeid).
-    _ = st.AttachPermission(ctx, viewerRole.ID, permission.Ref{Name: "doc:read"})
-    _ = st.AttachPermission(ctx, editorRole.ID, permission.Ref{Name: "doc:read"})
-    _ = st.AttachPermission(ctx, editorRole.ID, permission.Ref{Name: "doc:write"})
+    must(st.AttachPermission(ctx, "acme", viewerRole.ID, permission.Ref{Name: "document:read"}))
+    must(st.AttachPermission(ctx, "acme", editorRole.ID, permission.Ref{Name: "document:read"}))
+    must(st.AttachPermission(ctx, "acme", editorRole.ID, permission.Ref{Name: "document:write"}))
 
-    // Assign viewer role to user
-    _ = st.CreateAssignment(ctx, &assignment.Assignment{
-        RoleID:      viewerRole.ID,
-        SubjectKind: "user",
-        SubjectID:   "alice",
-    })
-```
+    // Alice is a viewer, Carol an editor.
+    must(st.CreateAssignment(ctx, &assignment.Assignment{
+        TenantID: "acme", RoleID: viewerRole.ID, SubjectKind: "user", SubjectID: "alice",
+    }))
+    must(st.CreateAssignment(ctx, &assignment.Assignment{
+        TenantID: "acme", RoleID: editorRole.ID, SubjectKind: "user", SubjectID: "carol",
+    }))
 
-## Step 2: ABAC — Policy Guardrails
-
-```go
-    // Deny writes after business hours
-    _ = st.CreatePolicy(ctx, &policy.Policy{
-        Name:      "Business Hours Only",
+    // ── Step 2: ABAC ──
+    // Deny writes to documents marked as locked.
+    must(st.CreatePolicy(ctx, &policy.Policy{
+        TenantID:  "acme",
+        Name:      "Locked documents are read-only",
         Effect:    policy.EffectDeny,
         Priority:  10,
         IsActive:  true,
-        Version:   1,
-        Subjects:  []string{"*"},
         Actions:   []string{"write", "delete"},
-        Resources: []string{"*"},
+        Resources: []string{"document:*"},
         Conditions: []policy.Condition{{
-            Field:    "time",
-            Operator: policy.OpTimeAfter,
-            Value:    "18:00",
+            Field:    "resource.attributes.locked",
+            Operator: policy.OpEquals,
+            Value:    true,
         }},
-    })
-```
+    }))
 
-## Step 3: ReBAC — Relationship-Based Sharing
-
-```go
-    // Bob can view doc-456 via direct relation
-    _ = st.CreateRelation(ctx, &relation.Tuple{
+    // ── Step 3: ReBAC ──
+    // The document type maps "read" to its viewer relation...
+    must(st.CreateResourceType(ctx, &resourcetype.ResourceType{
+        TenantID:    "acme",
+        Name:        "document",
+        Relations:   []resourcetype.RelationDef{{Name: "viewer", AllowedSubjects: []string{"user"}}},
+        Permissions: []resourcetype.PermissionDef{{Name: "read", Expression: "viewer"}},
+    }))
+    // ...and Bob is a viewer of doc-456.
+    must(st.CreateRelation(ctx, &relation.Tuple{
+        TenantID:    "acme",
         ObjectType:  "document",
         ObjectID:    "doc-456",
         Relation:    "viewer",
         SubjectType: "user",
         SubjectID:   "bob",
-    })
-```
+    }))
 
-## Step 4: Run Checks
+    // ── Step 4: Run checks ──
+    doc := func(id string, attrs map[string]any) warden.Resource {
+        return warden.Resource{Type: "document", ID: id, Attributes: attrs}
+    }
+    user := func(id string) warden.Subject {
+        return warden.Subject{Kind: warden.SubjectUser, ID: id}
+    }
 
-```go
     checks := []struct {
         name string
         req  *warden.CheckRequest
     }{
-        {
-            name: "Alice reads document (RBAC)",
-            req: &warden.CheckRequest{
-                Subject:      warden.Subject{Kind: "user", ID: "alice"},
-                Action:       "read",
-                ResourceType: "document",
-                ResourceID:   "doc-123",
-            },
-        },
-        {
-            name: "Alice writes document (RBAC - should fail, viewer only)",
-            req: &warden.CheckRequest{
-                Subject:      warden.Subject{Kind: "user", ID: "alice"},
-                Action:       "write",
-                ResourceType: "document",
-                ResourceID:   "doc-123",
-            },
-        },
-        {
-            name: "Bob views doc-456 (ReBAC)",
-            req: &warden.CheckRequest{
-                Subject:      warden.Subject{Kind: "user", ID: "bob"},
-                Action:       "read",
-                ResourceType: "document",
-                ResourceID:   "doc-456",
-            },
-        },
+        {"Alice reads doc-123 (RBAC)", &warden.CheckRequest{
+            Subject: user("alice"), Action: warden.Action{Name: "read"}, Resource: doc("doc-123", nil),
+        }},
+        {"Alice writes doc-123 (viewer only)", &warden.CheckRequest{
+            Subject: user("alice"), Action: warden.Action{Name: "write"}, Resource: doc("doc-123", nil),
+        }},
+        {"Carol writes doc-123 (RBAC)", &warden.CheckRequest{
+            Subject: user("carol"), Action: warden.Action{Name: "write"}, Resource: doc("doc-123", nil),
+        }},
+        {"Carol writes a locked doc (ABAC deny)", &warden.CheckRequest{
+            Subject: user("carol"), Action: warden.Action{Name: "write"},
+            Resource: doc("doc-789", map[string]any{"locked": true}),
+        }},
+        {"Bob reads doc-456 (ReBAC)", &warden.CheckRequest{
+            Subject: user("bob"), Action: warden.Action{Name: "read"}, Resource: doc("doc-456", nil),
+        }},
     }
 
     for _, c := range checks {
         result, err := eng.Check(ctx, c.req)
         if err != nil {
-            fmt.Printf("%-50s ERROR: %v\n", c.name, err)
+            fmt.Printf("%-40s ERROR: %v\n", c.name, err)
             continue
         }
-        fmt.Printf("%-50s allowed=%v reason=%q\n", c.name, result.Allowed, result.Reason)
+        fmt.Printf("%-40s allowed=%-5v decision=%s\n", c.name, result.Allowed, result.Decision)
     }
 }
 ```
 
-## Expected Output
+## What each step does
+
+Step 1 (RBAC) creates two permissions and two roles, attaches the permissions by name and assigns the roles. The store assigns IDs and timestamps on `Create` and writes them back into the struct you passed.
+
+Step 2 (ABAC) adds a deny policy. It matches `write` and `delete` on any document, and its condition reads `resource.attributes.locked` from the check request. Condition fields are dotted paths into the request: `subject.*`, `resource.*`, `action.name` and `context.*`. An explicit deny wins over any allow.
+
+Step 3 (ReBAC) defines the `document` resource type with `read = viewer` and adds a tuple making Bob a viewer of `doc-456`. Expressions like this need an expression evaluator on the engine: standalone, pass `warden.WithExpressionEvaluator(dsl.NewEngineEvaluator(st))`; the Forge extension wires one for you. Without it, a tuple only grants an action whose name equals the relation, so a `read` tuple would grant `read` but a `viewer` tuple would not.
+
+These writes go straight to the store, which doesn't fire the engine's hooks. With a cache configured you'd call `eng.InvalidateTenant(ctx, "acme")` afterwards; this example has no cache.
+
+## Expected output
 
 ```
-Alice reads document (RBAC)                        allowed=true  reason="rbac: granted"
-Alice writes document (RBAC - should fail)         allowed=false reason="default deny"
-Bob views doc-456 (ReBAC)                          allowed=true  reason="rebac: granted"
+Alice reads doc-123 (RBAC)               allowed=true  decision=allow
+Alice writes doc-123 (viewer only)       allowed=false decision=deny_no_perms
+Carol writes doc-123 (RBAC)              allowed=true  decision=allow
+Carol writes a locked doc (ABAC deny)    allowed=false decision=deny_explicit
+Bob reads doc-456 (ReBAC)                allowed=true  decision=allow
 ```

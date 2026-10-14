@@ -244,6 +244,14 @@ err := forge.OnBeforeRun(app, "document-routes", func(_ context.Context, a forge
 
 List Grove first, because Warden looks up the database during `Register`. If you don't use Grove, pass your store with `wardenext.WithStore(...)`.
 
+The extension hands the engine every store it finds, and the last one wins. In effect the order is:
+
+1. A grove store: the database named by `WithGroveDatabase` or `grove_database`, or else the default `*grove.DB` in the container, which the extension finds on its own.
+2. The store from `WithStore` (or a `warden.WithStore` passed through `WithEngineOptions`).
+3. A `store.Store` already registered in the container.
+
+So a grove store replaces your `WithStore` store whenever the Grove extension has registered a default database, even if you never asked for grove. If you want `WithStore` in such an app, don't register a default grove database. With none of these, the engine has no store and `Register` fails.
+
 The management API requires an authenticated caller on every route by default. Turning that off with `auth.require_identity: false` is refused at startup unless you also pass `wardenext.WithInsecureAllowUnauthenticatedRoutes()`, so nobody switches it off by accident. Being signed in is not enough on its own, either: the API also authorizes each call, and nobody holds the management permissions until something grants them. Call `authz.BootstrapAdmin(ctx, tenantID, subject)` once per tenant, after start, to create a `warden-admin` role and assign it to your first operator. It's safe to call again.
 
 ## Configuration

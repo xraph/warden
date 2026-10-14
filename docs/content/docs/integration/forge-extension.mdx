@@ -9,20 +9,28 @@ Warden provides a first-class Forge extension that handles lifecycle, dependency
 
 ```go
 import (
+    "log"
+
     "github.com/xraph/forge"
     wardenext "github.com/xraph/warden/extension"
+    "github.com/xraph/warden/store/memory"
 )
 
-app := forge.New()
-app.Use(wardenext.New(
-    wardenext.WithStore(store),
-    wardenext.WithConfig(wardenext.Config{
-        DisableRoutes:  false,  // Set true to skip API route registration
-        DisableMigrate: false,  // Set true to skip auto-migration
-    }),
-))
-app.Start(context.Background())
+authz := wardenext.New(
+    wardenext.WithStore(memory.New()),
+)
+
+app := forge.NewApp(forge.AppConfig{
+    Name:       "docs-api",
+    Extensions: []forge.Extension{authz},
+})
+
+if err := app.Run(); err != nil {
+    log.Fatal(err)
+}
 ```
+
+`app.RegisterExtension(authz)` works too, as long as you call it before the app starts. If you use the Grove extension for your database, list it before Warden, because Warden looks up the `*grove.DB` during `Register`.
 
 You must supply a store, either via `WithStore`, `WithGroveDatabase`, or a `store.Store` already registered in the Forge DI container: there's no automatic in-memory fallback. `warden.NewEngine` (which `Register` calls internally) returns an error if no store resolves.
 
@@ -64,11 +72,12 @@ It creates (idempotently, by slug `warden-admin`) a system role in `tenantID` wi
 
 ```go
 ext := wardenext.New(wardenext.WithStore(store))
-app.Use(ext)
-if err := app.Start(ctx); err != nil {
-    log.Fatal(err)
-}
-if err := ext.BootstrapAdmin(ctx, "tenant-1", warden.Subject{Kind: warden.SubjectUser, ID: "you"}); err != nil {
+app := forge.NewApp(forge.AppConfig{Name: "docs-api", Extensions: []forge.Extension{ext}})
+
+err := app.RegisterHookFn(forge.PhaseAfterStart, "warden-bootstrap", func(ctx context.Context, _ forge.App) error {
+    return ext.BootstrapAdmin(ctx, "tenant-1", warden.Subject{Kind: warden.SubjectUser, ID: "you"})
+})
+if err != nil {
     log.Fatal(err)
 }
 ```
@@ -104,16 +113,16 @@ Safe to call repeatedly: the role, its permissions, the attachments, and the ass
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithStore(s)` | `store.Store` | -- | Sets the persistence backend directly |
+| `WithStore(s)` | `store.Store` | none | Sets the persistence backend, unless a grove database is found (see below) |
 | `WithConfig(cfg)` | `Config` | defaults | Extension configuration |
-| `WithEngineOptions(opts...)` | `...warden.Option` | -- | Pass engine-level options |
-| `WithPlugin(x)` | `plugin.Plugin` | -- | Register a lifecycle plugin (repeatable) |
-| `WithDisableRoutes()` | -- | `false` | Skip HTTP route registration |
-| `WithDisableMigrate()` | -- | `false` | Skip migrations on Start |
+| `WithEngineOptions(opts...)` | `...warden.Option` | none | Pass engine-level options |
+| `WithPlugin(x)` | `plugin.Plugin` | none | Register a lifecycle plugin (repeatable) |
+| `WithDisableRoutes()` | none | `false` | Skip HTTP route registration |
+| `WithDisableMigrate()` | none | `false` | Skip migrations on Start |
 | `WithBasePath(path)` | `string` | `"/warden"` | URL prefix for warden routes |
 | `WithGroveDatabase(name)` | `string` | `""` | Named grove.DB to resolve from DI |
-| `WithRequireConfig()` | -- | `false` | Require config in YAML files |
-| `WithInsecureAllowUnauthenticatedRoutes()` | -- | `false` | Required alongside `auth.require_identity: false`; see above |
+| `WithRequireConfig()` | none | `false` | Require config in YAML files |
+| `WithInsecureAllowUnauthenticatedRoutes()` | none | `false` | Required alongside `auth.require_identity: false`; see above |
 
 ## Accessing the Engine
 
@@ -127,8 +136,7 @@ Or, if you kept a reference to the extension itself, `Engine()` returns it direc
 
 ```go
 ext := wardenext.New(wardenext.WithStore(store))
-app.Use(ext)
-// ... after app.Start ...
+// ... register ext with the app; after Register has run ...
 eng := ext.Engine()
 result, err := eng.Check(ctx, &warden.CheckRequest{
     Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "user-42"},
@@ -161,15 +169,17 @@ ext := wardenext.New(
 )
 ```
 
-This resolves the grove.DB named `"warden"` from the DI container and auto-constructs the matching store. The driver type is detected automatically -- you do not need to import individual store packages.
+This resolves the grove.DB named `"warden"` from the DI container and auto-constructs the matching store. The driver type is detected automatically, so you don't import the store packages yourself.
 
 ### Store resolution order
 
-The extension resolves its store in this order:
+The extension hands the engine every store it finds, and the last one wins. In effect the order is:
 
-1. **Explicit store** -- if `WithStore(s)` was called, it is used directly and grove is ignored.
-2. **Grove database** -- if `WithGroveDatabase(name)` was called, or a `grove.DB` is auto-discovered in the DI container, the matching store backend (`postgres`, `sqlite`, or `mongo`) is built from it.
-3. **DI-registered store** -- if a `store.Store` is already provided in the DI container, that's used.
+1. Grove database: if `WithGroveDatabase(name)` was called (or `grove_database` is set), or a default `grove.DB` is in the DI container, the matching store backend (`postgres`, `sqlite`, or `mongo`) is built from it.
+2. Explicit store: the one from `WithStore(s)`, used when no grove database is found.
+3. DI-registered store: a `store.Store` already provided in the DI container, used when neither of the above applies.
+
+So a `WithStore` store is replaced by a grove-backed one whenever the Grove extension has registered a default database. If you want `WithStore` in such an app, don't register a default grove database.
 
 There's no in-memory fallback: if none of the above resolves a store, `Register` fails with `warden: create engine: warden: store is required`.
 
@@ -177,8 +187,8 @@ There's no in-memory fallback: if none of the above resolves a store, `Register`
 
 When running as a Forge extension, Warden automatically loads configuration from YAML config files. The extension looks for config under the following keys (in order):
 
-1. `extensions.warden` -- standard Forge extension config namespace
-2. `warden` -- top-level shorthand
+1. `extensions.warden`, the standard Forge extension config namespace
+2. `warden`, a top-level shorthand
 
 ### Example
 

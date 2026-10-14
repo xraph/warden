@@ -16,7 +16,7 @@ warden/
 ├── errors.go           # Sentinel errors
 ├── scope.go            # Tenant scoping (Forge integration)
 ├── context.go          # Standalone context helpers
-├── id/                 # TypeID definitions (wrol_, wprm_, wasn_, wpol_, wrel_, ...)
+├── id/                 # TypeID definitions (role_, perm_, asgn_, wpol_, rel_, ...)
 ├── role/               # Role entity + store interface
 ├── permission/         # Permission entity + store interface
 ├── assignment/         # Role assignment entity + store interface
@@ -101,7 +101,7 @@ When `engine.Check()` is called, Warden evaluates authorization in three phases:
 
 | Component | Interface | Default | Purpose |
 |-----------|-----------|---------|---------|
-| Store | `store.Store` | — (required) | Persistence for all entities |
+| Store | `store.Store` | none (required) | Persistence for all entities |
 | Evaluator | `warden.Evaluator` | `conditionEvaluator` | ABAC condition evaluation |
 | GraphWalker | `warden.GraphWalker` | `bfsGraphWalker` | ReBAC graph traversal |
 | Cache | `warden.Cache` | nil (disabled) | LRU cache for check results |

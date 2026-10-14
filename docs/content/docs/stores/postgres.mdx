@@ -11,12 +11,15 @@ The PostgreSQL store uses grove ORM with the pgdriver backend and includes Go-ba
 import (
     "github.com/xraph/grove"
     "github.com/xraph/grove/drivers/pgdriver"
+    _ "github.com/xraph/grove/drivers/pgdriver/pgmigrate" // Migrate needs the executor
     "github.com/xraph/warden/store/postgres"
 )
 
-db, err := grove.Open(pgdriver.New(
-    pgdriver.WithDSN("postgres://user:pass@localhost:5432/warden"),
-))
+drv := pgdriver.New()
+if err := drv.Open(ctx, "postgres://user:pass@localhost:5432/warden"); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
@@ -54,13 +57,13 @@ All tables include:
 
 Complex fields are stored as JSONB:
 
-- `warden_policies.subjects` — `[]string`
-- `warden_policies.actions` — `[]string`
-- `warden_policies.resources` — `[]string`
-- `warden_policies.conditions` — `[]Condition`
-- `warden_policies.metadata` — `map[string]any`
-- `warden_resource_types.relations` — `[]RelationDef`
-- `warden_resource_types.permissions` — `[]PermissionDef`
+- `warden_policies.subjects`: `[]SubjectMatch`
+- `warden_policies.actions`: `[]string`
+- `warden_policies.resources`: `[]string`
+- `warden_policies.conditions`: `[]Condition`
+- `warden_policies.metadata`: `map[string]any`
+- `warden_resource_types.relations`: `[]RelationDef`
+- `warden_resource_types.permissions`: `[]PermissionDef`
 
 ## When to Use
 

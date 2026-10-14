@@ -11,10 +11,15 @@ The `store/mongo` package implements Warden's `store.Store` interface using the 
 import (
     "github.com/xraph/grove"
     "github.com/xraph/grove/drivers/mongodriver"
+    _ "github.com/xraph/grove/drivers/mongodriver/mongomigrate" // Migrate needs the executor
     "github.com/xraph/warden/store/mongo"
 )
 
-db, err := grove.Open(mongodriver.Open("mongodb://localhost:27017", "warden"))
+drv := mongodriver.New()
+if err := drv.Open(ctx, "mongodb://localhost:27017/warden"); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
@@ -43,13 +48,13 @@ var _ store.Store = (*mongo.Store)(nil) // Compile-time check
 ```
 
 This includes:
-- `role.Store` — Role CRUD + hierarchy
-- `permission.Store` — Permission CRUD + role attachment
-- `assignment.Store` — Assignment CRUD + subject lookup
-- `relation.Store` — Relation tuple CRUD + graph queries
-- `policy.Store` — Policy CRUD + active policy lookup
-- `resourcetype.Store` — Resource type CRUD
-- `checklog.Store` — Check log append + query
+- `role.Store`: Role CRUD + hierarchy
+- `permission.Store`: Permission CRUD + role attachment
+- `assignment.Store`: Assignment CRUD + subject lookup
+- `relation.Store`: Relation tuple CRUD + graph queries
+- `policy.Store`: Policy CRUD + active policy lookup
+- `resourcetype.Store`: Resource type CRUD
+- `checklog.Store`: Check log append + query
 
 ## Grove Migrations
 

@@ -5,7 +5,7 @@ description: Managing roles, permissions, and role assignments for RBAC.
 
 import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 
-Every config example on this page comes in two flavours: **Go** (programmatic — call the store directly) and **DSL** (declarative — write `.warden` source and apply it via [`warden apply`](/docs/integration/dsl-tooling#cli) or [`dsl.ApplyFS`](/docs/integration/dsl-tooling#programmatic-apply)). They produce identical state.
+Every config example on this page comes in two flavours: **Go** (programmatic, call the store directly) and **DSL** (declarative, write `.warden` source and apply it via [`warden apply`](/docs/integration/dsl-tooling#cli) or [`dsl.ApplyFS`](/docs/integration/dsl-tooling#programmatic-apply)). They produce identical state.
 
 ## Roles
 
@@ -15,11 +15,11 @@ A role is a named collection of permissions that can be assigned to subjects.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ID` | `id.RoleID` | TypeID (`role_...`) — auto-assigned on Create when unset |
+| `ID` | `id.RoleID` | TypeID (`role_...`): auto-assigned on Create when unset |
 | `Name` | `string` | Display name |
 | `Slug` | `string` | URL-safe identifier (unique per tenant) |
 | `Description` | `string` | Human-readable description |
-| `ParentSlug` | `string` | Parent role slug for inheritance — empty means no parent |
+| `ParentSlug` | `string` | Parent role slug for inheritance: empty means no parent |
 | `IsSystem` | `bool` | System roles cannot be changed or deleted through REST or the dashboard, grants included; they can still be assigned |
 | `IsDefault` | `bool` | Auto-assigned to new subjects |
 | `MaxMembers` | `int` | Most distinct subjects with a live assignment to this role (0 = unlimited) |
@@ -32,7 +32,7 @@ A role is a named collection of permissions that can be assigned to subjects.
 
 ```go
 // IDs and CreatedAt/UpdatedAt timestamps are auto-assigned by the
-// store on Create — set them only when you need a specific value
+// store on Create: set them only when you need a specific value
 // (idempotent inserts, fixtures, etc.).
 r := &role.Role{
     Name:        "Editor",
@@ -103,7 +103,7 @@ A permission represents a single (resource, action) authorization grant.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ID` | `id.PermissionID` | TypeID (`perm_...`) — auto-assigned on Create when unset |
+| `ID` | `id.PermissionID` | TypeID (`perm_...`): auto-assigned on Create when unset |
 | `Name` | `string` | `<resource>:<action>` natural key |
 | `Resource` | `string` | Resource type (e.g., "document") |
 | `Action` | `string` | Action verb (e.g., "read", "write") |
@@ -136,7 +136,7 @@ err := store.CreatePermission(ctx, p)
 warden config 1
 tenant t1
 
-// Shorthand form — link to a resource-type permission expression.
+// Shorthand form: link to a resource-type permission expression.
 permission "doc:read" (document : read)
 
 // Long form with metadata.
@@ -155,10 +155,10 @@ permission "doc:write" {
 <Tabs items={["Go", "DSL"]}>
 <Tab value="Go">
 
-Attach by name (the permission's natural key) — no permission ID lookup needed:
+Attach by name (the permission's natural key). No permission ID lookup needed:
 
 ```go
-err := store.AttachPermission(ctx, roleID, permission.Ref{Name: "doc:read"})
+err := store.AttachPermission(ctx, tenantID, roleID, permission.Ref{Name: "doc:read"})
 ```
 
 </Tab>
@@ -202,13 +202,13 @@ Permission matching supports wildcards:
 
 An assignment links a subject (user, API key, service) to a role.
 
-> **Runtime-only.** Assignments are not expressible in `.warden` source — that file describes the *configuration* (roles, permissions, policies, resource types, relations) but not the runtime data of *who has which role*. Assignments are created via the store API or HTTP endpoints when subjects are provisioned.
+> **Runtime-only.** Assignments are not expressible in `.warden` source: that file describes the *configuration* (roles, permissions, policies, resource types, relations) but not the runtime data of *who has which role*. Assignments are created via the store API or HTTP endpoints when subjects are provisioned.
 
 ### Assignment Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ID` | `id.AssignmentID` | TypeID (`asgn_...`) — auto-assigned on Create when unset |
+| `ID` | `id.AssignmentID` | TypeID (`asgn_...`): auto-assigned on Create when unset |
 | `RoleID` | `id.RoleID` | The role to assign |
 | `SubjectKind` | `string` | Subject type ("user", "api_key", "service") |
 | `SubjectID` | `string` | Subject identifier |

@@ -11,10 +11,15 @@ The SQLite store uses grove ORM with the sqlitedriver backend for an embedded da
 import (
     "github.com/xraph/grove"
     "github.com/xraph/grove/drivers/sqlitedriver"
+    _ "github.com/xraph/grove/drivers/sqlitedriver/sqlitemigrate" // Migrate needs the executor
     "github.com/xraph/warden/store/sqlite"
 )
 
-db, err := grove.Open(sqlitedriver.Open("warden.db"))
+drv := sqlitedriver.New()
+if err := drv.Open(ctx, "warden.db"); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
@@ -29,10 +34,10 @@ if err := sqliteStore.Migrate(ctx); err != nil {
 
 ## Characteristics
 
-- **Embedded** — No external database server needed
-- **Pure Go** — No CGO dependency
-- **File-based** — Data persists in a single file
-- **Single-writer** — SQLite uses file-level locking
+- Embedded: No external database server needed
+- Pure Go: No CGO dependency
+- File-based: Data persists in a single file
+- Single-writer: SQLite uses file-level locking
 
 ## Schema Differences from PostgreSQL
 

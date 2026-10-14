@@ -14,61 +14,66 @@ import (
     "context"
     "fmt"
     "log"
-    "time"
 
     "github.com/xraph/warden"
-    "github.com/xraph/warden/id"
+    "github.com/xraph/warden/assignment"
     "github.com/xraph/warden/permission"
     "github.com/xraph/warden/role"
-    "github.com/xraph/warden/assignment"
     "github.com/xraph/warden/store/memory"
 )
 
 func main() {
-    ctx := context.Background()
+    // Every check and every write is scoped to a tenant.
+    ctx := warden.WithTenant(context.Background(), "docs-app", "acme")
 
     // 1. Create store
     st := memory.New()
 
-    // 2. Create engine
-    eng, err := warden.NewEngine(
-        warden.WithStore(st),
-        warden.WithConfig(warden.Config{
-            EnableRBAC:  true,
-            EnableABAC:  true,
-            EnableReBAC: true,
-        }),
-    )
+    // 2. Create engine. RBAC, ABAC and ReBAC are all on by default.
+    eng, err := warden.NewEngine(warden.WithStore(st))
     if err != nil {
         log.Fatal(err)
     }
 
     // 3. Set up roles and permissions. IDs and timestamps are
     // auto-assigned by the store on Create.
-    perm := &permission.Permission{
-        Name: "doc:read", Resource: "document", Action: "read",
+    if err := st.CreatePermission(ctx, &permission.Permission{
+        TenantID: "acme", Name: "document:read", Resource: "document", Action: "read",
+    }); err != nil {
+        log.Fatal(err)
     }
-    _ = st.CreatePermission(ctx, perm)
 
-    r := &role.Role{Name: "Viewer", Slug: "viewer"}
-    _ = st.CreateRole(ctx, r)
-    _ = st.AttachPermission(ctx, r.ID, permission.Ref{Name: "doc:read"})
+    r := &role.Role{TenantID: "acme", Name: "Viewer", Slug: "viewer"}
+    if err := st.CreateRole(ctx, r); err != nil {
+        log.Fatal(err)
+    }
+    if err := st.AttachPermission(ctx, "acme", r.ID, permission.Ref{Name: "document:read"}); err != nil {
+        log.Fatal(err)
+    }
 
-    _ = st.CreateAssignment(ctx, &assignment.Assignment{
+    if err := st.CreateAssignment(ctx, &assignment.Assignment{
+        TenantID:    "acme",
         RoleID:      r.ID,
         SubjectKind: "user",
         SubjectID:   "user-1",
-    })
+    }); err != nil {
+        log.Fatal(err)
+    }
 
     // 4. Check authorization
-    result, _ := eng.Check(ctx, &warden.CheckRequest{
-        Subject:      warden.Subject{Kind: "user", ID: "user-1"},
-        Action:       "read",
-        ResourceType: "document",
+    result, err := eng.Check(ctx, &warden.CheckRequest{
+        Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "user-1"},
+        Action:   warden.Action{Name: "read"},
+        Resource: warden.Resource{Type: "document", ID: "doc-1"},
     })
-    fmt.Printf("Allowed: %v (%s)\n", result.Allowed, result.Reason)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Allowed: %v (%s)\n", result.Allowed, result.Decision) // Allowed: true (allow)
 }
 ```
+
+These writes go straight to the store, so they don't fire the engine's hooks. That's fine here because there's no cache yet. See [With Caching](#with-caching) for what changes when there is one.
 
 ## Tenant Scoping (Standalone)
 
@@ -87,21 +92,26 @@ result, _ := eng.Check(ctx, req)
 import (
     "github.com/xraph/grove"
     "github.com/xraph/grove/drivers/pgdriver"
+    _ "github.com/xraph/grove/drivers/pgdriver/pgmigrate" // Migrate needs the executor
     "github.com/xraph/warden/store/postgres"
 )
 
-db, err := grove.Open(pgdriver.New(
-    pgdriver.WithDSN(os.Getenv("DATABASE_URL")),
-))
+drv := pgdriver.New()
+if err := drv.Open(ctx, os.Getenv("DATABASE_URL")); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
 
 pgStore := postgres.New(db)
 defer pgStore.Close()
-_ = pgStore.Migrate(ctx)
+if err := pgStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
 
-eng, _ := warden.NewEngine(warden.WithStore(pgStore))
+eng, err := warden.NewEngine(warden.WithStore(pgStore))
 ```
 
 ## With Caching
@@ -109,7 +119,7 @@ eng, _ := warden.NewEngine(warden.WithStore(pgStore))
 ```go
 import "github.com/xraph/warden/cache"
 
-lru := cache.NewMemory(cache.WithTTL(5 * time.Minute))
+lru := cache.NewMemory(cache.WithTTL(5*time.Minute), cache.WithMaxSize(10000))
 
 eng, _ := warden.NewEngine(
     warden.WithStore(st),
@@ -117,17 +127,20 @@ eng, _ := warden.NewEngine(
 )
 ```
 
+With a cache configured, the engine drops affected entries when roles, permissions, assignments, relations or policies change, but only through its hooks. Those fire from the management API, the dashboard and the DSL applier. A write you make straight to the store, like the ones in the basic setup above, fires nothing, so a cached decision can outlive it until the TTL runs out. After writing to the store directly, call `eng.InvalidateTenant(ctx, tenantID)` or `eng.InvalidateSubject(ctx, tenantID, kind, id)` yourself.
+
 ## With Plugins
 
 ```go
 import (
-    "github.com/xraph/warden/audit_hook"
-    "github.com/xraph/warden/observability"
+    glog "github.com/xraph/go-utils/log"
+    "github.com/xraph/warden/plugin/auditlog"
 )
 
 eng, _ := warden.NewEngine(
     warden.WithStore(st),
-    warden.WithPlugin(audit_hook.New(chronicleClient)),
-    warden.WithPlugin(observability.New()),
+    warden.WithPlugin(auditlog.New(glog.NewProductionLogger())), // one log line per audit event
 )
 ```
+
+There's no Chronicle audit plugin or Prometheus plugin package. Metrics go through `warden.WithMetrics`, and anything else you want on an audit event you write as your own `plugin.Audit`. See [Plugin System](/docs/integration/plugin-system).

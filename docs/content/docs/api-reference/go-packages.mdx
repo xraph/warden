@@ -25,8 +25,12 @@ description: Reference for all Warden Go packages.
 | `api` | `github.com/xraph/warden/api` | REST API handlers |
 | `extension` | `github.com/xraph/warden/extension` | Forge extension entry point |
 | `middleware` | `github.com/xraph/warden/middleware` | Authorization middleware |
-| `audit_hook` | `github.com/xraph/warden/audit_hook` | Chronicle audit plugin |
-| `observability` | `github.com/xraph/warden/observability` | Prometheus metrics plugin |
+| `store/mongo` | `github.com/xraph/warden/store/mongo` | MongoDB store implementation |
+| `plugin/auditlog` | `github.com/xraph/warden/plugin/auditlog` | Audit plugin that writes one log line per audit event |
+| `keysmithbridge` | `github.com/xraph/warden/keysmithbridge` | Lets Keysmith assign Warden roles to API keys |
+| `dsl` | `github.com/xraph/warden/dsl` | `.warden` parser, applier and the resource-type expression evaluator |
+
+There's no Chronicle audit plugin or Prometheus plugin package. Metrics go through `warden.WithMetrics`.
 
 ## Core Types
 
@@ -34,11 +38,12 @@ description: Reference for all Warden Go packages.
 
 ```go
 type CheckRequest struct {
-    Subject      Subject        // Who is requesting
-    Action       string         // What action
-    ResourceType string         // What resource type
-    ResourceID   string         // Which specific resource
-    Context      map[string]any // Attributes for ABAC
+    Subject       Subject        // Who is requesting
+    Action        Action         // What action: Action{Name: "read"}
+    Resource      Resource       // What: Resource{Type: "document", ID: "doc-1"}
+    Context       map[string]any // Attributes for ABAC (context.<k> in conditions)
+    TenantID      string         // Optional: overrides the context-derived tenant
+    NamespacePath string         // Optional: overrides the context-derived namespace
 }
 ```
 
@@ -46,11 +51,12 @@ type CheckRequest struct {
 
 ```go
 type CheckResult struct {
-    Allowed  bool
-    Decision Decision  // Allow, Deny, NoOpinion
-    Reason   string
-    Sources  []string  // ["rbac", "abac", "rebac"]
-    Duration time.Duration
+    Allowed     bool
+    Decision    Decision    // "allow", "deny_explicit", "deny_no_roles", "deny_no_perms", ...
+    Reason      string
+    MatchedBy   []MatchInfo // what matched, with its source ("rbac", "rebac", "abac")
+    Obligations []string    // from every matched policy
+    EvalTimeNs  int64
 }
 ```
 
@@ -58,8 +64,9 @@ type CheckResult struct {
 
 ```go
 type Subject struct {
-    Kind string // "user", "api_key", "service", "anonymous"
-    ID   string
+    Kind       SubjectKind // SubjectUser, SubjectAPIKey, ...
+    ID         string
+    Attributes map[string]any // subject.attributes.<k> in conditions
 }
 ```
 
@@ -67,11 +74,21 @@ type Subject struct {
 
 ```go
 type Config struct {
-    EnableRBAC    bool          // default: true
-    EnableABAC    bool          // default: true
-    EnableReBAC   bool          // default: true
-    MaxGraphDepth int           // default: 10
-    CacheTTL      time.Duration // default: 0 (disabled)
+    MaxGraphDepth       int           // default: 10
+    CacheTTL            time.Duration // default: 0 (disabled)
+    CacheMaxSize        int
+    EnableRBAC          *bool // nil means the default, true
+    EnableABAC          *bool // nil means true
+    EnableReBAC         *bool // nil means true
+    EnableCheckLog      *bool // nil means true
+    RequireTenant       *bool // nil means true
+    MaxGraphVisited     int
+    MaxGraphFanout      int
+    EvaluateAllModels   bool
+    CheckLogQueueSize   int
+    CheckLogRetention   time.Duration
+    MaintenanceInterval time.Duration
+    MaxBatchChecks      int
 }
 ```
 
@@ -79,9 +96,11 @@ type Config struct {
 
 ```go
 func NewEngine(opts ...Option) (*Engine, error)
-func (e *Engine) Check(ctx context.Context, req *CheckRequest) (*CheckResult, error)
-func (e *Engine) Enforce(ctx context.Context, req *CheckRequest) error
-func (e *Engine) CanI(ctx context.Context, req *CheckRequest) bool
+func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOption) (*CheckResult, error)
+func (e *Engine) Enforce(ctx context.Context, req *CheckRequest, opts ...CallOption) error
+func (e *Engine) CanI(ctx context.Context, subjectKind SubjectKind, subjectID, action, resourceType, resourceID string, opts ...CallOption) (bool, error)
+func (e *Engine) InvalidateTenant(ctx context.Context, tenantID string)
+func (e *Engine) InvalidateSubject(ctx context.Context, tenantID string, subjectKind SubjectKind, subjectID string)
 func (e *Engine) Store() store.Store
 func (e *Engine) Plugins() *plugin.Registry
 func (e *Engine) Start(ctx context.Context) error
@@ -97,5 +116,7 @@ func WithEvaluator(e Evaluator) Option
 func WithGraphWalker(gw GraphWalker) Option
 func WithCache(c Cache) Option
 func WithPlugin(p plugin.Plugin) Option
-func WithLogger(l *slog.Logger) Option
+func WithLogger(l log.Logger) Option // github.com/xraph/go-utils/log
+func WithMetrics(m Metrics) Option
+func WithExpressionEvaluator(ev ExpressionEvaluator) Option // e.g. dsl.NewEngineEvaluator(store)
 ```

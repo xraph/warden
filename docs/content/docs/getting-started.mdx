@@ -48,7 +48,7 @@ make build
 
 </Tabs>
 
-Each pre-built archive contains **both** `warden` and `warden-lsp`. Available for `linux`, `darwin`, `windows` × `amd64`, `arm64`.
+Each pre-built archive contains both `warden` and `warden-lsp`. Available for `linux`, `darwin` and `windows`, each on `amd64` and `arm64`.
 
 ### VS Code extension
 
@@ -58,21 +58,29 @@ code --install-extension xraph.vscode-warden
 
 The extension provides syntax highlighting, completion, hover, go-to-definition, and live diagnostics for `.warden` files. See the [DSL tooling guide](./integration/dsl-tooling) for editor configuration.
 
-## Step 1: Create a Store
+You need Go 1.26 or later.
 
-Warden needs a store to persist roles, permissions, policies, relations, and assignments. Start with the in-memory store for development:
+## Step 1: Create a Store and a Tenant Context
+
+Warden needs a store to persist roles, permissions, policies, relations, and assignments. Start with the in-memory store for development. Every check is scoped to a tenant, and a check with no tenant fails with `ErrTenantRequired` unless you turn `RequireTenant` off, so put one on the context:
 
 ```go
-import "github.com/xraph/warden/store/memory"
+import (
+    "context"
 
+    "github.com/xraph/warden"
+    "github.com/xraph/warden/store/memory"
+)
+
+ctx := warden.WithTenant(context.Background(), "docs-app", "acme")
 st := memory.New()
 ```
+
+Under Forge you don't need `WithTenant`: Warden reads the tenant from `forge.Scope`.
 
 ## Step 2: Create the Engine
 
 ```go
-import "github.com/xraph/warden"
-
 eng, err := warden.NewEngine(
     warden.WithStore(st),
 )
@@ -85,32 +93,34 @@ if err != nil {
 
 ```go
 import (
-    "github.com/xraph/warden/id"
-    "github.com/xraph/warden/role"
     "github.com/xraph/warden/permission"
+    "github.com/xraph/warden/role"
 )
 
 // IDs are auto-assigned by the store on Create. The in-place mutation
-// means r.ID and perm.ID are populated when the calls return — handy
-// for downstream uses like AttachPermission below.
+// means r.ID is populated when the call returns, which AttachPermission
+// below needs.
 
 // Create a permission
-perm := &permission.Permission{
-    Name:     "doc:read",
+if err := st.CreatePermission(ctx, &permission.Permission{
+    TenantID: "acme",
+    Name:     "document:read",
     Resource: "document",
     Action:   "read",
+}); err != nil {
+    log.Fatal(err)
 }
-_ = st.CreatePermission(ctx, perm)
 
 // Create a role
-r := &role.Role{
-    Name: "Viewer",
-    Slug: "viewer",
+r := &role.Role{TenantID: "acme", Name: "Viewer", Slug: "viewer"}
+if err := st.CreateRole(ctx, r); err != nil {
+    log.Fatal(err)
 }
-_ = st.CreateRole(ctx, r)
 
 // Attach permission to role
-_ = st.AttachPermission(ctx, r.ID, permission.Ref{Name: "doc:read"})
+if err := st.AttachPermission(ctx, "acme", r.ID, permission.Ref{Name: "document:read"}); err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## Step 4: Assign the Role
@@ -118,23 +128,29 @@ _ = st.AttachPermission(ctx, r.ID, permission.Ref{Name: "doc:read"})
 ```go
 import "github.com/xraph/warden/assignment"
 
-ass := &assignment.Assignment{
+if err := st.CreateAssignment(ctx, &assignment.Assignment{
+    TenantID:    "acme",
     RoleID:      r.ID,
     SubjectKind: "user",
     SubjectID:   "user-42",
+}); err != nil {
+    log.Fatal(err)
 }
-_ = st.CreateAssignment(ctx, ass)
 ```
+
+These writes go straight to the store. That's fine while there's no cache. Once you configure one, a direct store write doesn't invalidate it (only the API, the dashboard and the DSL applier fire the hooks that do), so call `eng.InvalidateTenant` after writing to the store yourself.
 
 ## Step 5: Check Authorization
 
 ```go
 result, err := eng.Check(ctx, &warden.CheckRequest{
-    Subject:      warden.Subject{Kind: "user", ID: "user-42"},
-    Action:       "read",
-    ResourceType: "document",
-    ResourceID:   "doc-123",
+    Subject:  warden.Subject{Kind: warden.SubjectUser, ID: "user-42"},
+    Action:   warden.Action{Name: "read"},
+    Resource: warden.Resource{Type: "document", ID: "doc-123"},
 })
+if err != nil {
+    log.Fatal(err) // Check fails closed: an error means no decision
+}
 
 if result.Allowed {
     fmt.Println("Access granted!")
@@ -143,41 +159,53 @@ if result.Allowed {
 }
 ```
 
+`eng.CanI(ctx, warden.SubjectUser, "user-42", "read", "document", "doc-123")` is the one-line boolean form, and `eng.Enforce` returns an error on deny.
+
 ## Step 6: Add ABAC Policies (Optional)
+
+A policy matches on subjects, actions and resources, then checks its conditions against the request. Condition fields are dotted paths: `subject.kind`, `subject.id`, `subject.attributes.<k>`, `resource.type`, `resource.id`, `resource.attributes.<k>`, `action.name` and `context.<k>`.
 
 ```go
 import "github.com/xraph/warden/policy"
 
 p := &policy.Policy{
-    Name:      "Office Hours Only",
+    TenantID:  "acme",
+    Name:      "Block deletes from outside the office network",
     Effect:    policy.EffectDeny,
-    Subjects:  []string{"*"},
-    Actions:   []string{"*"},
+    Actions:   []string{"delete"},
     Resources: []string{"document:*"},
     Conditions: []policy.Condition{{
-        Field:    "time",
-        Operator: policy.OpTimeBefore,
-        Value:    "09:00",
+        Field:    "context.network",
+        Operator: policy.OpNotEquals,
+        Value:    "office",
     }},
     IsActive: true,
 }
-_ = st.CreatePolicy(ctx, p)
+if err := st.CreatePolicy(ctx, p); err != nil {
+    log.Fatal(err)
+}
 ```
+
+Pass the value in the check with `Context: map[string]any{"network": "home"}`. An explicit deny from a policy wins over any allow. For a time window, set `NotBefore` and `NotAfter` on the policy; the `time_before` and `time_after` operators compare RFC 3339 timestamps.
 
 ## Step 7: Add ReBAC Relations (Optional)
 
 ```go
 import "github.com/xraph/warden/relation"
 
-tuple := &relation.Tuple{
+if err := st.CreateRelation(ctx, &relation.Tuple{
+    TenantID:    "acme",
     ObjectType:  "document",
     ObjectID:    "doc-123",
     Relation:    "viewer",
     SubjectType: "user",
     SubjectID:   "user-42",
+}); err != nil {
+    log.Fatal(err)
 }
-_ = st.CreateRelation(ctx, tuple)
 ```
+
+On its own, a tuple grants only an action with the same name as its relation, so this one would grant `viewer` but not `read`. To map actions to relations, define a resource type with `permission read = viewer or owner` (in a `.warden` file or through the store) and give the engine an expression evaluator. The Forge extension wires one; standalone, pass `warden.WithExpressionEvaluator(dsl.NewEngineEvaluator(st))` to `NewEngine`. The [full example](/docs/guides/full-example) does exactly that. See [Relations & Tuples](/docs/authorization/relations-tuples).
 
 ## Step 8: Use with PostgreSQL
 
@@ -187,12 +215,15 @@ For production, switch to the PostgreSQL store:
 import (
     "github.com/xraph/grove"
     "github.com/xraph/grove/drivers/pgdriver"
+    _ "github.com/xraph/grove/drivers/pgdriver/pgmigrate" // Migrate needs the executor
     "github.com/xraph/warden/store/postgres"
 )
 
-db, err := grove.Open(pgdriver.New(
-    pgdriver.WithDSN("postgres://user:pass@localhost/warden"),
-))
+drv := pgdriver.New()
+if err := drv.Open(ctx, "postgres://user:pass@localhost/warden"); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
@@ -201,14 +232,16 @@ pgStore := postgres.New(db)
 defer pgStore.Close()
 
 // Run migrations
-_ = pgStore.Migrate(ctx)
+if err := pgStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
 
-eng, _ := warden.NewEngine(
+eng, err := warden.NewEngine(
     warden.WithStore(pgStore),
 )
 ```
 
-## Step 8: Use the Declarative DSL (Optional)
+## Step 9: Use the Declarative DSL (Optional)
 
 Programmatic seeding works for examples, but production setups define roles, permissions, policies, and relations as source-controlled `.warden` files.
 
@@ -221,7 +254,8 @@ go install github.com/xraph/warden/cmd/warden@latest
 warden config 1
 tenant t1                              // optional, omit it for single-tenant apps
 
-permission "doc:read" (document : read)
+permission "doc:read"  (document : read)
+permission "doc:write" (document : write)
 
 role viewer {
   name   = "Viewer"
@@ -239,7 +273,7 @@ warden lint config/                       # static checks, no DB
 warden apply -f config/ --store sqlite:./warden.db
 ```
 
-The `tenant` declaration is optional. Single-tenant apps that never call `warden.WithTenant` should omit it — every entity lands in the global scope (`tenant_id = ""`), which is what the engine looks up at Check time too.
+The `tenant` declaration is optional. Single-tenant apps that never call `warden.WithTenant` should omit it: every entity lands in the global scope (`tenant_id = ""`), which is what the engine looks up at Check time too.
 
 The same CLI ships a language server (`warden lsp`) used by the VS Code extension and Neovim/Helix configs for diagnostics, completion, hover, and go-to-definition. See [DSL & Tooling](/docs/integration/dsl-tooling).
 
@@ -258,19 +292,21 @@ func main() {
         dsl.ApplyOptions{TenantID: "acme"},
         dsl.WithVariables(dsl.Variables{"REGION": os.Getenv("AWS_REGION")}),
     )
-    // handle err …
+    if err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 
-Same load-resolve-apply pipeline as the CLI, exposed as a library. Full reference and a runnable example: [DSL & Tooling — Programmatic apply](/docs/integration/dsl-tooling#programmatic-apply).
+Same load-resolve-apply pipeline as the CLI, exposed as a library. Full reference and a runnable example: [DSL & Tooling: Programmatic apply](/docs/integration/dsl-tooling#programmatic-apply).
 
 ## Next Steps
 
-- [Architecture](/docs/architecture) — Understand the engine internals
-- [Authorization Models](/docs/concepts/authorization-models) — Deep dive into RBAC, ABAC, ReBAC, and PBAC
-- [Namespaces](/docs/concepts/namespaces) — Nested tenancy with cascading scope inheritance
-- [.warden Language Reference](/docs/integration/dsl-reference) — Every block, field, expression, operator, and convention
-- [DSL & Tooling](/docs/integration/dsl-tooling) — CLI, LSP, VS Code extension, and template variables
-- [Policies & Conditions](/docs/authorization/policies-conditions) — Time-bound policies and obligations (PBAC)
-- [Forge Extension](/docs/integration/forge-extension) — Use Warden as a Forge extension
-- [REST API](/docs/api-reference/rest-api) — Manage entities via HTTP
+- [Architecture](/docs/architecture): understand the engine internals
+- [Authorization Models](/docs/concepts/authorization-models): a deep dive into RBAC, ABAC, ReBAC, and PBAC
+- [Namespaces](/docs/concepts/namespaces): nested tenancy with cascading scope inheritance
+- [.warden Language Reference](/docs/integration/dsl-reference): every block, field, expression, operator, and convention
+- [DSL & Tooling](/docs/integration/dsl-tooling): the CLI, LSP, VS Code extension, and template variables
+- [Policies & Conditions](/docs/authorization/policies-conditions): time-bound policies and obligations (PBAC)
+- [Forge Extension](/docs/integration/forge-extension): use Warden as a Forge extension
+- [REST API](/docs/api-reference/rest-api): manage entities via HTTP

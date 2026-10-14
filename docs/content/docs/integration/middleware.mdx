@@ -23,7 +23,7 @@ If the caller has no resolvable identity, the middleware returns `401 Unauthoriz
 
 ## RequireAny
 
-Allows the request if ANY of the given checks pass:
+Allows the request if any of the given checks passes:
 
 ```go
 app.PUT("/documents/:id", updateDocument,
@@ -57,7 +57,7 @@ app.DELETE("/documents/:id", deleteDocument,
 
 The middleware resolves the caller's subject with `forge.UserIDFromContext`, which shares its context key with `warden.ActorFromContext`'s fallback chain. A resolved user ID becomes `warden.Subject{Kind: warden.SubjectUser, ID: userID}`.
 
-Forge doesn't currently expose an API-key subject in context, so there's no separate API-key branch here: a caller authenticated only by API key resolves as "no identity" in this middleware until that support lands upstream. If you need API-key subjects today, resolve them yourself and set `warden.Subject` on the request via a `WithContext` function, or write a small wrapper middleware that calls `eng.Check` directly.
+Forge doesn't currently expose an API-key subject in context, so there's no separate API-key branch here: a caller authenticated only by API key resolves as "no identity" in this middleware until that support lands upstream. If you need API-key subjects today, write a small middleware of your own that resolves the key and calls `eng.Check` directly. `WithContext` can't do it: it only adds entries to `CheckRequest.Context`, and the subject still comes from `forge.UserIDFromContext`.
 
 By default, an unresolved subject gets `401 Unauthorized` before the engine is ever consulted, so a route can never be reached by a subject nobody actually asked for.
 
