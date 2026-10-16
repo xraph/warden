@@ -254,6 +254,14 @@ So a grove store replaces your `WithStore` store whenever the Grove extension ha
 
 The management API requires an authenticated caller on every route by default. Turning that off with `auth.require_identity: false` is refused at startup unless you also pass `wardenext.WithInsecureAllowUnauthenticatedRoutes()`, so nobody switches it off by accident. Being signed in is not enough on its own, either: the API also authorizes each call, and nobody holds the management permissions until something grants them. Call `authz.BootstrapAdmin(ctx, tenantID, subject)` once per tenant, after start, to create a `warden-admin` role and assign it to your first operator. It's safe to call again.
 
+## Metrics and tracing
+
+Under Forge you get both without writing any code. The extension hands the app's metrics collector and logger to the engine, so `/_/metrics` carries `forge_warden_checks_total` (by decision, source and whether it came from the cache), a check-latency histogram, store errors by operation, check-log writes and drops, graph-walk limits and cache invalidations. Every label is a closed set, so a subject or tenant never becomes a series.
+
+Each `Check` is a `check permission` span inside the request's trace, with a child span per model it ran and one for the ReBAC graph walk. Grove's query spans land under whichever of those made the query, so a slow check tells you which model to look at. Check-log flushes and scheduled maintenance runs get traces of their own. Subject IDs, resource IDs, tenants and error messages stay off every span.
+
+Building the engine yourself? Pass `warden.WithMetricsSink(app.Metrics())`, or your own `warden.Metrics` through `warden.WithMetrics`. The [monitoring page](https://www.xraph.com/docs/warden/operations/monitoring) lists every metric, label value, span and attribute.
+
 ## Configuration
 
 ```yaml
@@ -303,6 +311,7 @@ The options are `WithStore`, `WithConfig`, `WithEngineOptions`, `WithPlugin`, `W
 | Authorization | [Roles and permissions](https://www.xraph.com/docs/warden/authorization/roles-permissions), [policies and conditions](https://www.xraph.com/docs/warden/authorization/policies-conditions), [relations and tuples](https://www.xraph.com/docs/warden/authorization/relations-tuples), [resource types](https://www.xraph.com/docs/warden/authorization/resource-types) |
 | Declarative config | [DSL reference](https://www.xraph.com/docs/warden/integration/dsl-reference), [DSL tooling](https://www.xraph.com/docs/warden/integration/dsl-tooling) |
 | Integration | [Forge extension](https://www.xraph.com/docs/warden/integration/forge-extension), [middleware](https://www.xraph.com/docs/warden/integration/middleware), [plugin system](https://www.xraph.com/docs/warden/integration/plugin-system), [REST API](https://www.xraph.com/docs/warden/api-reference/rest-api) |
+| Operations | [Monitoring](https://www.xraph.com/docs/warden/operations/monitoring), [retention](https://www.xraph.com/docs/warden/operations/retention), [hardening](https://www.xraph.com/docs/warden/operations/hardening) |
 | Storage | [PostgreSQL](https://www.xraph.com/docs/warden/stores/postgres), [SQLite](https://www.xraph.com/docs/warden/stores/sqlite), [MongoDB](https://www.xraph.com/docs/warden/stores/mongo), [memory](https://www.xraph.com/docs/warden/stores/memory), [custom store](https://www.xraph.com/docs/warden/guides/custom-store) |
 
 The Go API is on [pkg.go.dev](https://pkg.go.dev/github.com/xraph/warden).

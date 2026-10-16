@@ -1,31 +1,93 @@
 ---
 title: Monitoring
-description: Every metric Warden emits, the check-log columns, startup logging, and health checks.
+description: Every metric and span Warden records, the check-log columns, startup logging, and health checks.
 ---
 
 ## Metrics
 
-Warden's engine takes a `warden.Metrics` implementation via `warden.WithMetrics`; the default is `warden.NoopMetrics{}`, so nothing is recorded unless you wire one in. The Forge extension wires one automatically from `Extension.Metrics()` (a `forge.Metrics`-backed adapter in `extension/metrics.go`), so if you're running as a Forge extension you get all of these for free.
+Under the Forge extension you don't wire anything: the extension hands the app's metrics collector to the engine, and every series below shows up on the app's `/_/metrics` scrape. Forge prefixes metric names that aren't OpenTelemetry semantic conventions with its namespace, so a metric Warden registers as `warden_checks_total` scrapes as `forge_warden_checks_total`. The tables use the scraped names.
 
-| Metric | Type | Labels | Emitted when |
+If you build the engine yourself inside a Forge app, pass the same collector:
+
+```go
+eng, err := warden.NewEngine(
+    warden.WithStore(s),
+    warden.WithMetricsSink(app.Metrics()), // a github.com/xraph/go-utils/metrics collector
+)
+```
+
+A nil collector leaves metrics off. Outside Forge, implement `warden.Metrics` and pass it to `warden.WithMetrics` to send the same events to Prometheus, statsd or whatever you run. `WithMetrics` and `WithMetricsSink` set the same sink, so the one you pass last wins. The default is `warden.NoopMetrics{}`, which records nothing.
+
+| Scraped name | Type | Labels | Recorded when |
 |---|---|---|---|
-| `warden_checks_total` | Counter | `decision`, `source`, `cached` | Every `Check()` call, cache hit or not |
-| `warden_check_duration_seconds` | Histogram | -- | Every `Check()` call |
-| `warden_store_errors_total` | Counter | `op` | A store call returns an error during evaluation |
-| `warden_checklog_dropped_total` | Counter | -- | The check-log writer's queue is full and an entry is dropped |
-| `warden_hook_errors_total` | Counter | `hook`, `plugin` | A plugin hook panics or returns an error |
-| `warden_graph_nodes_visited` | Histogram | -- | A ReBAC graph walk completes, with the node count visited |
-| `warden_graph_budget_exceeded_total` | Counter | -- | A ReBAC graph walk aborts past `max_graph_visited`/`max_graph_fanout` |
-| `warden_assignments_purged_total` | Counter | -- | A maintenance run purges expired role assignments (value = rows removed) |
-| `warden_checklogs_purged_total` | Counter | -- | A maintenance run purges old check-log rows (value = rows removed) |
-| `warden_cache_invalidations_total` | Counter | `scope` (`tenant` or `subject`) | The check cache is invalidated |
+| `forge_warden_checks_total` | Counter | `decision`, `source`, `cached` | A `Check` evaluates, cache hit or not, failures included |
+| `forge_warden_check_duration_seconds` | Histogram | `cached`, `outcome` | The same, with how long `Check` took |
+| `forge_warden_store_errors_total` | Counter | `op` | A store call the engine made failed |
+| `forge_warden_checklog_written_total` | Counter | none | The check-log writer stored entries (value = entries) |
+| `forge_warden_checklog_dropped_total` | Counter | none | The check-log writer's queue was full and an entry was dropped |
+| `forge_warden_hook_errors_total` | Counter | `hook`, `plugin` | A plugin hook panicked or returned an error |
+| `forge_warden_graph_nodes_visited` | Histogram | none | A ReBAC graph walk finished, including one stopped at a limit (value = nodes) |
+| `forge_warden_graph_budget_exceeded_total` | Counter | none | A walk stopped past `max_graph_visited` or `max_graph_fanout` |
+| `forge_warden_graph_depth_exceeded_total` | Counter | none | A walk stopped at `max_graph_depth` |
+| `forge_warden_assignments_purged_total` | Counter | none | Maintenance purged expired role assignments (value = rows) |
+| `forge_warden_checklogs_purged_total` | Counter | none | Maintenance purged old check-log rows (value = rows) |
+| `forge_warden_cache_invalidations_total` | Counter | `scope` | The check cache was invalidated |
 
-Two things worth calling out:
+Every label is a closed set. Subjects, tenants, resources, actions and policy names never become labels, because any of them would give you a series per user.
 
-- `decision` on `warden_checks_total` is one of the `warden.Decision` values (`allow`, `deny_explicit`, `deny_default`, `deny_no_roles`, `deny_no_perms`, `deny_condition`, `deny_relation`, `deny`). `source` names which evaluator produced it. `cached` is `"true"`/`"false"`.
-- `Metrics.CheckLogWritten(n int)` exists on the interface (fired after a batch of check-log entries flushes to the store) but has no dedicated named metric in the Forge extension's adapter. `warden_checklog_dropped_total` is the signal that tells you the check-log writer is falling behind, which is the operationally relevant half of that story.
+| Label | Values |
+|---|---|
+| `decision` | `allow`, `deny`, `deny_explicit`, `deny_default`, `deny_no_roles`, `deny_no_perms`, `deny_condition`, `deny_relation`, `error` for a check whose evaluation failed, and `other` for a decision a custom `Evaluator` made up |
+| `source` | `rbac`, `rebac`, `abac`, `none` when nothing matched, and `other` for a source a custom `Evaluator` named |
+| `cached` | `true`, `false` |
+| `outcome` | `allow`, `deny` (every `deny_*`), `error`, `other` |
+| `op` | `list_roles_for_subject`, `list_roles_for_subject_on_resource`, `get_roles`, `list_role_permissions_for_roles`, `check_direct_relation`, `graph_walk`, `graph_expand`, `list_active_policies`, `create_check_log`, `delete_expired_assignments`, `delete_expired_assignments_for_tenant`, `purge_check_logs`, `purge_check_logs_for_tenant` |
+| `hook` | The hook method that failed: `OnBeforeCheck`, `OnAfterCheck`, `OnRoleCreated`, `OnRoleUpdated`, `OnRoleDeleted`, `OnPermissionCreated`, `OnPermissionDeleted`, `OnPermissionAttached`, `OnPermissionDetached`, `OnRoleAssigned`, `OnRoleUnassigned`, `OnRelationWritten`, `OnRelationDeleted`, `OnPolicyCreated`, `OnPolicyUpdated`, `OnPolicyDeleted`, `OnPolicyObligationFired`, `OnAudit`, `OnShutdown` |
+| `plugin` | The failing plugin's `Name()`. In-tree: `warden-cache-invalidator`, `dsl-expression-cache-invalidator`, `auditlog`. Your own plugins add theirs, so keep those names fixed strings |
+| `scope` | `subject`, `tenant`, or `all` for a full clear |
 
-If you're not running the Forge extension, implement `warden.Metrics` yourself and pass it to `warden.WithMetrics` to get these into your own backend (Prometheus, OpenTelemetry, statsd, whatever you use).
+The check-duration buckets run from 10 microseconds to 1 second, since a cache hit takes microseconds and an uncached check a few store round trips. The node-count buckets run from 1 to 10,000.
+
+A few useful queries:
+
+```text
+# Share of checks denied
+sum(rate(forge_warden_checks_total{decision!~"allow|error"}[5m]))
+  / sum(rate(forge_warden_checks_total[5m]))
+
+# p99 latency of uncached checks
+histogram_quantile(0.99, sum by (le) (rate(forge_warden_check_duration_seconds_bucket{cached="false"}[5m])))
+
+# Check-log entries that never became rows
+sum(rate(forge_warden_checklog_dropped_total[5m])) + sum(rate(forge_warden_store_errors_total{op="create_check_log"}[5m]))
+```
+
+A walk that stops at a limit is a deny that might have been an allow with a bigger budget. If `forge_warden_graph_depth_exceeded_total` or `forge_warden_graph_budget_exceeded_total` climbs, look at your relation hierarchy before you raise the limits. Query latency itself comes from Grove: every store call is a `db.client` span and lands in `db_client_operation_duration_seconds`, so Warden doesn't measure it again.
+
+## Tracing
+
+Warden records spans on the global OpenTelemetry tracer provider, which Forge installs, under the instrumentation scope `github.com/xraph/warden`. Forge already gives every route a server span, so a check made while serving a request shows up inside that request's trace, and Grove's `db.client` spans for each store query sit under the Warden span that made them. Outside Forge, set a tracer provider with `otel.SetTracerProvider` and you get the same spans.
+
+| Span | Kind | Parent | Attributes |
+|---|---|---|---|
+| `check permission` | Internal | Your context's span | `warden.action`, `warden.resource.type`, `warden.decision`, `warden.decision.source`, `warden.cached`, `warden.dry_run` |
+| `evaluate rbac` | Internal | `check permission` (or your span, for `Explain`) | `warden.decision`, `warden.rbac.roles` |
+| `evaluate rebac` | Internal | `check permission` | `warden.decision` |
+| `evaluate abac` | Internal | `check permission` | `warden.decision` |
+| `walk relation graph` | Internal | `evaluate rebac` | `warden.graph.nodes_visited`, `warden.graph.outcome` |
+| `flush check log` | Internal | None, a new trace per batch | `warden.checklog.batch_size`, `warden.checklog.failed` |
+| `run maintenance` | Internal | None for a scheduled run; your span when you call `RunMaintenance` or `RunTenantMaintenance` | `warden.maintenance.scope`, `warden.maintenance.assignments_purged`, `warden.maintenance.checklogs_purged` |
+| `apply declarative config` | Internal | Your span (the extension's start span for `declarative_on_start`) | `warden.apply.dry_run`, `warden.apply.prune`, `warden.apply.created`, `warden.apply.updated`, `warden.apply.deleted`, `warden.apply.unchanged` |
+
+A cache hit is one `check permission` span with `warden.cached=true` and no model spans under it. A model span only appears for a model that ran, so an RBAC allow skips `evaluate rebac` unless `EvaluateAllModels` is on.
+
+`warden.graph.outcome` is `matched`, `no_path`, `depth_limit`, `visited_limit`, `fanout_limit` or `error`. A walk that stops at a limit is an answer, a deny, so its span isn't marked as an error. `warden.maintenance.scope` is `all` for `RunMaintenance` and `tenant` for `RunTenantMaintenance`. `warden.decision.source` is the same as the metric label, except that a custom `Evaluator`'s own name shows as is.
+
+When something fails, the span's status is `Error` and its description is the error's type (`*pgconn.PgError`, say) or a sentinel's name (`warden.ErrTenantRequired`, `context.DeadlineExceeded`). There's one `exception` event carrying only `exception.type`. The error message never goes on a span, because store and driver messages quote the values they choke on.
+
+What stays off spans: subject IDs, resource IDs, tenant IDs, namespace paths, decision reasons (they quote the subject) and policy names. The action and resource type are there because they come from your schema, not from a person.
+
+Each check-log row records the trace ID of the check that wrote it (`trace_id` below), so you can go from an audit row to the request trace. The `flush check log` span that stored the row is in a trace of its own: the writer batches entries from many checks on one goroutine, long after those checks returned.
 
 ## Check-log columns
 
@@ -64,8 +126,10 @@ Query them with `checklog.QueryFilter` (tenant, namespace, subject, action, reso
 - `cache_enabled` (bool)
 - `maintenance_interval` (duration string)
 
+Under the Forge extension the engine logs through the app's logger, so this line, failed check-log writes and failed maintenance runs show up in your app's logs. Pass your own `warden.WithLogger` through `WithEngineOptions` to send them elsewhere.
+
 If you're running the Forge extension, `loadConfiguration` also logs a `Debug` line, `warden: configuration loaded`, with `disable_routes`, `disable_migrate`, `base_path`, `grove_database`, `max_graph_depth`, `auth_require_identity`, `auth_allow_anonymous_checks`, and `auth_audit_log`. Useful for confirming what actually got loaded from YAML versus programmatic defaults, at whatever log level your deployment has `Debug` turned on.
 
 ## Health and readiness
 
-`Extension.Health(ctx) error` is the one check the extension exposes: it pings the underlying store (`store.Ping`) and returns an error if the engine isn't initialized or has no store configured. There's no separate readiness probe distinct from this. Wire it into whatever health-check mechanism your Forge app already uses, and treat a failing `Health` call as "the store is unreachable," not "the engine has a logic bug." A slow or failing store also shows up as `warden_store_errors_total{op}` incrementing on the check path, which is usually the earlier signal.
+`Extension.Health(ctx) error` is the one check the extension exposes: it pings the underlying store (`store.Ping`) and returns an error if the engine isn't initialized or has no store configured. There's no separate readiness probe distinct from this. Wire it into whatever health-check mechanism your Forge app already uses, and treat a failing `Health` call as "the store is unreachable," not "the engine has a logic bug." A failing store also shows up as `forge_warden_store_errors_total{op}` incrementing on the check path, and a slow one in Grove's `db_client_operation_duration_seconds`. Those are usually the earlier signal.

@@ -171,7 +171,7 @@ If a plugin implements none of the known hook interfaces, `Registry.Register` lo
 
 ## Error handling
 
-Every hook call is wrapped in a `recover()` and a nil-error check. A plugin that panics, or returns a non-nil error, is logged (`plugin hook panicked` or `plugin hook error`) and counted against the `warden_hook_errors_total{hook,plugin}` metric, but the mutation or check that triggered it always completes: one misbehaving plugin can neither crash the engine nor block the rest of the dispatch loop for that event.
+Every hook call is wrapped in a `recover()` and a nil-error check. A plugin that panics, or returns a non-nil error, is logged (`plugin hook panicked` or `plugin hook error`) and counted against the `forge_warden_hook_errors_total{hook,plugin}` metric, but the mutation or check that triggered it always completes: one misbehaving plugin can neither crash the engine nor block the rest of the dispatch loop for that event.
 
 ## Built-in Plugins
 
@@ -190,4 +190,4 @@ eng, _ := warden.NewEngine(
 
 The Forge extension registers this plugin automatically. It's what `auth.audit_log: true` (the default) turns on. See [Forge Extension](/docs/integration/forge-extension) and [Monitoring](/docs/operations/monitoring) for the fields on each log line.
 
-There's no separate `audit_hook`/Chronicle package and no `observability`/Prometheus plugin package. Metrics are wired through `warden.WithMetrics` (or, under the Forge extension, automatically from `Extension.Metrics()`), not through a plugin. See [Monitoring](/docs/operations/monitoring) for the full metric list.
+There's no separate `audit_hook`/Chronicle package and no `observability`/Prometheus plugin package. Metrics are wired through `warden.WithMetrics` or `warden.WithMetricsSink` (under the Forge extension, automatically from the app's metrics), not through a plugin. See [Monitoring](/docs/operations/monitoring) for the full metric list.

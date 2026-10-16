@@ -77,7 +77,8 @@ The shared workflow is pinned by commit SHA (with a `# v1.18.0` comment), not by
 | `evaluator.go`, `graph_walker.go`, `expand.go`, `explain.go` | ABAC policy evaluation, the ReBAC graph walk, expansion and decision explanations |
 | `options.go`, `call_options.go`, `config.go` | Engine `Option`s, per-call `CallOption`s, engine `Config` |
 | `context.go`, `scope.go`, `namespace.go` | Tenant, app and namespace scoping |
-| `cache*.go`, `cache/`, `checklog_writer.go`, `maintenance.go`, `metrics.go` | Check cache, async check-log writer, retention maintenance, metrics interface |
+| `cache*.go`, `cache/`, `checklog_writer.go`, `maintenance.go`, `metrics.go`, `metrics_sink.go`, `tracing.go` | Check cache, async check-log writer, retention maintenance, the metrics interface and its go-utils adapter, span names and attributes |
+| `internal/telemetry/` | Span start and error marking shared by the engine and `dsl` |
 | `errors.go`, `wardenerr/` | Sentinel errors. `wardenerr` is the leaf that defines them |
 | `id/` | TypeID `ID` with prefixes `role`, `perm`, `asgn`, `wpol`, `rel`, `chklog`, `rtype`, `cond` |
 | `role/`, `permission/`, `assignment/`, `relation/`, `policy/`, `resourcetype/`, `checklog/` | One entity each, with its own `Store` interface |
@@ -111,7 +112,9 @@ Engine options are functional (`type Option func(*Engine)`), and the extension h
 
 Every backend implements `store.Store`, the subsystem interfaces plus `Migrate`, `Ping` and `Close`. Postgres, SQLite and Mongo are built on grove with a `migrate.NewGroup("warden")` group in each `migrations.go`. Add a migration with the next `Version` and don't edit shipped ones; the PR template asks whether each migration is reversible. Callers register the migration executor themselves with a blank import of `github.com/xraph/grove/drivers/pgdriver/pgmigrate` or `.../sqlitedriver/sqlitemigrate`, as `cmd/internal/cli/store.go` does.
 
-The Forge extension reads YAML under `extensions.warden` or `warden` and validates it in `Register`. It refuses to mount the HTTP API when `auth.require_identity` is false unless you pass `WithInsecureAllowUnauthenticatedRoutes()`. Routes mount under `/warden` by default. For a store it takes a named grove DB (`WithGroveDatabase`), or else auto-discovers a `*grove.DB` from the vessel container, and it wires the DSL expression evaluator, forge metrics and, with `auth.audit_log` on, the `auditlog` plugin.
+The Forge extension reads YAML under `extensions.warden` or `warden` and validates it in `Register`. It refuses to mount the HTTP API when `auth.require_identity` is false unless you pass `WithInsecureAllowUnauthenticatedRoutes()`. Routes mount under `/warden` by default. For a store it takes a named grove DB (`WithGroveDatabase`), or else auto-discovers a `*grove.DB` from the vessel container, and it wires the DSL expression evaluator, the app's logger and metrics (`WithLogger`, `WithMetricsSink`) and, with `auth.audit_log` on, the `auditlog` plugin.
+
+Telemetry has two rules that keep it safe on the check path. A metric label only ever takes a value from a closed set (see `metricDecision` and `metricSource`), never a subject, tenant, resource, action or policy name. A span never carries a subject ID, resource ID, tenant, reason or error message: mark failures with `telemetry.MarkError`, which records the error's type only. Build span attributes behind `span.IsRecording()`, and start background work (the check-log flush, the maintenance loop) as a root span. `docs/content/docs/operations/monitoring.mdx` lists every metric and span, so update it with any change.
 
 `extension/contract/manifest.yaml` lists every dashboard intent, and `manifest_test.go` checks it. An intent change touches the manifest, its handler and the test together.
 
