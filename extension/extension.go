@@ -160,7 +160,16 @@ func (e *Extension) init(fapp forge.App) error {
 	}
 
 	// Build warden options.
-	opts := make([]warden.Option, 0, len(e.wardenOpts)+len(e.plugins)+4)
+	opts := make([]warden.Option, 0, len(e.wardenOpts)+len(e.plugins)+5)
+
+	// Log through the app's logger. It goes first so the plugin registry,
+	// built by the first WithPlugin, gets it too, and so a WithLogger
+	// passed through WithEngineOptions still wins. Without it the engine
+	// logs nowhere, and a failed check log write or maintenance run went
+	// unreported.
+	if l := e.Logger(); l != nil {
+		opts = append(opts, warden.WithLogger(l))
+	}
 
 	// Try to resolve store from DI container, fall back to option-provided store.
 	if s, err := forge.Inject[store.Store](fapp.Container()); err == nil {

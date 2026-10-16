@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/xraph/forge"
+	log "github.com/xraph/go-utils/log"
 	"go.opentelemetry.io/otel"
 
 	"github.com/xraph/warden"
@@ -80,4 +81,36 @@ func TestRegister_RecordsMetricsThroughTheApp(t *testing.T) {
 			t.Errorf("scrape is missing %s", want)
 		}
 	}
+}
+
+// TestRegister_EngineLogsThroughTheApp: the engine used to get no logger
+// from the extension, so it logged nowhere.
+func TestRegister_EngineLogsThroughTheApp(t *testing.T) {
+	logger := log.NewTestLogger()
+	prevTP, prevProp := otel.GetTracerProvider(), otel.GetTextMapPropagator()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+	app := forge.New(forge.WithAppName("warden-ext-logger"), forge.WithAppLogger(logger))
+
+	ext := New(WithStore(memory.New()), WithDisableRoutes())
+	if err := ext.Register(app); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := ext.Engine().Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ext.Engine().Stop(context.Background()) })
+
+	tl, ok := logger.(*log.TestLogger)
+	if !ok {
+		t.Fatalf("logger is %T", logger)
+	}
+	for _, entry := range tl.GetLogs() {
+		if entry.Message == "warden: engine starting" {
+			return
+		}
+	}
+	t.Fatal("the engine's start line never reached the app logger")
 }
