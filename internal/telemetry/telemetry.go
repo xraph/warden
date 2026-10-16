@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/xraph/warden/wardenerr"
 )
@@ -25,6 +26,17 @@ const InstrumentationName = "github.com/xraph/warden"
 // it, so a provider installed after warden was loaded is the one used.
 func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	return otel.Tracer(InstrumentationName).Start(ctx, name, opts...)
+}
+
+// StartChildSpan is StartSpan for a step inside an operation that already
+// has a span. When ctx's span isn't recording (an unsampled request, or no
+// SDK installed), it starts nothing and returns ctx with a no-op span, so an
+// unsampled operation doesn't pay for children nobody will export.
+func StartChildSpan(ctx context.Context, name string) (context.Context, trace.Span) {
+	if !trace.SpanFromContext(ctx).IsRecording() {
+		return ctx, noop.Span{}
+	}
+	return StartSpan(ctx, name)
 }
 
 // MarkError sets the span's status to Error and adds an exception event.

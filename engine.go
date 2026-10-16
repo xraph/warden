@@ -366,14 +366,15 @@ type modelRun struct {
 
 // runModels runs RBAC, ReBAC and ABAC exactly as Check always has: ReBAC
 // only when RBAC did not allow or EvaluateAllModels is on, ABAC whenever
-// enabled, and nothing after a failure.
+// enabled, and nothing after a failure. Each model gets a child span only
+// when ctx's span is recording, so an unsampled check starts none.
 func (e *Engine) runModels(ctx context.Context, scope tenantScope, req *CheckRequest) modelRun {
 	var run modelRun
 	var err error
 
 	// 2. RBAC: resolve roles → check permissions.
 	if e.config.rbacEnabled() {
-		mctx, span := telemetry.StartSpan(ctx, spanEvaluateRBAC)
+		mctx, span := telemetry.StartChildSpan(ctx, spanEvaluateRBAC)
 		run.rbac, run.rbacRoles, err = e.evaluateRBAC(mctx, scope, req)
 		if span.IsRecording() {
 			span.SetAttributes(attrRBACRoles.Int(len(run.rbacRoles)))
@@ -389,7 +390,7 @@ func (e *Engine) runModels(ctx context.Context, scope tenantScope, req *CheckReq
 	// already allowed the request, unless EvaluateAllModels is set: the
 	// graph walk is the most expensive of the three evaluators.
 	if e.config.rebacEnabled() && (run.rbac == nil || !run.rbac.Allowed || e.config.EvaluateAllModels) {
-		mctx, span := telemetry.StartSpan(ctx, spanEvaluateReBAC)
+		mctx, span := telemetry.StartChildSpan(ctx, spanEvaluateReBAC)
 		run.rebac, err = e.evaluateReBAC(mctx, scope, req)
 		endModelSpan(span, run.rebac, err)
 		if err != nil {
@@ -402,7 +403,7 @@ func (e *Engine) runModels(ctx context.Context, scope tenantScope, req *CheckReq
 	// after an RBAC/ReBAC allow) because an explicit deny policy must be
 	// able to override an allow from another model.
 	if e.config.abacEnabled() {
-		mctx, span := telemetry.StartSpan(ctx, spanEvaluateABAC)
+		mctx, span := telemetry.StartChildSpan(ctx, spanEvaluateABAC)
 		run.abac, err = e.evaluateABAC(mctx, scope, req, rolesToSlugs(run.rbacRoles))
 		endModelSpan(span, run.abac, err)
 		if err != nil {

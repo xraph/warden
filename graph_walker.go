@@ -94,7 +94,7 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		edgeLabel:  fmt.Sprintf("%s:%s#%s", req.Resource.Type, req.Resource.ID, req.Action.Name),
 	}
 
-	ctx, span := telemetry.StartSpan(ctx, spanWalkGraph)
+	ctx, span := telemetry.StartChildSpan(ctx, spanWalkGraph)
 	stop, visitedCount, err := w.traverse(ctx, relStore, tenantID, namespacePath, root, nil, func(nodes []walkNode, idx int, t *relation.Tuple) bool {
 		// Direct match: the subject we're looking for.
 		if t.SubjectType == targetSubjectType && t.SubjectID == targetSubjectID {

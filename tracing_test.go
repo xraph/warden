@@ -3,6 +3,7 @@ package warden
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,7 +19,9 @@ import (
 	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/id"
 	"github.com/xraph/warden/internal/telemetry"
+	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/policy"
+	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store/memory"
 )
 
@@ -338,13 +341,9 @@ func TestCheckLogWriter_EachFlushIsARootSpan(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rec := recordSpans(t)
 			w := newCheckLogWriter(tc.store, 10, nil, nil)
-
-			// Queue from inside a request's trace: the flush must not join it.
-			_, parent := telemetry.StartSpan(context.Background(), "handle request")
 			for range 3 {
 				w.Enqueue(&checklog.Entry{ID: id.NewCheckLogID(), TenantID: tracedTenant, SubjectKind: "user", SubjectID: tracedSubject, Decision: "allow"})
 			}
-			parent.End()
 			if err := w.Stop(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -354,8 +353,8 @@ func TestCheckLogWriter_EachFlushIsARootSpan(t *testing.T) {
 				if s.Name() != "flush check log" {
 					continue
 				}
-				if s.Parent().IsValid() || s.SpanContext().TraceID() == parent.SpanContext().TraceID() {
-					t.Error("a check log flush joined another trace")
+				if s.Parent().IsValid() {
+					t.Error("a check log flush has a parent span")
 				}
 				attrs := spanAttrs(s)
 				batched += attrs["warden.checklog.batch_size"].AsInt64()
@@ -537,4 +536,176 @@ func TestStartMaintenance_LoopDropsTheCallersSpan(t *testing.T) {
 			t.Error("a maintenance query ran outside its run's span")
 		}
 	})
+}
+
+func TestSpanName_OnlyLetsSchemaNamesThrough(t *testing.T) {
+	for in, want := range map[string]string{
+		"read":                   "read",
+		"document:read":          "document:read",
+		"billing/invoice.v2-x_*": "billing/invoice.v2-x_*",
+		strings.Repeat("a", 64):  strings.Repeat("a", 64),
+		strings.Repeat("a", 65):  "invalid",
+		"":                       "invalid",
+		"alice@example.com":      "invalid",
+		"read docs":              "invalid",
+		"réad":                   "invalid",
+	} {
+		if got := spanName(in); got != want {
+			t.Errorf("spanName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestCheck_CallerSuppliedNamesAreCheckedBeforeTheyReachASpan: the HTTP
+// check routes pass the action and resource type through as sent, so a
+// caller can put an email or a huge string in either.
+func TestCheck_CallerSuppliedNamesAreCheckedBeforeTheyReachASpan(t *testing.T) {
+	rec := recordSpans(t)
+	eng, err := NewEngine(WithStore(memory.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = eng.Stop(context.Background()) })
+
+	huge := strings.Repeat("x", 10*1024)
+	for _, req := range []*CheckRequest{
+		{Subject: Subject{Kind: SubjectUser, ID: "u1"}, Action: Action{Name: tracedSubject}, Resource: Resource{Type: "doc", ID: "d1"}, TenantID: "t1"},
+		{Subject: Subject{Kind: SubjectUser, ID: "u1"}, Action: Action{Name: huge}, Resource: Resource{Type: huge, ID: "d1"}, TenantID: "t1"},
+	} {
+		if _, err := eng.Check(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var checks int
+	for _, s := range rec.Ended() {
+		if s.Name() != "check permission" {
+			continue
+		}
+		checks++
+		if got := spanAttrs(s)["warden.action"].AsString(); got != "invalid" {
+			t.Errorf("warden.action = %.40q, want invalid", got)
+		}
+	}
+	if checks != 2 {
+		t.Fatalf("got %d check spans, want 2", checks)
+	}
+	assertNeverRecorded(t, rec.Ended(), tracedSubject, huge[:65])
+}
+
+// countingProvider counts the spans started through it, sampled or not.
+type countingProvider struct {
+	noop.TracerProvider
+	tp      trace.TracerProvider
+	mu      sync.Mutex
+	started []string
+}
+
+func (p *countingProvider) Tracer(name string, opts ...trace.TracerOption) trace.Tracer {
+	return countingTracer{Tracer: p.tp.Tracer(name, opts...), p: p}
+}
+
+func (p *countingProvider) names() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.started...)
+}
+
+type countingTracer struct {
+	trace.Tracer
+	p *countingProvider
+}
+
+func (t countingTracer) Start(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+	t.p.mu.Lock()
+	t.p.started = append(t.p.started, name)
+	t.p.mu.Unlock()
+	return t.Tracer.Start(ctx, name, opts...)
+}
+
+// TestCheck_UnsampledCheckStartsNoChildSpans: an unsampled check pays for
+// its own span and nothing under it.
+func TestCheck_UnsampledCheckStartsNoChildSpans(t *testing.T) {
+	for name, tc := range map[string]struct {
+		sampler sdktrace.Sampler
+		want    string
+	}{
+		"unsampled": {sdktrace.NeverSample(), "check permission"},
+		"sampled":   {sdktrace.AlwaysSample(), "check permission,evaluate rbac,evaluate rebac,walk relation graph,evaluate abac"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sdk := sdktrace.NewTracerProvider(sdktrace.WithSampler(tc.sampler))
+			counter := &countingProvider{tp: sdk}
+			prev := otel.GetTracerProvider()
+			otel.SetTracerProvider(counter)
+			t.Cleanup(func() {
+				otel.SetTracerProvider(prev)
+				_ = sdk.Shutdown(context.Background())
+			})
+
+			s := memory.New()
+			if err := s.CreatePolicy(context.Background(), &policy.Policy{
+				TenantID: tracedTenant, Name: "read-docs", Effect: policy.EffectAllow, IsActive: true,
+				Actions: []string{"read"}, Resources: []string{"doc:*"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			eng, err := NewEngine(WithStore(s), WithConfig(func() Config {
+				c := DefaultConfig()
+				c.EnableCheckLog = boolPtr(false)
+				return c
+			}()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = eng.Stop(context.Background()) })
+
+			if _, err := eng.Check(context.Background(), tracedRequest()); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(counter.names(), ","); got != tc.want {
+				t.Errorf("spans started: %s\nwant: %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// BenchmarkCheckTracing is BenchmarkCheckWithNamespace at depth 0 (an RBAC
+// allow, then ABAC) under no SDK, an SDK that samples nothing, and one that
+// samples everything with no exporter.
+func BenchmarkCheckTracing(b *testing.B) {
+	for name, tp := range map[string]trace.TracerProvider{
+		"no_sdk":        noop.NewTracerProvider(),
+		"sdk_unsampled": sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.NeverSample())),
+		"sdk_sampled":   sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample())),
+	} {
+		b.Run(name, func(b *testing.B) {
+			prev := otel.GetTracerProvider()
+			otel.SetTracerProvider(tp)
+			b.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+			ctx := WithTenant(context.Background(), "app1", "t1")
+			s := memory.New()
+			eng, err := NewEngine(WithStore(s))
+			if err != nil {
+				b.Fatal(err)
+			}
+			roleID := id.NewRoleID()
+			_ = s.CreateRole(ctx, &role.Role{ID: roleID, TenantID: "t1", Name: "viewer", Slug: "viewer"})
+			_ = s.CreatePermission(ctx, &permission.Permission{ID: id.NewPermissionID(), TenantID: "t1", Name: "doc:read", Resource: "doc", Action: "read"})
+			_ = s.AttachPermission(ctx, "t1", roleID, permission.Ref{Name: "doc:read"})
+			_ = s.CreateAssignment(ctx, &assignment.Assignment{
+				ID: id.NewAssignmentID(), TenantID: "t1", RoleID: roleID, SubjectKind: "user", SubjectID: "u1",
+			})
+			req := &CheckRequest{Subject: Subject{Kind: SubjectUser, ID: "u1"}, Action: Action{Name: "read"}, Resource: Resource{Type: "doc", ID: "d1"}}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if res, err := eng.Check(ctx, req); err != nil || !res.Allowed {
+					b.Fatalf("check = %+v, %v", res, err)
+				}
+			}
+		})
+	}
 }

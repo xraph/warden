@@ -25,7 +25,8 @@ const (
 
 // Span attributes. Subjects, resource IDs, tenants and reasons never go on
 // a span: a subject ID or resource ID can be a person's ID or email, and a
-// reason quotes both. Action and resource type are schema names.
+// reason quotes both. Action, resource type, decision and source go through
+// spanName first.
 const (
 	attrAction         = attribute.Key("warden.action")
 	attrResourceType   = attribute.Key("warden.resource.type")
@@ -44,6 +45,34 @@ const (
 	attrMaintCheckLogs   = attribute.Key("warden.maintenance.checklogs_purged")
 )
 
+// invalidName is what spanName records in place of a value that doesn't
+// look like a schema name.
+const invalidName = "invalid"
+
+// maxNameLen is the longest value spanName lets through.
+const maxNameLen = 64
+
+// spanName returns s when it looks like a schema name: 1 to 64 bytes of
+// letters, digits and _ . : * / -. Anything else becomes "invalid". The
+// action and resource type reach Check straight from HTTP callers (the
+// check routes only refuse empty values, and allow_anonymous_checks opens
+// them to anyone), and a custom Evaluator can name any decision or source,
+// so without this an email or a 200 KB string would be exported as is.
+func spanName(s string) string {
+	if s == "" || len(s) > maxNameLen {
+		return invalidName
+	}
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '_', c == '.', c == ':', c == '*', c == '/', c == '-':
+		default:
+			return invalidName
+		}
+	}
+	return s
+}
+
 // checkFacts is what the check span reports beyond the result itself.
 type checkFacts struct {
 	cached bool
@@ -56,8 +85,8 @@ type checkFacts struct {
 func endCheckSpan(span trace.Span, req *CheckRequest, result *CheckResult, facts checkFacts, err error) {
 	if span.IsRecording() {
 		span.SetAttributes(
-			attrAction.String(req.Action.Name),
-			attrResourceType.String(req.Resource.Type),
+			attrAction.String(spanName(req.Action.Name)),
+			attrResourceType.String(spanName(req.Resource.Type)),
 			attrCached.Bool(facts.cached),
 			attrDryRun.Bool(facts.dryRun),
 		)
@@ -65,8 +94,8 @@ func endCheckSpan(span trace.Span, req *CheckRequest, result *CheckResult, facts
 			telemetry.MarkError(span, err)
 		} else if result != nil {
 			span.SetAttributes(
-				attrDecision.String(string(result.Decision)),
-				attrDecisionSource.String(decisionSource(result)),
+				attrDecision.String(spanName(string(result.Decision))),
+				attrDecisionSource.String(spanName(decisionSource(result))),
 			)
 		}
 	}
@@ -80,7 +109,7 @@ func endModelSpan(span trace.Span, result *CheckResult, err error) {
 		if err != nil {
 			telemetry.MarkError(span, err)
 		} else if result != nil {
-			span.SetAttributes(attrDecision.String(string(result.Decision)))
+			span.SetAttributes(attrDecision.String(spanName(string(result.Decision))))
 		}
 	}
 	span.End()
