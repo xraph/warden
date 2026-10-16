@@ -7,7 +7,6 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/internal/telemetry"
@@ -142,32 +141,42 @@ func (w *checkLogWriter) run() {
 	}
 }
 
-// writeBatch writes one batch as one root span: the writer runs on its own
-// goroutine, long after the checks that queued the entries returned, so
-// there is no request span to hang it off. Each entry still records the
-// trace ID of the check that produced it.
+// writeBatch writes one batch under one span. It starts from
+// context.Background(), so the span is always a root: the writer runs on
+// its own goroutine, long after the checks that queued the entries
+// returned. Each entry still records the trace ID of the check that
+// produced it.
+//
+// A failed batch logs once, with how many entries failed and the first
+// error, not once per entry: during a store outage that would be up to a
+// hundred lines every flush.
 func (w *checkLogWriter) writeBatch(batch []*checklog.Entry) {
-	ctx, span := telemetry.StartSpan(context.Background(), spanFlushCheckLog, trace.WithNewRoot())
-	n := 0
+	ctx, span := telemetry.StartSpan(context.Background(), spanFlushCheckLog)
+	failed := 0
 	var firstErr error
 	for _, e := range batch {
 		if err := w.store.CreateCheckLog(ctx, e); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
+			failed++
 			w.writeFailed.Add(1)
 			w.metrics.StoreError("create_check_log")
-			w.logger.Error("warden: failed to write check log entry", log.Error(err))
-			continue
 		}
-		n++
 	}
 	if span.IsRecording() {
-		span.SetAttributes(attrCheckLogBatch.Int(len(batch)), attrCheckLogFailed.Int(len(batch)-n))
+		span.SetAttributes(attrCheckLogBatch.Int(len(batch)), attrCheckLogFailed.Int(failed))
 		telemetry.MarkError(span, firstErr)
 	}
 	span.End()
-	if n > 0 {
+	if failed > 0 {
+		w.logger.Error("warden: failed to write check log entries",
+			log.Int("failed", failed),
+			log.Int("batch_size", len(batch)),
+			log.Error(firstErr),
+		)
+	}
+	if n := len(batch) - failed; n > 0 {
 		w.metrics.CheckLogWritten(n)
 	}
 }
