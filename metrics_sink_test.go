@@ -18,6 +18,7 @@ import (
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/policy"
 	"github.com/xraph/warden/store/memory"
 )
@@ -319,9 +320,11 @@ func TestCacheInvalidations_AreCountedByScope(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = eng.Stop(context.Background()) })
 
-	// The plugin-driven invalidator: a deleted role has no tenant to
-	// target, so it clears everything.
-	eng.Plugins().EmitRoleDeleted(ctx, id.NewRoleID())
+	// A role delete fires its typed hook (a full clear) and an audit event
+	// (a tenant flush). That's one mutation, so it counts once.
+	roleID := id.NewRoleID()
+	eng.Plugins().EmitRoleDeleted(ctx, roleID)
+	eng.Plugins().EmitAudit(ctx, plugin.Event{Action: "role.deleted", TenantID: "t1", EntityID: roleID.String()})
 
 	// A maintenance run that purged something clears everything too.
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -339,7 +342,7 @@ func TestCacheInvalidations_AreCountedByScope(t *testing.T) {
 	eng.InvalidateSubject(ctx, "t1", SubjectUser, "u1")
 
 	_, scopes := m.snapshot()
-	if want := "all,all,subject"; strings.Join(scopes, ",") != want {
+	if want := "tenant,all,subject"; strings.Join(scopes, ",") != want {
 		t.Errorf("CacheInvalidated scopes = %v, want %s", scopes, want)
 	}
 }
