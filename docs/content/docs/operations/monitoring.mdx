@@ -31,7 +31,7 @@ A nil collector leaves metrics off. Outside Forge, implement `warden.Metrics` an
 | `forge_warden_graph_depth_exceeded_total` | Counter | none | A walk stopped at `max_graph_depth` |
 | `forge_warden_assignments_purged_total` | Counter | none | Maintenance purged expired role assignments (value = rows) |
 | `forge_warden_checklogs_purged_total` | Counter | none | Maintenance purged old check-log rows (value = rows) |
-| `forge_warden_cache_invalidations_total` | Counter | `scope` | The check cache was invalidated |
+| `forge_warden_cache_invalidations_total` | Counter | `scope` | The check cache was invalidated: once per call to `InvalidateSubject` or `InvalidateTenant`, once per mutation the cache hooks saw, once per maintenance clear |
 
 Every label is a closed set. Subjects, tenants, resources, actions and policy names never become labels, because any of them would give you a series per user.
 
@@ -44,7 +44,7 @@ Every label is a closed set. Subjects, tenants, resources, actions and policy na
 | `op` | `list_roles_for_subject`, `list_roles_for_subject_on_resource`, `get_roles`, `list_role_permissions_for_roles`, `check_direct_relation`, `graph_walk`, `graph_expand`, `list_active_policies`, `create_check_log`, `delete_expired_assignments`, `delete_expired_assignments_for_tenant`, `purge_check_logs`, `purge_check_logs_for_tenant` |
 | `hook` | The hook method that failed: `OnBeforeCheck`, `OnAfterCheck`, `OnRoleCreated`, `OnRoleUpdated`, `OnRoleDeleted`, `OnPermissionCreated`, `OnPermissionDeleted`, `OnPermissionAttached`, `OnPermissionDetached`, `OnRoleAssigned`, `OnRoleUnassigned`, `OnRelationWritten`, `OnRelationDeleted`, `OnPolicyCreated`, `OnPolicyUpdated`, `OnPolicyDeleted`, `OnPolicyObligationFired`, `OnAudit`, `OnShutdown` |
 | `plugin` | The failing plugin's `Name()`. In-tree: `warden-cache-invalidator`, `dsl-expression-cache-invalidator`, `auditlog`. Your own plugins add theirs, so keep those names fixed strings |
-| `scope` | `subject`, `tenant`, or `all` for a full clear |
+| `scope` | `subject` for `Engine.InvalidateSubject`; `tenant` for `Engine.InvalidateTenant` and for each mutation (counted from its audit event, whatever the typed hook cleared on top); `all` for the full clear after a maintenance run purged rows |
 
 The check-duration buckets run from 10 microseconds to 1 second, since a cache hit takes microseconds and an uncached check a few store round trips. The node-count buckets run from 1 to 10,000.
 
@@ -79,13 +79,15 @@ Warden records spans on the global OpenTelemetry tracer provider, which Forge in
 | `run maintenance` | Internal | None for a scheduled run; your span when you call `RunMaintenance` or `RunTenantMaintenance` | `warden.maintenance.scope`, `warden.maintenance.assignments_purged`, `warden.maintenance.checklogs_purged` |
 | `apply declarative config` | Internal | Your span (the extension's start span for `declarative_on_start`) | `warden.apply.dry_run`, `warden.apply.prune`, `warden.apply.created`, `warden.apply.updated`, `warden.apply.deleted`, `warden.apply.unchanged` |
 
-A cache hit is one `check permission` span with `warden.cached=true` and no model spans under it. A model span only appears for a model that ran, so an RBAC allow skips `evaluate rebac` unless `EvaluateAllModels` is on.
+A cache hit is one `check permission` span with `warden.cached=true` and no model spans under it. A model span only appears for a model that ran, so an RBAC allow skips `evaluate rebac` unless `EvaluateAllModels` is on. The model and walk spans also need a recording parent: when a check isn't sampled, Warden starts its `check permission` span and nothing under it, so an unsampled check costs one span start.
 
 `warden.graph.outcome` is `matched`, `no_path`, `depth_limit`, `visited_limit`, `fanout_limit` or `error`. A walk that stops at a limit is an answer, a deny, so its span isn't marked as an error. `warden.maintenance.scope` is `all` for `RunMaintenance` and `tenant` for `RunTenantMaintenance`. `warden.decision.source` is the same as the metric label, except that a custom `Evaluator`'s own name shows as is.
 
 When something fails, the span's status is `Error` and its description is the error's type (`*pgconn.PgError`, say) or a sentinel's name (`warden.ErrTenantRequired`, `context.DeadlineExceeded`). There's one `exception` event carrying only `exception.type`. The error message never goes on a span, because store and driver messages quote the values they choke on.
 
-What stays off spans: subject IDs, resource IDs, tenant IDs, namespace paths, decision reasons (they quote the subject) and policy names. The action and resource type are there because they come from your schema, not from a person.
+What stays off spans: subject IDs, resource IDs, tenant IDs, namespace paths, decision reasons (they quote the subject) and policy names.
+
+The action and resource type come from whoever called `Check`. Through the HTTP check and AuthZEN routes that's any caller, and anonymous ones too with `allow_anonymous_checks`, and nothing stops them sending an email or a 200 KB string as an action. So `warden.action`, `warden.resource.type`, `warden.decision` and `warden.decision.source` are only recorded when they look like a schema name: 1 to 64 bytes of letters, digits and `_ . : * / -`. Anything else is recorded as `invalid`. A decision or source a custom `Evaluator` makes up gets the same check.
 
 Each check-log row records the trace ID of the check that wrote it (`trace_id` below), so you can go from an audit row to the request trace. The `flush check log` span that stored the row is in a trace of its own: the writer batches entries from many checks on one goroutine, long after those checks returned.
 
@@ -126,7 +128,7 @@ Query them with `checklog.QueryFilter` (tenant, namespace, subject, action, reso
 - `cache_enabled` (bool)
 - `maintenance_interval` (duration string)
 
-Under the Forge extension the engine logs through the app's logger, so this line, failed check-log writes and failed maintenance runs show up in your app's logs. Pass your own `warden.WithLogger` through `WithEngineOptions` to send them elsewhere.
+Under the Forge extension the engine logs through the app's logger, so this line, failed check-log writes and failed maintenance runs show up in your app's logs. A failed check-log batch is one `Error` line with how many entries failed, not a line per entry. Two other sites wake up too: a `Warn` for each check whose permission expression fails to evaluate, and a `Debug` line per check that includes the subject ID, so think before you turn debug logging on in production. Pass your own `warden.WithLogger` through `WithEngineOptions` to send any of it elsewhere.
 
 If you're running the Forge extension, `loadConfiguration` also logs a `Debug` line, `warden: configuration loaded`, with `disable_routes`, `disable_migrate`, `base_path`, `grove_database`, `max_graph_depth`, `auth_require_identity`, `auth_allow_anonymous_checks`, and `auth_audit_log`. Useful for confirming what actually got loaded from YAML versus programmatic defaults, at whatever log level your deployment has `Debug` turned on.
 

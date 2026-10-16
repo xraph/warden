@@ -258,7 +258,7 @@ The management API requires an authenticated caller on every route by default. T
 
 Under Forge you get both without writing any code. The extension hands the app's metrics collector and logger to the engine, so `/_/metrics` carries `forge_warden_checks_total` (by decision, source and whether it came from the cache), a check-latency histogram, store errors by operation, check-log writes and drops, graph-walk limits and cache invalidations. Every label is a closed set, so a subject or tenant never becomes a series.
 
-Each `Check` is a `check permission` span inside the request's trace, with a child span per model it ran and one for the ReBAC graph walk. Grove's query spans land under whichever of those made the query, so a slow check tells you which model to look at. Check-log flushes and scheduled maintenance runs get traces of their own. Subject IDs, resource IDs, tenants and error messages stay off every span.
+Each `Check` is a `check permission` span inside the request's trace. When the trace is sampled it gets a child span per model it ran and one for the ReBAC graph walk. Grove's query spans land under whichever of those made the query, so a slow check tells you which model to look at. Check-log flushes and scheduled maintenance runs get traces of their own. Subject IDs, resource IDs, tenants and error messages stay off every span, and an action or resource type that doesn't look like a schema name is recorded as `invalid`.
 
 Building the engine yourself? Pass `warden.WithMetricsSink(app.Metrics())`, or your own `warden.Metrics` through `warden.WithMetrics`. The [monitoring page](https://www.xraph.com/docs/warden/operations/monitoring) lists every metric, label value, span and attribute.
 
