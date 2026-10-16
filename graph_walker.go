@@ -50,7 +50,11 @@ func newBFSGraphWalker(maxDepth, maxVisited, maxFanout int, metrics Metrics) *bf
 	if metrics == nil {
 		metrics = NoopMetrics{}
 	}
-	return &bfsGraphWalker{maxDepth: maxDepth, maxVisited: maxVisited, maxFanout: maxFanout, metrics: metrics}
+	var depthMetrics GraphDepthMetrics
+	if dm, ok := metrics.(GraphDepthMetrics); ok {
+		depthMetrics = dm
+	}
+	return &bfsGraphWalker{maxDepth: maxDepth, maxVisited: maxVisited, maxFanout: maxFanout, metrics: metrics, depthMetrics: depthMetrics}
 }
 
 type bfsGraphWalker struct {
@@ -58,6 +62,9 @@ type bfsGraphWalker struct {
 	maxVisited int
 	maxFanout  int
 	metrics    Metrics
+	// depthMetrics is metrics when it also implements GraphDepthMetrics,
+	// else nil.
+	depthMetrics GraphDepthMetrics
 }
 
 // walkNode is a BFS queue entry. parent indexes into the walker's node
@@ -99,6 +106,10 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 	case walkFailed:
 		return false, "", err
 	case walkDepth:
+		if w.depthMetrics != nil {
+			w.depthMetrics.GraphDepthExceeded()
+		}
+		w.metrics.GraphNodesVisited(visitedCount)
 		return false, "", ErrGraphDepthExceeded
 	case walkVisited, walkFanout:
 		w.metrics.GraphBudgetExceeded()

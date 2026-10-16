@@ -24,80 +24,103 @@ import (
 // exact bug this hardening pass exists to close, so an occasional full
 // flush on a less-common delete path is the right trade against that.
 type cacheInvalidator struct {
-	cache Cache
+	cache   Cache
+	metrics Metrics
 }
 
-func newCacheInvalidator(c Cache) *cacheInvalidator { return &cacheInvalidator{cache: c} }
+func newCacheInvalidator(c Cache, m Metrics) *cacheInvalidator {
+	if m == nil {
+		m = NoopMetrics{}
+	}
+	return &cacheInvalidator{cache: c, metrics: m}
+}
+
+// invalidateTenant, invalidateSubject and clear each invalidate the cache
+// and count it under Metrics.CacheInvalidated.
+func (c *cacheInvalidator) invalidateTenant(ctx context.Context, tenantID string) {
+	c.cache.InvalidateTenant(ctx, tenantID)
+	c.metrics.CacheInvalidated("tenant")
+}
+
+func (c *cacheInvalidator) invalidateSubject(ctx context.Context, tenantID string, kind SubjectKind, subjectID string) {
+	c.cache.InvalidateSubject(ctx, tenantID, kind, subjectID)
+	c.metrics.CacheInvalidated("subject")
+}
+
+func (c *cacheInvalidator) clear(ctx context.Context) {
+	c.cache.Clear(ctx)
+	c.metrics.CacheInvalidated("all")
+}
 
 func (c *cacheInvalidator) Name() string { return "warden-cache-invalidator" }
 
 func (c *cacheInvalidator) OnRoleCreated(ctx context.Context, r *role.Role) error {
-	c.cache.InvalidateTenant(ctx, r.TenantID)
+	c.invalidateTenant(ctx, r.TenantID)
 	return nil
 }
 
 func (c *cacheInvalidator) OnRoleUpdated(ctx context.Context, r *role.Role) error {
-	c.cache.InvalidateTenant(ctx, r.TenantID)
+	c.invalidateTenant(ctx, r.TenantID)
 	return nil
 }
 
 func (c *cacheInvalidator) OnRoleDeleted(ctx context.Context, _ id.RoleID) error {
-	c.cache.Clear(ctx)
+	c.clear(ctx)
 	return nil
 }
 
 func (c *cacheInvalidator) OnPermissionCreated(ctx context.Context, p *permission.Permission) error {
-	c.cache.InvalidateTenant(ctx, p.TenantID)
+	c.invalidateTenant(ctx, p.TenantID)
 	return nil
 }
 
 func (c *cacheInvalidator) OnPermissionDeleted(ctx context.Context, _ id.PermissionID) error {
-	c.cache.Clear(ctx)
+	c.clear(ctx)
 	return nil
 }
 
 func (c *cacheInvalidator) OnPermissionAttached(ctx context.Context, _ id.RoleID, _ id.PermissionID) error {
-	c.cache.Clear(ctx)
+	c.clear(ctx)
 	return nil
 }
 
 func (c *cacheInvalidator) OnPermissionDetached(ctx context.Context, _ id.RoleID, _ id.PermissionID) error {
-	c.cache.Clear(ctx)
+	c.clear(ctx)
 	return nil
 }
 
 func (c *cacheInvalidator) OnRoleAssigned(ctx context.Context, a *assignment.Assignment) error {
-	c.cache.InvalidateSubject(ctx, a.TenantID, SubjectKind(a.SubjectKind), a.SubjectID)
+	c.invalidateSubject(ctx, a.TenantID, SubjectKind(a.SubjectKind), a.SubjectID)
 	return nil
 }
 
 func (c *cacheInvalidator) OnRoleUnassigned(ctx context.Context, a *assignment.Assignment) error {
-	c.cache.InvalidateSubject(ctx, a.TenantID, SubjectKind(a.SubjectKind), a.SubjectID)
+	c.invalidateSubject(ctx, a.TenantID, SubjectKind(a.SubjectKind), a.SubjectID)
 	return nil
 }
 
 func (c *cacheInvalidator) OnRelationWritten(ctx context.Context, t *relation.Tuple) error {
-	c.cache.InvalidateTenant(ctx, t.TenantID)
+	c.invalidateTenant(ctx, t.TenantID)
 	return nil
 }
 
 func (c *cacheInvalidator) OnRelationDeleted(ctx context.Context, _ id.RelationID) error {
-	c.cache.Clear(ctx)
+	c.clear(ctx)
 	return nil
 }
 
 func (c *cacheInvalidator) OnPolicyCreated(ctx context.Context, p *policy.Policy) error {
-	c.cache.InvalidateTenant(ctx, p.TenantID)
+	c.invalidateTenant(ctx, p.TenantID)
 	return nil
 }
 
 func (c *cacheInvalidator) OnPolicyUpdated(ctx context.Context, p *policy.Policy) error {
-	c.cache.InvalidateTenant(ctx, p.TenantID)
+	c.invalidateTenant(ctx, p.TenantID)
 	return nil
 }
 
 func (c *cacheInvalidator) OnPolicyDeleted(ctx context.Context, _ id.PolicyID) error {
-	c.cache.Clear(ctx)
+	c.clear(ctx)
 	return nil
 }
 
@@ -105,7 +128,7 @@ func (c *cacheInvalidator) OnPolicyDeleted(ctx context.Context, _ id.PolicyID) e
 // including ones no typed hook above covers (resourcetype.*,
 // declarative.applied, ...).
 func (c *cacheInvalidator) OnAudit(ctx context.Context, ev plugin.Event) error {
-	c.cache.InvalidateTenant(ctx, ev.TenantID)
+	c.invalidateTenant(ctx, ev.TenantID)
 	return nil
 }
 

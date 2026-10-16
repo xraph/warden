@@ -52,7 +52,7 @@ type checkLogWriter struct {
 	// queueFull and writeFailed count entries that never became a row,
 	// so a reader can tell an idle log from a lossy one. They count the
 	// same drops Metrics.CheckLogDropped reports, plus failed writes,
-	// which that metric does not cover.
+	// which Metrics sees as StoreError("create_check_log").
 	queueFull   atomic.Uint64
 	writeFailed atomic.Uint64
 	startedAt   time.Time
@@ -145,6 +145,7 @@ func (w *checkLogWriter) writeBatch(batch []*checklog.Entry) {
 	for _, e := range batch {
 		if err := w.store.CreateCheckLog(context.Background(), e); err != nil {
 			w.writeFailed.Add(1)
+			w.metrics.StoreError("create_check_log")
 			w.logger.Error("warden: failed to write check log entry", log.Error(err))
 			continue
 		}

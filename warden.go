@@ -120,6 +120,11 @@ const (
 
 	// DecisionDenyRelation means no matching relation was found.
 	DecisionDenyRelation Decision = "deny_relation"
+
+	// DecisionError is never the Decision of a CheckResult. It's what the
+	// check log and Metrics.CheckEvaluated record for a check whose
+	// evaluation failed, the case where Check returns an error.
+	DecisionError Decision = "error"
 )
 
 // MatchInfo describes what rule matched during evaluation.

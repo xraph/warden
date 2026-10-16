@@ -92,7 +92,7 @@ func NewEngine(opts ...Option) (*Engine, error) {
 		if e.plugins == nil {
 			e.plugins = plugin.NewRegistry(e.logger)
 		}
-		e.plugins.Register(newCacheInvalidator(e.cache))
+		e.plugins.Register(newCacheInvalidator(e.cache, e.metrics))
 	}
 	if e.plugins != nil {
 		e.plugins.SetMetrics(e.metrics)
@@ -247,7 +247,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	// 2 to 4. RBAC, ReBAC, ABAC.
 	run := e.runModels(ctx, scope, req)
 	if run.err != nil {
-		return e.failCheck(ctx, scope, req, run.err, co.dryRun)
+		return e.failCheck(ctx, scope, req, run.err, co.dryRun, start)
 	}
 	rbacResult, rebacResult, abacResult := run.rbac, run.rebac, run.abac
 
@@ -400,10 +400,12 @@ func (e *Engine) emitAfterCheck(ctx context.Context, req *CheckRequest, result *
 }
 
 // failCheck records a check-evaluation failure (as a check log entry with
-// Decision "error") and returns the error unchanged, so every Check error
-// path still leaves an audit trail. A dry run leaves none, the same as its
-// success path.
-func (e *Engine) failCheck(ctx context.Context, scope tenantScope, req *CheckRequest, err error, dryRun bool) (*CheckResult, error) {
+// Decision "error", and as a DecisionError check in Metrics) and returns the
+// error unchanged, so every Check error path still leaves an audit trail. A
+// dry run leaves no check log entry, the same as its success path, but it
+// is counted, as a successful dry run is.
+func (e *Engine) failCheck(ctx context.Context, scope tenantScope, req *CheckRequest, err error, dryRun bool, start time.Time) (*CheckResult, error) {
+	e.metrics.CheckEvaluated(DecisionError, decisionSource(nil), time.Since(start), false)
 	// No StoreError here. Every store call that fails is already counted
 	// at its call site under its own op label, and a failure that did not
 	// come from the store (a policy condition, say) is not a store error.
@@ -463,7 +465,7 @@ func (e *Engine) writeCheckLog(ctx context.Context, scope tenantScope, req *Chec
 }
 
 func (e *Engine) buildCheckLogEntry(ctx context.Context, scope tenantScope, req *CheckRequest, result *CheckResult, cached bool, evalErr string) *checklog.Entry {
-	decision := "error"
+	decision := string(DecisionError)
 	reason := ""
 	var matchedBy []checklog.MatchRef
 	var obligations []string
@@ -476,7 +478,7 @@ func (e *Engine) buildCheckLogEntry(ctx context.Context, scope tenantScope, req 
 		evalTimeNs = result.EvalTimeNs
 	}
 	if evalErr != "" {
-		decision = "error"
+		decision = string(DecisionError)
 	}
 
 	traceID := log.TraceIDFromContext(ctx)

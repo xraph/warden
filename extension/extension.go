@@ -180,15 +180,15 @@ func (e *Extension) init(fapp forge.App) error {
 	// through: the engine itself auto-builds its memory cache from
 	// CacheTTL/CacheMaxSize, so there is no separate cache-construction
 	// step here.
-	opts = append(opts, warden.WithConfig(e.config.toEngineConfig()))
-
-	// Wire a forge.Metrics-backed warden.Metrics adapter so checks, store
-	// errors, cache invalidations, purge counts and hook errors are all
-	// observable. e.Metrics() never returns nil (BaseExtension falls back
-	// to a no-op collector), so this is unconditional.
-	if fm := e.Metrics(); fm != nil {
-		opts = append(opts, warden.WithMetrics(newForgeMetrics(fm)))
-	}
+	//
+	// Then record checks, store errors, cache invalidations, purge counts
+	// and hook errors through the app's metrics. e.Metrics() never returns
+	// nil (BaseExtension falls back to a no-op collector), and
+	// WithMetricsSink ignores a nil one anyway.
+	opts = append(opts,
+		warden.WithConfig(e.config.toEngineConfig()),
+		warden.WithMetricsSink(e.Metrics()),
+	)
 
 	// Register the in-tree structured audit-log sink by default (one line
 	// per audit event through the extension logger). Registering it here,

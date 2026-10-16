@@ -29,6 +29,7 @@ func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error) 
 
 	purged, err := e.store.DeleteExpiredAssignments(ctx, now)
 	if err != nil {
+		e.maintenanceStoreError(ctx, "delete_expired_assignments")
 		return report, fmt.Errorf("warden maintenance: purge expired assignments: %w", err)
 	}
 	report.AssignmentsPurged = purged
@@ -40,6 +41,7 @@ func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error) 
 		cutoff := now.Add(-e.config.CheckLogRetention)
 		n, err := e.store.PurgeCheckLogs(ctx, cutoff)
 		if err != nil {
+			e.maintenanceStoreError(ctx, "purge_check_logs")
 			return report, fmt.Errorf("warden maintenance: purge check logs: %w", err)
 		}
 		report.CheckLogsPurged = n
@@ -50,7 +52,7 @@ func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error) 
 
 	if e.cache != nil && (report.AssignmentsPurged > 0 || report.CheckLogsPurged > 0) {
 		e.cache.Clear(ctx)
-		e.metrics.CacheInvalidated("tenant")
+		e.metrics.CacheInvalidated("all")
 	}
 
 	return report, nil
@@ -76,6 +78,7 @@ func (e *Engine) RunTenantMaintenance(ctx context.Context, tenantID string) (Mai
 
 	purged, err := e.store.DeleteExpiredAssignmentsForTenant(ctx, tenantID, now)
 	if err != nil {
+		e.maintenanceStoreError(ctx, "delete_expired_assignments_for_tenant")
 		return report, fmt.Errorf("warden maintenance: purge expired assignments for tenant %q: %w", tenantID, err)
 	}
 	report.AssignmentsPurged = purged
@@ -87,6 +90,7 @@ func (e *Engine) RunTenantMaintenance(ctx context.Context, tenantID string) (Mai
 		cutoff := now.Add(-e.config.CheckLogRetention)
 		n, err := e.store.PurgeCheckLogsForTenant(ctx, tenantID, cutoff)
 		if err != nil {
+			e.maintenanceStoreError(ctx, "purge_check_logs_for_tenant")
 			return report, fmt.Errorf("warden maintenance: purge check logs for tenant %q: %w", tenantID, err)
 		}
 		report.CheckLogsPurged = n
@@ -101,6 +105,14 @@ func (e *Engine) RunTenantMaintenance(ctx context.Context, tenantID string) (Mai
 	}
 
 	return report, nil
+}
+
+// maintenanceStoreError counts a failed maintenance purge under op, unless
+// ctx had already ended: a run cut short by Stop is not a store failure.
+func (e *Engine) maintenanceStoreError(ctx context.Context, op string) {
+	if ctx.Err() == nil {
+		e.metrics.StoreError(op)
+	}
 }
 
 // StartMaintenance runs RunMaintenance on Config.MaintenanceInterval until

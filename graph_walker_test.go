@@ -15,10 +15,12 @@ import (
 type fakeGraphMetrics struct {
 	NoopMetrics
 	budgetExceeded int
+	depthExceeded  int
 	nodesVisited   []int
 }
 
 func (f *fakeGraphMetrics) GraphBudgetExceeded()    { f.budgetExceeded++ }
+func (f *fakeGraphMetrics) GraphDepthExceeded()     { f.depthExceeded++ }
 func (f *fakeGraphMetrics) GraphNodesVisited(n int) { f.nodesVisited = append(f.nodesVisited, n) }
 
 func TestGraphWalker_PlainSubjectIsNotASubjectSet(t *testing.T) {
