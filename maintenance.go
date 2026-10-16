@@ -158,6 +158,11 @@ func (e *Engine) StartMaintenance(ctx context.Context) {
 	if e.config.MaintenanceInterval <= 0 {
 		return
 	}
+	// Drop the span ctx carries, keeping its cancellation and values. The
+	// loop outlives that span by hours, and anything that read it (grove
+	// starts a db.client span under any valid parent) would land in a
+	// trace that ended long ago.
+	ctx = trace.ContextWithSpanContext(ctx, trace.SpanContext{})
 	go func() {
 		ticker := time.NewTicker(e.config.MaintenanceInterval)
 		defer ticker.Stop()

@@ -12,6 +12,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/checklog"
@@ -455,4 +456,85 @@ func TestRunMaintenance_SpansFollowTheCaller(t *testing.T) {
 		t.Errorf("refused run status = %+v", runs[2].Status())
 	}
 	assertNeverRecorded(t, rec.Ended(), tracedSubject, tracedTenant)
+}
+
+// spanSeeingStore reports the span context each maintenance purge's ctx
+// carries.
+type spanSeeingStore struct {
+	*memory.Store
+	seen chan trace.SpanContext
+}
+
+func (s spanSeeingStore) DeleteExpiredAssignments(ctx context.Context, now time.Time) (int64, error) {
+	select {
+	case s.seen <- trace.SpanContextFromContext(ctx):
+	default:
+	}
+	return s.Store.DeleteExpiredAssignments(ctx, now)
+}
+
+// TestStartMaintenance_LoopDropsTheCallersSpan: StartMaintenance is often
+// handed a ctx with a span on it (Forge starts extensions under a boot
+// span), and the loop outlives that span. Its queries must never see it.
+func TestStartMaintenance_LoopDropsTheCallersSpan(t *testing.T) {
+	newEngine := func(t *testing.T) (*Engine, chan trace.SpanContext) {
+		t.Helper()
+		seen := make(chan trace.SpanContext, 1)
+		eng, err := NewEngine(WithStore(spanSeeingStore{Store: memory.New(), seen: seen}), WithConfig(func() Config {
+			c := DefaultConfig()
+			c.MaintenanceInterval = 5 * time.Millisecond
+			c.EnableCheckLog = boolPtr(false)
+			return c
+		}()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return eng, seen
+	}
+	next := func(t *testing.T, seen chan trace.SpanContext) trace.SpanContext {
+		t.Helper()
+		select {
+		case sc := <-seen:
+			return sc
+		case <-time.After(5 * time.Second):
+			t.Fatal("the maintenance loop never ran")
+			return trace.SpanContext{}
+		}
+	}
+
+	// With no SDK installed, starting a span hands the parent straight
+	// back, new root or not, so only stripping it keeps it out.
+	t.Run("no tracer provider", func(t *testing.T) {
+		prev := otel.GetTracerProvider()
+		otel.SetTracerProvider(noop.NewTracerProvider())
+		t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+		boot := trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: trace.TraceID{1}, SpanID: trace.SpanID{1}, TraceFlags: trace.FlagsSampled,
+		})
+		ctx, cancel := context.WithCancel(trace.ContextWithSpanContext(context.Background(), boot))
+		defer cancel()
+		eng, seen := newEngine(t)
+		eng.StartMaintenance(ctx)
+		if sc := next(t, seen); sc.IsValid() {
+			t.Errorf("a maintenance query ran under span %s of the caller's trace", sc.SpanID())
+		}
+	})
+
+	t.Run("sdk tracer provider", func(t *testing.T) {
+		recordSpans(t)
+		ctx, boot := telemetry.StartSpan(context.Background(), "start warden")
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		eng, seen := newEngine(t)
+		eng.StartMaintenance(ctx)
+		boot.End()
+		sc := next(t, seen)
+		if sc.TraceID() == boot.SpanContext().TraceID() {
+			t.Error("a maintenance query ran in the boot trace")
+		}
+		if !sc.IsValid() {
+			t.Error("a maintenance query ran outside its run's span")
+		}
+	})
 }
