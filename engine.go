@@ -11,6 +11,7 @@ import (
 
 	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/internal/telemetry"
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store"
@@ -208,13 +209,27 @@ func (e *Engine) InvalidateTenant(ctx context.Context, tenantID string) {
 
 // Check performs an authorization check. This is the hot path.
 // Optional CallOption values override scope for this single call.
+//
+// Each call is one "check permission" span, a child of whatever span ctx
+// carries.
 func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOption) (*CheckResult, error) {
+	ctx, span := telemetry.StartSpan(ctx, spanCheck)
+	var facts checkFacts
+	result, err := e.check(ctx, req, opts, &facts)
+	endCheckSpan(span, req, result, facts, err)
+	return result, err
+}
+
+// check is Check without its span. It fills facts in for the span as it
+// learns them.
+func (e *Engine) check(ctx context.Context, req *CheckRequest, opts []CallOption, facts *checkFacts) (*CheckResult, error) {
 	start := time.Now()
 
 	scope, co, err := e.prepareCheck(ctx, req, opts)
 	if err != nil {
 		return nil, err
 	}
+	facts.dryRun = co.dryRun
 
 	e.logger.Debug("warden: check",
 		log.String("subject_kind", string(req.Subject.Kind)),
@@ -235,6 +250,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	// EvalTimeNs is a cache lookup rather than an evaluation.
 	if e.cache != nil && !co.dryRun {
 		if cached, ok := e.cache.Get(ctx, scope.tenantID, scope.namespacePath, req); ok {
+			facts.cached = true
 			result := *cached
 			result.EvalTimeNs = time.Since(start).Nanoseconds()
 			e.metrics.CheckEvaluated(result.Decision, decisionSource(&result), time.Since(start), true)
@@ -357,7 +373,12 @@ func (e *Engine) runModels(ctx context.Context, scope tenantScope, req *CheckReq
 
 	// 2. RBAC: resolve roles → check permissions.
 	if e.config.rbacEnabled() {
-		run.rbac, run.rbacRoles, err = e.evaluateRBAC(ctx, scope, req)
+		mctx, span := telemetry.StartSpan(ctx, spanEvaluateRBAC)
+		run.rbac, run.rbacRoles, err = e.evaluateRBAC(mctx, scope, req)
+		if span.IsRecording() {
+			span.SetAttributes(attrRBACRoles.Int(len(run.rbacRoles)))
+		}
+		endModelSpan(span, run.rbac, err)
 		if err != nil {
 			run.failed, run.err = "rbac", fmt.Errorf("warden rbac: %w", err)
 			return run
@@ -368,7 +389,9 @@ func (e *Engine) runModels(ctx context.Context, scope tenantScope, req *CheckReq
 	// already allowed the request, unless EvaluateAllModels is set: the
 	// graph walk is the most expensive of the three evaluators.
 	if e.config.rebacEnabled() && (run.rbac == nil || !run.rbac.Allowed || e.config.EvaluateAllModels) {
-		run.rebac, err = e.evaluateReBAC(ctx, scope, req)
+		mctx, span := telemetry.StartSpan(ctx, spanEvaluateReBAC)
+		run.rebac, err = e.evaluateReBAC(mctx, scope, req)
+		endModelSpan(span, run.rebac, err)
 		if err != nil {
 			run.failed, run.err = "rebac", fmt.Errorf("warden rebac: %w", err)
 			return run
@@ -379,7 +402,9 @@ func (e *Engine) runModels(ctx context.Context, scope tenantScope, req *CheckReq
 	// after an RBAC/ReBAC allow) because an explicit deny policy must be
 	// able to override an allow from another model.
 	if e.config.abacEnabled() {
-		run.abac, err = e.evaluateABAC(ctx, scope, req, rolesToSlugs(run.rbacRoles))
+		mctx, span := telemetry.StartSpan(ctx, spanEvaluateABAC)
+		run.abac, err = e.evaluateABAC(mctx, scope, req, rolesToSlugs(run.rbacRoles))
+		endModelSpan(span, run.abac, err)
 		if err != nil {
 			run.failed, run.err = "abac", fmt.Errorf("warden abac: %w", err)
 			return run
