@@ -7,8 +7,10 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/warden/checklog"
+	"github.com/xraph/warden/internal/telemetry"
 )
 
 // checkLogBatchSize is the maximum number of entries the writer batches
@@ -140,10 +142,19 @@ func (w *checkLogWriter) run() {
 	}
 }
 
+// writeBatch writes one batch as one root span: the writer runs on its own
+// goroutine, long after the checks that queued the entries returned, so
+// there is no request span to hang it off. Each entry still records the
+// trace ID of the check that produced it.
 func (w *checkLogWriter) writeBatch(batch []*checklog.Entry) {
+	ctx, span := telemetry.StartSpan(context.Background(), spanFlushCheckLog, trace.WithNewRoot())
 	n := 0
+	var firstErr error
 	for _, e := range batch {
-		if err := w.store.CreateCheckLog(context.Background(), e); err != nil {
+		if err := w.store.CreateCheckLog(ctx, e); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			w.writeFailed.Add(1)
 			w.metrics.StoreError("create_check_log")
 			w.logger.Error("warden: failed to write check log entry", log.Error(err))
@@ -151,6 +162,11 @@ func (w *checkLogWriter) writeBatch(batch []*checklog.Entry) {
 		}
 		n++
 	}
+	if span.IsRecording() {
+		span.SetAttributes(attrCheckLogBatch.Int(len(batch)), attrCheckLogFailed.Int(len(batch)-n))
+		telemetry.MarkError(span, firstErr)
+	}
+	span.End()
 	if n > 0 {
 		w.metrics.CheckLogWritten(n)
 	}

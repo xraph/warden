@@ -15,6 +15,12 @@ const (
 	spanEvaluateReBAC = "evaluate rebac"
 	spanEvaluateABAC  = "evaluate abac"
 	spanWalkGraph     = "walk relation graph"
+
+	// Background work. The check log writer and the maintenance loop run
+	// on their own goroutines, so each flush and each scheduled run is a
+	// root span.
+	spanFlushCheckLog  = "flush check log"
+	spanRunMaintenance = "run maintenance"
 )
 
 // Span attributes. Subjects, resource IDs, tenants and reasons never go on
@@ -30,6 +36,12 @@ const (
 	attrRBACRoles      = attribute.Key("warden.rbac.roles")
 	attrGraphNodes     = attribute.Key("warden.graph.nodes_visited")
 	attrGraphOutcome   = attribute.Key("warden.graph.outcome")
+
+	attrCheckLogBatch    = attribute.Key("warden.checklog.batch_size")
+	attrCheckLogFailed   = attribute.Key("warden.checklog.failed")
+	attrMaintScope       = attribute.Key("warden.maintenance.scope")
+	attrMaintAssignments = attribute.Key("warden.maintenance.assignments_purged")
+	attrMaintCheckLogs   = attribute.Key("warden.maintenance.checklogs_purged")
 )
 
 // checkFacts is what the check span reports beyond the result itself.
@@ -70,6 +82,21 @@ func endModelSpan(span trace.Span, result *CheckResult, err error) {
 		} else if result != nil {
 			span.SetAttributes(attrDecision.String(string(result.Decision)))
 		}
+	}
+	span.End()
+}
+
+// endMaintenanceSpan annotates and ends a maintenance span. scope is
+// "all" for RunMaintenance and "tenant" for RunTenantMaintenance; which
+// tenant stays off the span.
+func endMaintenanceSpan(span trace.Span, scope string, report MaintenanceReport, err error) {
+	if span.IsRecording() {
+		span.SetAttributes(
+			attrMaintScope.String(scope),
+			attrMaintAssignments.Int64(report.AssignmentsPurged),
+			attrMaintCheckLogs.Int64(report.CheckLogsPurged),
+		)
+		telemetry.MarkError(span, err)
 	}
 	span.End()
 }

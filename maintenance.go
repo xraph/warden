@@ -6,6 +6,9 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/xraph/warden/internal/telemetry"
 )
 
 // MaintenanceReport summarizes one RunMaintenance or RunTenantMaintenance
@@ -23,7 +26,25 @@ type MaintenanceReport struct {
 // per-tenant invalidation isn't possible here; a maintenance run is
 // infrequent enough that a full flush is cheap relative to serving one
 // stale permission.
+//
+// Each call is a "run maintenance" span, a child of whatever span ctx
+// carries. The background loop StartMaintenance runs starts each one as a
+// root instead.
 func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error) {
+	return e.runMaintenanceTraced(ctx)
+}
+
+// runMaintenanceTraced is RunMaintenance with span start options, so the
+// background loop can make each run a root span.
+func (e *Engine) runMaintenanceTraced(ctx context.Context, opts ...trace.SpanStartOption) (MaintenanceReport, error) {
+	ctx, span := telemetry.StartSpan(ctx, spanRunMaintenance, opts...)
+	report, err := e.runMaintenance(ctx)
+	endMaintenanceSpan(span, "all", report, err)
+	return report, err
+}
+
+// runMaintenance is RunMaintenance without its span.
+func (e *Engine) runMaintenance(ctx context.Context) (MaintenanceReport, error) {
 	now := e.nowFn()
 	var report MaintenanceReport
 
@@ -69,7 +90,18 @@ func (e *Engine) RunMaintenance(ctx context.Context) (MaintenanceReport, error) 
 // An empty tenantID returns ErrTenantRequired before anything is deleted:
 // the stores read an empty tenant filter as every tenant, so empty is never
 // passed through as "all of them". RunMaintenance is the engine-wide pass.
+//
+// Each call is a "run maintenance" span with scope "tenant", a child of
+// whatever span ctx carries. The tenant ID stays off the span.
 func (e *Engine) RunTenantMaintenance(ctx context.Context, tenantID string) (MaintenanceReport, error) {
+	ctx, span := telemetry.StartSpan(ctx, spanRunMaintenance)
+	report, err := e.runTenantMaintenance(ctx, tenantID)
+	endMaintenanceSpan(span, "tenant", report, err)
+	return report, err
+}
+
+// runTenantMaintenance is RunTenantMaintenance without its span.
+func (e *Engine) runTenantMaintenance(ctx context.Context, tenantID string) (MaintenanceReport, error) {
 	var report MaintenanceReport
 	if tenantID == "" {
 		return report, ErrTenantRequired
@@ -119,7 +151,9 @@ func (e *Engine) maintenanceStoreError(ctx context.Context, op string) {
 // ctx is cancelled. A no-op when MaintenanceInterval is 0 or negative, the
 // values that switch the loop off. Engine.Start
 // calls this automatically; it is also safe to call directly for full
-// control over the maintenance context's lifetime.
+// control over the maintenance context's lifetime. Every run is a root
+// "run maintenance" span, even when ctx carries a span (a Forge boot span,
+// say), so a run never lands in some long-finished trace.
 func (e *Engine) StartMaintenance(ctx context.Context) {
 	if e.config.MaintenanceInterval <= 0 {
 		return
@@ -132,7 +166,7 @@ func (e *Engine) StartMaintenance(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if _, err := e.RunMaintenance(ctx); err != nil {
+				if _, err := e.runMaintenanceTraced(ctx, trace.WithNewRoot()); err != nil {
 					e.logger.Warn("warden: maintenance run failed", log.Error(err))
 				}
 			}
