@@ -8,9 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/xraph/warden"
 	"github.com/xraph/warden/assignment"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/internal/telemetry"
 	"github.com/xraph/warden/permission"
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/policy"
@@ -96,7 +99,34 @@ type ApplyResult struct {
 // `warden.WithTenant` see this as the natural default; multi-tenant
 // apps should always pass a tenant explicitly to avoid accidentally
 // landing entities in the global bucket.
+//
+// Each call is an "apply declarative config" span, a child of whatever span
+// ctx carries, with the change counts on it. Store writes made during the
+// apply sit under it.
 func Apply(ctx context.Context, eng *warden.Engine, prog *Program, opts ApplyOptions) (*ApplyResult, error) {
+	ctx, span := telemetry.StartSpan(ctx, "apply declarative config")
+	res, err := apply(ctx, eng, prog, opts)
+	if span.IsRecording() {
+		span.SetAttributes(
+			attribute.Bool("warden.apply.dry_run", opts.DryRun),
+			attribute.Bool("warden.apply.prune", opts.Prune),
+		)
+		if res != nil {
+			span.SetAttributes(
+				attribute.Int("warden.apply.created", len(res.Created)),
+				attribute.Int("warden.apply.updated", len(res.Updated)),
+				attribute.Int("warden.apply.deleted", len(res.Deleted)),
+				attribute.Int("warden.apply.unchanged", res.NoOps),
+			)
+		}
+		telemetry.MarkError(span, err)
+	}
+	span.End()
+	return res, err
+}
+
+// apply is Apply without its span.
+func apply(ctx context.Context, eng *warden.Engine, prog *Program, opts ApplyOptions) (*ApplyResult, error) {
 	tenantID := firstNonEmpty(opts.TenantID, prog.Tenant)
 	if opts.Prune && tenantID == "" {
 		return nil, errors.New("dsl: Prune requires a tenant: set ApplyOptions.TenantID or `tenant` in source; pruning the global (tenant-less) scope would delete every entity with an empty tenant_id across every caller that also uses the global scope")

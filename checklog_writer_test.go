@@ -3,6 +3,7 @@ package warden
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/store/memory"
 )
 
 // recordingCheckLogStore is a minimal checklog.Store fake that records
@@ -232,5 +234,31 @@ func TestCheckLogWriter_LossStartsAtZeroWithAStartTime(t *testing.T) {
 	}
 	if got.Since.Before(before) || got.Since.After(time.Now()) {
 		t.Fatalf("Since %v is not when the writer started", got.Since)
+	}
+}
+
+// TestCheckLogWriter_LogsAFailedBatchOnce: during a store outage every
+// entry fails, and a line per entry would be up to a hundred lines per
+// flush.
+func TestCheckLogWriter_LogsAFailedBatchOnce(t *testing.T) {
+	logger := log.NewTestLogger()
+	w := newCheckLogWriter(failingCheckLogStore{memory.New()}, 10, logger, NoopMetrics{})
+	t.Cleanup(func() { _ = w.Stop(context.Background()) })
+
+	batch := make([]*checklog.Entry, 5)
+	for i := range batch {
+		batch[i] = &checklog.Entry{ID: id.NewCheckLogID(), TenantID: "t1", SubjectKind: "user", SubjectID: "u1", Decision: "allow"}
+	}
+	w.writeBatch(batch)
+
+	errs := logger.(*log.TestLogger).GetLogsByLevel("ERROR")
+	if len(errs) != 1 {
+		t.Fatalf("got %d error lines for one failed batch, want 1", len(errs))
+	}
+	if failed, _ := errs[0].Field("failed"); fmt.Sprint(failed) != "5" {
+		t.Errorf("failed = %v, want 5", failed)
+	}
+	if loss := w.loss(); loss.WriteFailed != 5 {
+		t.Errorf("WriteFailed = %d, want 5", loss.WriteFailed)
 	}
 }

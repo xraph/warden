@@ -29,7 +29,7 @@ func (e *Engine) RunTenantMaintenance(ctx context.Context, tenantID string) (Mai
 
 It does the same two purges through `DeleteExpiredAssignmentsForTenant` and `PurgeCheckLogsForTenant`, so no other tenant's rows are touched, and when it removed something it flushes that tenant's cached decisions (`Cache.InvalidateTenant`) and leaves the rest of the cache alone. An empty tenant ID returns `ErrTenantRequired` before anything is deleted. The dashboard's `maintenance.run` uses this one, with the caller's tenant.
 
-A run that purges anything increments `warden_assignments_purged_total` and/or `warden_checklogs_purged_total`; see [Monitoring](/docs/operations/monitoring).
+A run that purges anything increments `forge_warden_assignments_purged_total` and/or `forge_warden_checklogs_purged_total`, a purge that fails counts under `forge_warden_store_errors_total`, and each run is a `run maintenance` span. See [Monitoring](/docs/operations/monitoring).
 
 ## Per-subject and per-tenant erasure
 

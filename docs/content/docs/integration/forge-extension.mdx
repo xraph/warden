@@ -91,7 +91,7 @@ Safe to call repeatedly: the role, its permissions, the attachments, and the ass
 1. Loads and validates configuration (YAML or programmatic)
 2. Refuses to start if routes are enabled, `auth.require_identity` is false, and `WithInsecureAllowUnauthenticatedRoutes()` wasn't called (with routes disabled, `Handler` and `RegisterRoutes` refuse instead)
 3. Resolves a `store.Store` (explicit, grove-backed, or from the DI container)
-4. Creates a `warden.Engine` with the store and any configured options, wires a `forge.Metrics`-backed `warden.Metrics` adapter, and registers the in-tree `plugin/auditlog` sink when `auth.audit_log` is true (the default)
+4. Creates a `warden.Engine` with the store and any configured options, hands it the app's logger and metrics collector (`warden.WithLogger`, `warden.WithMetricsSink`), and registers the in-tree `plugin/auditlog` sink when `auth.audit_log` is true (the default). See [Monitoring](/docs/operations/monitoring) for the metrics and spans you get
 5. Registers the engine in the DI container via `vessel.Provide()`
 6. If routes are enabled, registers REST API endpoints on `forge.Router`
 

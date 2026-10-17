@@ -373,12 +373,12 @@ func TestGraphWalker_MetricsCalls(t *testing.T) {
 		depth, visited, fanout int
 		subject                string
 		wantErr                error
-		wantBudget             int
+		wantBudget, wantDepth  int
 		wantVisits             []int
 	}{
 		{name: "match", depth: 10, subject: "bob", wantVisits: []int{6}},
 		{name: "drained", depth: 10, subject: "nobody", wantVisits: []int{6}},
-		{name: "depth", depth: 2, subject: "bob", wantErr: ErrGraphDepthExceeded},
+		{name: "depth", depth: 2, subject: "bob", wantErr: ErrGraphDepthExceeded, wantDepth: 1, wantVisits: []int{3}},
 		{name: "visited", depth: 10, visited: 2, subject: "bob", wantErr: ErrGraphBudgetExceeded, wantBudget: 1, wantVisits: []int{3}},
 		{name: "fanout", depth: 10, fanout: 1, subject: "bob", wantErr: ErrGraphBudgetExceeded, wantBudget: 1, wantVisits: []int{1}},
 	} {
@@ -390,8 +390,9 @@ func TestGraphWalker_MetricsCalls(t *testing.T) {
 			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
 				t.Fatalf("err: got %v, want %v", err, tc.wantErr)
 			}
-			if m.budgetExceeded != tc.wantBudget || !reflect.DeepEqual(m.nodesVisited, tc.wantVisits) {
-				t.Fatalf("metrics: got budget %d visits %v, want %d %v", m.budgetExceeded, m.nodesVisited, tc.wantBudget, tc.wantVisits)
+			if m.budgetExceeded != tc.wantBudget || m.depthExceeded != tc.wantDepth || !reflect.DeepEqual(m.nodesVisited, tc.wantVisits) {
+				t.Fatalf("metrics: got budget %d depth %d visits %v, want %d %d %v",
+					m.budgetExceeded, m.depthExceeded, m.nodesVisited, tc.wantBudget, tc.wantDepth, tc.wantVisits)
 			}
 		})
 	}

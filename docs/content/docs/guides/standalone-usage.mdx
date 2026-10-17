@@ -143,4 +143,4 @@ eng, _ := warden.NewEngine(
 )
 ```
 
-There's no Chronicle audit plugin or Prometheus plugin package. Metrics go through `warden.WithMetrics`, and anything else you want on an audit event you write as your own `plugin.Audit`. See [Plugin System](/docs/integration/plugin-system).
+There's no Chronicle audit plugin or Prometheus plugin package. Metrics go through `warden.WithMetrics`, or `warden.WithMetricsSink` with a go-utils metrics collector, and spans go to whatever OpenTelemetry tracer provider you install with `otel.SetTracerProvider` ([Monitoring](/docs/operations/monitoring) lists both). Anything else you want on an audit event you write as your own `plugin.Audit`. See [Plugin System](/docs/integration/plugin-system).

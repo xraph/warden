@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/xraph/warden/internal/telemetry"
 	"github.com/xraph/warden/relation"
 )
 
@@ -50,7 +51,11 @@ func newBFSGraphWalker(maxDepth, maxVisited, maxFanout int, metrics Metrics) *bf
 	if metrics == nil {
 		metrics = NoopMetrics{}
 	}
-	return &bfsGraphWalker{maxDepth: maxDepth, maxVisited: maxVisited, maxFanout: maxFanout, metrics: metrics}
+	var depthMetrics GraphDepthMetrics
+	if dm, ok := metrics.(GraphDepthMetrics); ok {
+		depthMetrics = dm
+	}
+	return &bfsGraphWalker{maxDepth: maxDepth, maxVisited: maxVisited, maxFanout: maxFanout, metrics: metrics, depthMetrics: depthMetrics}
 }
 
 type bfsGraphWalker struct {
@@ -58,6 +63,9 @@ type bfsGraphWalker struct {
 	maxVisited int
 	maxFanout  int
 	metrics    Metrics
+	// depthMetrics is metrics when it also implements GraphDepthMetrics,
+	// else nil.
+	depthMetrics GraphDepthMetrics
 }
 
 // walkNode is a BFS queue entry. parent indexes into the walker's node
@@ -86,6 +94,7 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		edgeLabel:  fmt.Sprintf("%s:%s#%s", req.Resource.Type, req.Resource.ID, req.Action.Name),
 	}
 
+	ctx, span := telemetry.StartChildSpan(ctx, spanWalkGraph)
 	stop, visitedCount, err := w.traverse(ctx, relStore, tenantID, namespacePath, root, nil, func(nodes []walkNode, idx int, t *relation.Tuple) bool {
 		// Direct match: the subject we're looking for.
 		if t.SubjectType == targetSubjectType && t.SubjectID == targetSubjectID {
@@ -94,11 +103,24 @@ func (w *bfsGraphWalker) Walk(ctx context.Context, relStore relation.Store, tena
 		}
 		return false
 	})
+	if span.IsRecording() {
+		// A stop at a limit is an answer (a deny), not a failure; only a
+		// store error or an ended context marks the span.
+		span.SetAttributes(attrGraphNodes.Int(visitedCount), attrGraphOutcome.String(walkOutcome(stop)))
+		if stop == walkFailed {
+			telemetry.MarkError(span, err)
+		}
+	}
+	span.End()
 
 	switch stop {
 	case walkFailed:
 		return false, "", err
 	case walkDepth:
+		if w.depthMetrics != nil {
+			w.depthMetrics.GraphDepthExceeded()
+		}
+		w.metrics.GraphNodesVisited(visitedCount)
 		return false, "", ErrGraphDepthExceeded
 	case walkVisited, walkFanout:
 		w.metrics.GraphBudgetExceeded()
