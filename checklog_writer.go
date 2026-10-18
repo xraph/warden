@@ -9,6 +9,7 @@ import (
 	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/warden/checklog"
+	"github.com/xraph/warden/internal/telemetry"
 )
 
 // checkLogBatchSize is the maximum number of entries the writer batches
@@ -52,7 +53,7 @@ type checkLogWriter struct {
 	// queueFull and writeFailed count entries that never became a row,
 	// so a reader can tell an idle log from a lossy one. They count the
 	// same drops Metrics.CheckLogDropped reports, plus failed writes,
-	// which that metric does not cover.
+	// which Metrics sees as StoreError("create_check_log").
 	queueFull   atomic.Uint64
 	writeFailed atomic.Uint64
 	startedAt   time.Time
@@ -140,17 +141,42 @@ func (w *checkLogWriter) run() {
 	}
 }
 
+// writeBatch writes one batch under one span. It starts from
+// context.Background(), so the span is always a root: the writer runs on
+// its own goroutine, long after the checks that queued the entries
+// returned. Each entry still records the trace ID of the check that
+// produced it.
+//
+// A failed batch logs once, with how many entries failed and the first
+// error, not once per entry: during a store outage that would be up to a
+// hundred lines every flush.
 func (w *checkLogWriter) writeBatch(batch []*checklog.Entry) {
-	n := 0
+	ctx, span := telemetry.StartSpan(context.Background(), spanFlushCheckLog)
+	failed := 0
+	var firstErr error
 	for _, e := range batch {
-		if err := w.store.CreateCheckLog(context.Background(), e); err != nil {
+		if err := w.store.CreateCheckLog(ctx, e); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			failed++
 			w.writeFailed.Add(1)
-			w.logger.Error("warden: failed to write check log entry", log.Error(err))
-			continue
+			w.metrics.StoreError("create_check_log")
 		}
-		n++
 	}
-	if n > 0 {
+	if span.IsRecording() {
+		span.SetAttributes(attrCheckLogBatch.Int(len(batch)), attrCheckLogFailed.Int(failed))
+		telemetry.MarkError(span, firstErr)
+	}
+	span.End()
+	if failed > 0 {
+		w.logger.Error("warden: failed to write check log entries",
+			log.Int("failed", failed),
+			log.Int("batch_size", len(batch)),
+			log.Error(firstErr),
+		)
+	}
+	if n := len(batch) - failed; n > 0 {
 		w.metrics.CheckLogWritten(n)
 	}
 }

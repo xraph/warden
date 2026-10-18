@@ -23,11 +23,20 @@ import (
 // tenant, so they fall back to a full Clear. A stale cache entry is the
 // exact bug this hardening pass exists to close, so an occasional full
 // flush on a less-common delete path is the right trade against that.
+//
+// Metrics.CacheInvalidated counts each mutation once, from OnAudit, as
+// scope "tenant", whatever the typed hook did on top.
 type cacheInvalidator struct {
-	cache Cache
+	cache   Cache
+	metrics Metrics
 }
 
-func newCacheInvalidator(c Cache) *cacheInvalidator { return &cacheInvalidator{cache: c} }
+func newCacheInvalidator(c Cache, m Metrics) *cacheInvalidator {
+	if m == nil {
+		m = NoopMetrics{}
+	}
+	return &cacheInvalidator{cache: c, metrics: m}
+}
 
 func (c *cacheInvalidator) Name() string { return "warden-cache-invalidator" }
 
@@ -104,8 +113,14 @@ func (c *cacheInvalidator) OnPolicyDeleted(ctx context.Context, _ id.PolicyID) e
 // OnAudit invalidates the tenant scope for every audited mutation,
 // including ones no typed hook above covers (resourcetype.*,
 // declarative.applied, ...).
+//
+// It is also the one place a hook-driven invalidation is counted. The
+// registry emits an audit event for every mutation on top of any typed
+// hook, so counting in the typed hooks too would count most mutations
+// twice.
 func (c *cacheInvalidator) OnAudit(ctx context.Context, ev plugin.Event) error {
 	c.cache.InvalidateTenant(ctx, ev.TenantID)
+	c.metrics.CacheInvalidated("tenant")
 	return nil
 }
 

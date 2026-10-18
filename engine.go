@@ -11,6 +11,7 @@ import (
 
 	"github.com/xraph/warden/checklog"
 	"github.com/xraph/warden/id"
+	"github.com/xraph/warden/internal/telemetry"
 	"github.com/xraph/warden/plugin"
 	"github.com/xraph/warden/role"
 	"github.com/xraph/warden/store"
@@ -92,7 +93,7 @@ func NewEngine(opts ...Option) (*Engine, error) {
 		if e.plugins == nil {
 			e.plugins = plugin.NewRegistry(e.logger)
 		}
-		e.plugins.Register(newCacheInvalidator(e.cache))
+		e.plugins.Register(newCacheInvalidator(e.cache, e.metrics))
 	}
 	if e.plugins != nil {
 		e.plugins.SetMetrics(e.metrics)
@@ -208,13 +209,27 @@ func (e *Engine) InvalidateTenant(ctx context.Context, tenantID string) {
 
 // Check performs an authorization check. This is the hot path.
 // Optional CallOption values override scope for this single call.
+//
+// Each call is one "check permission" span, a child of whatever span ctx
+// carries.
 func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOption) (*CheckResult, error) {
+	ctx, span := telemetry.StartSpan(ctx, spanCheck)
+	var facts checkFacts
+	result, err := e.check(ctx, req, opts, &facts)
+	endCheckSpan(span, req, result, facts, err)
+	return result, err
+}
+
+// check is Check without its span. It fills facts in for the span as it
+// learns them.
+func (e *Engine) check(ctx context.Context, req *CheckRequest, opts []CallOption, facts *checkFacts) (*CheckResult, error) {
 	start := time.Now()
 
 	scope, co, err := e.prepareCheck(ctx, req, opts)
 	if err != nil {
 		return nil, err
 	}
+	facts.dryRun = co.dryRun
 
 	e.logger.Debug("warden: check",
 		log.String("subject_kind", string(req.Subject.Kind)),
@@ -235,6 +250,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	// EvalTimeNs is a cache lookup rather than an evaluation.
 	if e.cache != nil && !co.dryRun {
 		if cached, ok := e.cache.Get(ctx, scope.tenantID, scope.namespacePath, req); ok {
+			facts.cached = true
 			result := *cached
 			result.EvalTimeNs = time.Since(start).Nanoseconds()
 			e.metrics.CheckEvaluated(result.Decision, decisionSource(&result), time.Since(start), true)
@@ -247,7 +263,7 @@ func (e *Engine) Check(ctx context.Context, req *CheckRequest, opts ...CallOptio
 	// 2 to 4. RBAC, ReBAC, ABAC.
 	run := e.runModels(ctx, scope, req)
 	if run.err != nil {
-		return e.failCheck(ctx, scope, req, run.err, co.dryRun)
+		return e.failCheck(ctx, scope, req, run.err, co.dryRun, start)
 	}
 	rbacResult, rebacResult, abacResult := run.rbac, run.rebac, run.abac
 
@@ -350,14 +366,20 @@ type modelRun struct {
 
 // runModels runs RBAC, ReBAC and ABAC exactly as Check always has: ReBAC
 // only when RBAC did not allow or EvaluateAllModels is on, ABAC whenever
-// enabled, and nothing after a failure.
+// enabled, and nothing after a failure. Each model gets a child span only
+// when ctx's span is recording, so an unsampled check starts none.
 func (e *Engine) runModels(ctx context.Context, scope tenantScope, req *CheckRequest) modelRun {
 	var run modelRun
 	var err error
 
 	// 2. RBAC: resolve roles → check permissions.
 	if e.config.rbacEnabled() {
-		run.rbac, run.rbacRoles, err = e.evaluateRBAC(ctx, scope, req)
+		mctx, span := telemetry.StartChildSpan(ctx, spanEvaluateRBAC)
+		run.rbac, run.rbacRoles, err = e.evaluateRBAC(mctx, scope, req)
+		if span.IsRecording() {
+			span.SetAttributes(attrRBACRoles.Int(len(run.rbacRoles)))
+		}
+		endModelSpan(span, run.rbac, err)
 		if err != nil {
 			run.failed, run.err = "rbac", fmt.Errorf("warden rbac: %w", err)
 			return run
@@ -368,7 +390,9 @@ func (e *Engine) runModels(ctx context.Context, scope tenantScope, req *CheckReq
 	// already allowed the request, unless EvaluateAllModels is set: the
 	// graph walk is the most expensive of the three evaluators.
 	if e.config.rebacEnabled() && (run.rbac == nil || !run.rbac.Allowed || e.config.EvaluateAllModels) {
-		run.rebac, err = e.evaluateReBAC(ctx, scope, req)
+		mctx, span := telemetry.StartChildSpan(ctx, spanEvaluateReBAC)
+		run.rebac, err = e.evaluateReBAC(mctx, scope, req)
+		endModelSpan(span, run.rebac, err)
 		if err != nil {
 			run.failed, run.err = "rebac", fmt.Errorf("warden rebac: %w", err)
 			return run
@@ -379,7 +403,9 @@ func (e *Engine) runModels(ctx context.Context, scope tenantScope, req *CheckReq
 	// after an RBAC/ReBAC allow) because an explicit deny policy must be
 	// able to override an allow from another model.
 	if e.config.abacEnabled() {
-		run.abac, err = e.evaluateABAC(ctx, scope, req, rolesToSlugs(run.rbacRoles))
+		mctx, span := telemetry.StartChildSpan(ctx, spanEvaluateABAC)
+		run.abac, err = e.evaluateABAC(mctx, scope, req, rolesToSlugs(run.rbacRoles))
+		endModelSpan(span, run.abac, err)
 		if err != nil {
 			run.failed, run.err = "abac", fmt.Errorf("warden abac: %w", err)
 			return run
@@ -400,10 +426,12 @@ func (e *Engine) emitAfterCheck(ctx context.Context, req *CheckRequest, result *
 }
 
 // failCheck records a check-evaluation failure (as a check log entry with
-// Decision "error") and returns the error unchanged, so every Check error
-// path still leaves an audit trail. A dry run leaves none, the same as its
-// success path.
-func (e *Engine) failCheck(ctx context.Context, scope tenantScope, req *CheckRequest, err error, dryRun bool) (*CheckResult, error) {
+// Decision "error", and as a DecisionError check in Metrics) and returns the
+// error unchanged, so every Check error path still leaves an audit trail. A
+// dry run leaves no check log entry, the same as its success path, but it
+// is counted, as a successful dry run is.
+func (e *Engine) failCheck(ctx context.Context, scope tenantScope, req *CheckRequest, err error, dryRun bool, start time.Time) (*CheckResult, error) {
+	e.metrics.CheckEvaluated(DecisionError, decisionSource(nil), time.Since(start), false)
 	// No StoreError here. Every store call that fails is already counted
 	// at its call site under its own op label, and a failure that did not
 	// come from the store (a policy condition, say) is not a store error.
@@ -463,7 +491,7 @@ func (e *Engine) writeCheckLog(ctx context.Context, scope tenantScope, req *Chec
 }
 
 func (e *Engine) buildCheckLogEntry(ctx context.Context, scope tenantScope, req *CheckRequest, result *CheckResult, cached bool, evalErr string) *checklog.Entry {
-	decision := "error"
+	decision := string(DecisionError)
 	reason := ""
 	var matchedBy []checklog.MatchRef
 	var obligations []string
@@ -476,7 +504,7 @@ func (e *Engine) buildCheckLogEntry(ctx context.Context, scope tenantScope, req 
 		evalTimeNs = result.EvalTimeNs
 	}
 	if evalErr != "" {
-		decision = "error"
+		decision = string(DecisionError)
 	}
 
 	traceID := log.TraceIDFromContext(ctx)

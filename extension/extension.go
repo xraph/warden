@@ -160,7 +160,16 @@ func (e *Extension) init(fapp forge.App) error {
 	}
 
 	// Build warden options.
-	opts := make([]warden.Option, 0, len(e.wardenOpts)+len(e.plugins)+4)
+	opts := make([]warden.Option, 0, len(e.wardenOpts)+len(e.plugins)+5)
+
+	// Log through the app's logger. It goes first so the plugin registry,
+	// built by the first WithPlugin, gets it too, and so a WithLogger
+	// passed through WithEngineOptions still wins. Without it the engine
+	// logs nowhere, and a failed check log write or maintenance run went
+	// unreported.
+	if l := e.Logger(); l != nil {
+		opts = append(opts, warden.WithLogger(l))
+	}
 
 	// Try to resolve store from DI container, fall back to option-provided store.
 	if s, err := forge.Inject[store.Store](fapp.Container()); err == nil {
@@ -180,15 +189,15 @@ func (e *Extension) init(fapp forge.App) error {
 	// through: the engine itself auto-builds its memory cache from
 	// CacheTTL/CacheMaxSize, so there is no separate cache-construction
 	// step here.
-	opts = append(opts, warden.WithConfig(e.config.toEngineConfig()))
-
-	// Wire a forge.Metrics-backed warden.Metrics adapter so checks, store
-	// errors, cache invalidations, purge counts and hook errors are all
-	// observable. e.Metrics() never returns nil (BaseExtension falls back
-	// to a no-op collector), so this is unconditional.
-	if fm := e.Metrics(); fm != nil {
-		opts = append(opts, warden.WithMetrics(newForgeMetrics(fm)))
-	}
+	//
+	// Then record checks, store errors, cache invalidations, purge counts
+	// and hook errors through the app's metrics. e.Metrics() never returns
+	// nil (BaseExtension falls back to a no-op collector), and
+	// WithMetricsSink ignores a nil one anyway.
+	opts = append(opts,
+		warden.WithConfig(e.config.toEngineConfig()),
+		warden.WithMetricsSink(e.Metrics()),
+	)
 
 	// Register the in-tree structured audit-log sink by default (one line
 	// per audit event through the extension logger). Registering it here,

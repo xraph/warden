@@ -33,7 +33,7 @@ warden/
 │   └── auditlog/       # In-tree structured-log Audit plugin
 ├── cache/              # LRU cache with TTL
 ├── api/                # REST API handlers (forge.Router)
-├── extension/          # Forge extension entry point (metrics.go: Metrics adapter)
+├── extension/          # Forge extension entry point
 └── middleware/         # Authorization middleware
 ```
 
@@ -119,6 +119,6 @@ eng, _ := warden.NewEngine(
         CacheTTL:      5 * time.Minute,
     }),
     warden.WithPlugin(auditPlugin),   // e.g. plugin/auditlog
-    warden.WithMetrics(metricsAdapter),
+    warden.WithMetricsSink(app.Metrics()), // or WithMetrics(yourAdapter)
 )
 ```

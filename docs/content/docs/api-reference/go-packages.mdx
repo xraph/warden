@@ -30,7 +30,7 @@ description: Reference for all Warden Go packages.
 | `keysmithbridge` | `github.com/xraph/warden/keysmithbridge` | Lets Keysmith assign Warden roles to API keys |
 | `dsl` | `github.com/xraph/warden/dsl` | `.warden` parser, applier and the resource-type expression evaluator |
 
-There's no Chronicle audit plugin or Prometheus plugin package. Metrics go through `warden.WithMetrics`.
+There's no Chronicle audit plugin or Prometheus plugin package. Metrics go through `warden.WithMetrics` or `warden.WithMetricsSink`, and spans go to the global OpenTelemetry tracer provider. See [Monitoring](/docs/operations/monitoring).
 
 ## Core Types
 
@@ -118,5 +118,6 @@ func WithCache(c Cache) Option
 func WithPlugin(p plugin.Plugin) Option
 func WithLogger(l log.Logger) Option // github.com/xraph/go-utils/log
 func WithMetrics(m Metrics) Option
+func WithMetricsSink(m metrics.Metrics) Option // github.com/xraph/go-utils/metrics, e.g. app.Metrics()
 func WithExpressionEvaluator(ev ExpressionEvaluator) Option // e.g. dsl.NewEngineEvaluator(store)
 ```
