@@ -27,6 +27,8 @@ jobs:
     with:
       go-versions: '["1.26"]'
       os: '["ubuntu-latest"]'
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   # ─── Coverage gate ──────────────────────────────────────────────────
   # Runs after the shared workflow's test job, and fails the build below the
