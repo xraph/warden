@@ -2,7 +2,7 @@ module github.com/xraph/warden
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.11
 
 require (
 	github.com/jackc/pgx/v5 v5.12.0
