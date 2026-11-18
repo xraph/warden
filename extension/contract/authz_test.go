@@ -271,6 +271,8 @@ func post(t *testing.T, h http.Handler, user *dashauth.UserInfo, intent string, 
 		CSRF: "c", IdempotencyKey: "k-" + intent, Payload: raw,
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/dashboard/v1", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
 	if user != nil {
 		req = req.WithContext(dashauth.WithUser(req.Context(), user))
 	}
@@ -338,6 +340,8 @@ func TestTransportGatesQueriesToo(t *testing.T) {
 			Payload: json.RawMessage(`{}`),
 		})
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/dashboard/v1", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
 		if user != nil {
 			req = req.WithContext(dashauth.WithUser(req.Context(), user))
 		}
